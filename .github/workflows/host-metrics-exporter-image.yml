@@ -25,7 +25,7 @@ jobs:
         id: image
         shell: bash
         run: |
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/host-dashboard-metrics"
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/host-dashboard-metrics-public"
           echo "name=${image,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
