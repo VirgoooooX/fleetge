@@ -10,7 +10,13 @@
     </el-table-column>
     <el-table-column label="镜像" prop="image" min-width="200">
       <template #default="{ row }">
-        <code class="image-ref">{{ row.image }}</code>
+        <div class="image-cell">
+          <code class="image-ref">{{ row.image }}</code>
+          <UpdateBadge
+            v-if="updateStatuses?.[row.image] && updateStatuses[row.image] !== 'up_to_date'"
+            :status="updateStatuses[row.image]"
+          />
+        </div>
       </template>
     </el-table-column>
     <el-table-column label="状态" prop="state" width="100">
@@ -48,6 +54,7 @@
 <script setup lang="ts">
 import StatusIcon from "./StatusIcon.vue";
 import ContainerStats from "./ContainerStats.vue";
+import UpdateBadge from "./UpdateBadge.vue";
 
 export interface ContainerPort {
   private_port: number;
@@ -82,6 +89,7 @@ export interface ContainerStatsData {
 defineProps<{
   containers: ContainerSummary[];
   containerStats?: Record<string, ContainerStatsData>;
+  updateStatuses?: Record<string, string>;
 }>();
 
 function formatPorts(ports: ContainerPort[]): string {
@@ -109,6 +117,17 @@ function formatTime(created: number): string {
   background: var(--bg-dark);
   padding: 1px 4px;
   border-radius: 3px;
+}
+.image-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.image-cell .image-ref {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .port-text {
   font-size: 12px;

@@ -45,6 +45,53 @@
     <!-- No metrics warning -->
     <el-alert v-else-if="host" title="主机指标不可用" type="warning" show-icon :closable="false" class="metric-warning" />
 
+    <section v-if="host" class="updates-panel">
+      <div class="updates-panel__header">
+        <div>
+          <div class="section-kicker">Image Updates</div>
+          <h3 class="section-title">可更新镜像</h3>
+        </div>
+        <div class="updates-panel__actions">
+          <el-tag v-if="host.update_count > 0" type="danger" effect="dark">
+            {{ host.update_count }} 个待更新
+          </el-tag>
+          <el-tag v-else type="success" effect="dark">暂无更新</el-tag>
+          <el-button size="small" :loading="updateLoading" @click="runUpdateCheck">
+            <el-icon><Refresh /></el-icon>
+            重新检查
+          </el-button>
+        </div>
+      </div>
+
+      <div v-if="updatableResults.length > 0" class="update-list">
+        <div v-for="item in updatableResults" :key="item.image" class="update-row">
+          <div class="update-row__main">
+            <code class="image-ref">{{ item.image }}</code>
+            <span class="update-row__containers">
+              {{ containersByImage[item.image] || 0 }} 个容器使用
+            </span>
+          </div>
+          <div class="update-row__digests">
+            <span>local {{ shortDigest(item.current_digest) }}</span>
+            <span>registry {{ shortDigest(item.registry_digest) }}</span>
+          </div>
+          <UpdateBadge :status="item.status" />
+        </div>
+      </div>
+
+      <el-alert
+        v-else-if="host.update_count > 0 && !updateLoading"
+        title="更新计数已存在，但当前详情页还没有拿到镜像明细。点击“重新检查”刷新检测结果。"
+        type="warning"
+        show-icon
+        :closable="false"
+      />
+
+      <div v-else class="updates-empty">
+        当前主机的镜像检查结果没有发现可更新项。
+      </div>
+    </section>
+
     <!-- Tabs for stacks/containers -->
     <el-tabs v-model="activeTab" class="detail-tabs">
       <el-tab-pane label="Stacks" name="stacks">
@@ -61,6 +108,7 @@
           v-if="containers.length > 0"
           :containers="containers"
           :container-stats="containerStats"
+          :update-statuses="updateStatuses"
         />
         <el-empty v-else-if="!loading" description="暂无容器" />
       </el-tab-pane>
@@ -85,7 +133,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { ArrowLeft, Loading } from "@element-plus/icons-vue";
+import { ArrowLeft, Loading, Refresh } from "@element-plus/icons-vue";
 import { apiClient } from "@/api/client";
 import type { HostSummary } from "@/stores/dashboard";
 
@@ -136,10 +184,19 @@ interface ContainerStats {
   block_read_bytes: number;
   block_write_bytes: number;
 }
+
+interface UpdateResult {
+  host_id: string;
+  image: string;
+  current_digest?: string;
+  registry_digest?: string;
+  status: string;
+}
 import HostMetricsBar from "@/components/HostMetricsBar.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
 import StackGroup from "@/components/StackGroup.vue";
 import ContainerTable from "@/components/ContainerTable.vue";
+import UpdateBadge from "@/components/UpdateBadge.vue";
 
 const route = useRoute();
 const hostId = computed(() => route.params.hostId as string);
@@ -149,6 +206,8 @@ const host = ref<HostSummary | null>(null);
 const stacks = ref<StackSummary[]>([]);
 const containers = ref<ContainerSummary[]>([]);
 const containerStats = ref<Record<string, ContainerStats>>({});
+const updateResults = ref<UpdateResult[]>([]);
+const updateLoading = ref(false);
 const activeTab = ref("stacks");
 
 // Computed metrics
@@ -183,7 +242,65 @@ const uptimeText = computed(() => {
   return parts.join(" ") || "刚刚重启";
 });
 
-async function fetchDetail() {
+const updatableResults = computed(() =>
+  updateResults.value.filter((item) => item.status === "updatable")
+);
+
+const updateStatuses = computed(() => {
+  const statuses: Record<string, string> = {};
+  for (const item of updateResults.value) {
+    statuses[item.image] = item.status;
+  }
+  return statuses;
+});
+
+const containersByImage = computed(() => {
+  const counts: Record<string, number> = {};
+  for (const container of containers.value) {
+    counts[container.image] = (counts[container.image] || 0) + 1;
+  }
+  return counts;
+});
+
+function shortDigest(digest?: string): string {
+  if (!digest) return "-";
+  const normalized = digest.replace(/^sha256:/, "");
+  return `sha256:${normalized.slice(0, 12)}`;
+}
+
+function applyUpdateResults(results: UpdateResult[]) {
+  updateResults.value = (results || []).filter(
+    (item) => item.host_id === hostId.value
+  );
+}
+
+async function fetchUpdateResults() {
+  updateLoading.value = true;
+  try {
+    const res = await apiClient.get("/api/update-checks");
+    applyUpdateResults(res.data || []);
+  } catch (e) {
+    console.error("Failed to fetch update checks:", e);
+    updateResults.value = [];
+  } finally {
+    updateLoading.value = false;
+  }
+}
+
+async function runUpdateCheck() {
+  updateLoading.value = true;
+  try {
+    const res = await apiClient.post("/api/update-checks/run");
+    applyUpdateResults(res.data.results || []);
+    await fetchDetail({ skipUpdates: true });
+  } catch (e) {
+    console.error("Failed to run update check:", e);
+  } finally {
+    updateLoading.value = false;
+  }
+}
+
+async function fetchDetail(options: { skipUpdates?: boolean } = {}) {
   loading.value = true;
   try {
     // Fetch hosts list to get the summary for this host
@@ -213,6 +330,10 @@ async function fetchDetail() {
       containerStats.value = {};
     }
 
+    if (!options.skipUpdates) {
+      await fetchUpdateResults();
+    }
+
   } catch (e: any) {
     console.error("Failed to fetch host detail:", e);
   } finally {
@@ -221,7 +342,7 @@ async function fetchDetail() {
 }
 
 onMounted(fetchDetail);
-watch(hostId, fetchDetail);
+watch(hostId, () => fetchDetail());
 </script>
 
 <style scoped>
@@ -276,10 +397,106 @@ watch(hostId, fetchDetail);
 .metric-warning {
   margin-bottom: 16px;
 }
+.updates-panel {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+.updates-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.updates-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.section-kicker {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+.section-title {
+  margin: 4px 0 0;
+  font-size: 16px;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+.update-list {
+  display: grid;
+  gap: 8px;
+}
+.update-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, auto) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 108, 108, 0.22);
+  border-radius: 6px;
+  background: rgba(245, 108, 108, 0.06);
+}
+.update-row__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.update-row__containers {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.update-row__digests {
+  display: flex;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.updates-empty {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.image-ref {
+  font-size: 12px;
+  background: var(--bg-dark);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .detail-tabs {
   margin-bottom: 16px;
 }
 .docker-info-collapse {
   margin-bottom: 24px;
+}
+
+@media (max-width: 900px) {
+  .updates-panel__header,
+  .update-row,
+  .update-row__main,
+  .update-row__digests {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .update-row {
+    display: flex;
+  }
+  .update-row__digests {
+    gap: 4px;
+    white-space: normal;
+  }
 }
 </style>
