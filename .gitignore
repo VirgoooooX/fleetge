@@ -10,13 +10,13 @@ venv/
 # Node
 node_modules/
 frontend/dist/
-
+logs/
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-
+data/
 # OS
 .DS_Store
 Thumbs.db
