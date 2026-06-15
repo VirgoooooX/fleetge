@@ -77,7 +77,8 @@
           >
             <div class="dockge-stack-header">
               <div class="stack-title-row">
-                <el-icon><FolderOpened /></el-icon>
+                <img v-if="stack.icon_url" :src="stack.icon_url" class="stack-icon-img" @error="onIconError" />
+                <el-icon v-else class="stack-title-icon"><FolderOpened /></el-icon>
                 <span class="dockge-stack-name">{{ stack.name }}</span>
                 <span class="dot-state" :class="`dot-${stackStatusType(stack.status)}`" />
                 <span class="stack-state-text">{{ statusLabel(stack.status) }}</span>
@@ -458,6 +459,7 @@ export interface StackSummary {
   service_count: number;
   running_count: number;
   services: StackService[];
+  icon_url?: string;  // 自定义图标（网络 URL 或 /api/static/icons/...）
 }
 
 export interface ContainerPort {
@@ -631,6 +633,14 @@ function stackStatusType(status: string): string {
   if (status === "running") return "running";
   if (status === "stopped") return "stopped";
   return "partial";
+}
+
+function onIconError(event: Event) {
+  // Hide broken <img> so the fallback <el-icon> shows through
+  const img = event.target as HTMLImageElement;
+  if (img) {
+    img.style.display = "none";
+  }
 }
 
 function containerUpdateStatus(container: ContainerSummary): string | null {
@@ -1067,7 +1077,8 @@ onUnmounted(() => {
   flex-direction: column;
   min-width: 0;
   padding: 16px;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .stack-detail-view {
@@ -1141,6 +1152,18 @@ onUnmounted(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.stack-icon-img {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.stack-title-icon {
+  flex-shrink: 0;
 }
 
 .dockge-stack-name {

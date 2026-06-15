@@ -115,6 +115,7 @@ interface StackSummary {
   service_count: number;
   running_count: number;
   services: StackService[];
+  icon_url?: string;  // 自定义图标
 }
 
 interface ContainerPort {

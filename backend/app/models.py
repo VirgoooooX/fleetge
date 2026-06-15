@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
+from sqlalchemy import Column, Text
 
 
 class HostConfig(SQLModel, table=True):
@@ -27,6 +28,9 @@ class HostConfig(SQLModel, table=True):
     metrics_url: str = ""
     # Fernet-encrypted JSON: {"username": "...", "password": "..."}
     metrics_auth_encrypted: Optional[str] = None
+
+    # Stack icon mapping — JSON string: {"stack_name": "icon_url_or_path"}
+    stack_icons: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
     # Runtime state (updated by poller)
     status: str = "unknown"  # online | offline | degraded | unknown

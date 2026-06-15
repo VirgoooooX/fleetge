@@ -148,6 +148,10 @@ class StackSummary(BaseModel):
     service_count: int = 0
     running_count: int = 0
     services: list[StackService] = []
+    icon_url: Optional[str] = None  # 自定义图标 URL（网络或本地），由后端根据 host_config.stack_icons 匹配
+
+    class Config:
+        from_attributes = True
 
 
 class StackComposeDetail(BaseModel):

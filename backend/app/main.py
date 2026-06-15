@@ -1,6 +1,7 @@
 """FastAPI application entry point."""
 
 import logging
+from pathlib import Path
 
 from contextlib import asynccontextmanager
 
@@ -72,6 +73,16 @@ app.include_router(stacks.router)
 app.include_router(containers.router)
 app.include_router(updates.router)
 app.include_router(audit.router)
+
+# ── Static files: stack icons ─────────────────────────────────────────────
+
+# Fix SVG MIME type on Windows (Python returns 'image/svg' instead of 'image/svg+xml')
+import mimetypes
+mimetypes.add_type("image/svg+xml", ".svg")
+
+_STACK_ICONS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "stack_icons"
+_STACK_ICONS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/api/static/icons", StaticFiles(directory=str(_STACK_ICONS_DIR)), name="stack_icons")
 
 
 # ── Health check ───────────────────────────────────────────────────────

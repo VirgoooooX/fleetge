@@ -1,5 +1,6 @@
 """Host config loader — reads hosts from a YAML file and seeds the database."""
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -101,6 +102,9 @@ def load_hosts_from_yaml() -> int:
                 existing.docker_proxy_auth_encrypted = dp_auth
                 existing.metrics_url = metrics.get("url", "")
                 existing.metrics_auth_encrypted = m_auth
+                # Stack icons
+                stack_icons = entry.get("stack_icons")
+                existing.stack_icons = json.dumps(stack_icons, ensure_ascii=False) if stack_icons else None
             else:
                 host = HostConfig(
                     host_id=host_id,
@@ -114,6 +118,7 @@ def load_hosts_from_yaml() -> int:
                     docker_proxy_auth_encrypted=dp_auth,
                     metrics_url=metrics.get("url", ""),
                     metrics_auth_encrypted=m_auth,
+                    stack_icons=json.dumps(stack_icons, ensure_ascii=False) if (stack_icons := entry.get("stack_icons")) else None,
                 )
                 session.add(host)
 

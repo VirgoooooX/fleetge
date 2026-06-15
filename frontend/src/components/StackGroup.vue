@@ -8,9 +8,10 @@
     >
       <div class="stack-header">
         <div class="stack-header-left">
-          <el-icon :size="18">
+          <el-icon v-if="!stack.icon_url" :size="18">
             <FolderOpened />
           </el-icon>
+          <img v-else :src="stack.icon_url" class="stack-icon-img" @error="onIconError" />
           <span class="stack-name">{{ stack.name }}</span>
           <StatusIcon :status="stackStatusType(stack.status)" />
           <el-tag :type="stackTagType(stack.status)" size="small">
@@ -158,6 +159,7 @@ export interface StackSummary {
   service_count: number;
   running_count: number;
   services: StackService[];
+  icon_url?: string;  // 自定义图标
 }
 
 const props = defineProps<{
@@ -264,6 +266,13 @@ function stackTagType(status: string): "success" | "warning" | "info" | "danger"
   return "info";
 }
 
+function onIconError(event: Event) {
+  const img = event.target as HTMLImageElement;
+  if (img) {
+    img.style.display = "none";
+  }
+}
+
 function openLogs(stackName: string) {
   currentLogStack.value = stackName;
   logDrawerVisible.value = true;
@@ -303,6 +312,13 @@ function openCompose(stackName: string) {
   min-width: 0;
   min-height: 32px;
   line-height: 1;
+}
+.stack-icon-img {
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 .stack-header-right {
   display: flex;

@@ -611,6 +611,59 @@ class SnapshotManager:
             )
         return stacks
 
+    def _apply_stack_icons(
+        self, stacks: list[StackSummary], cfg: HostConfig | None
+    ) -> list[StackSummary]:
+        """Apply custom icon URLs from host config to stack summaries.
+
+        Icon value handling:
+        - Starts with ``http://`` or ``https://`` → URL, return as-is
+        - Otherwise → local file path, rewrite as ``/api/static/icons/{filename}``
+        """
+        if cfg is None or not cfg.stack_icons:
+            return stacks
+
+        try:
+            import json
+
+            mapping: dict[str, str] = json.loads(cfg.stack_icons)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning(
+                "Invalid stack_icons JSON for host %s: %s", cfg.host_id, cfg.stack_icons
+            )
+            return stacks
+
+        for stack in stacks:
+            icon_value = self._match_icon(stack.name, mapping)
+            if not icon_value:
+                continue
+            if icon_value.startswith("http://") or icon_value.startswith("https://"):
+                stack.icon_url = icon_value
+            else:
+                filename = icon_value.lstrip("/")
+                stack.icon_url = f"/api/static/icons/{filename}"
+
+        return stacks
+
+    @staticmethod
+    def _match_icon(name: str, mapping: dict[str, str]) -> str | None:
+        """Match a stack name against icon mapping keys.
+
+        Priority: exact match > prefix wildcard (``key*``) > suffix wildcard (``*key``).
+        """
+        # 1. Exact match
+        if name in mapping:
+            return mapping[name]
+
+        # 2. Wildcard match
+        for key, value in mapping.items():
+            if key.endswith("*") and name.startswith(key[:-1]):
+                return value
+            if key.startswith("*") and name.endswith(key[1:]):
+                return value
+
+        return None
+
     def update_host_stacks_realtime(self, host_id: str, raw_stacks: list) -> None:
         """Real-time update of host stacks when Dockge pushes stackList event."""
         snap = self._snapshots.get(host_id)
@@ -619,6 +672,7 @@ class SnapshotManager:
         try:
             logger.info("Real-time stack list update received for %s", host_id)
             stacks = self.parse_dockge_stacks(raw_stacks)
+            stacks = self._apply_stack_icons(stacks, snap.host_config)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
             # Coalesce rapid stackList events: cancel previous pending refresh and
@@ -648,6 +702,7 @@ class SnapshotManager:
 
             raw_stacks = await conn.list_stacks()
             stacks = self.parse_dockge_stacks(raw_stacks)
+            stacks = self._apply_stack_icons(stacks, cfg)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
 
@@ -691,7 +746,7 @@ class SnapshotManager:
             if stack.name not in seen:
                 merged.append(stack)
 
-        return merged
+        return self._apply_stack_icons(merged, snap.host_config)
 
     async def _refresh_container_stats(
         self, snap: HostSnapshot, proxy: DockerProxyClient, cfg: HostConfig
@@ -786,6 +841,7 @@ class SnapshotManager:
         require a working Dockge connection.
         """
         snap.stacks = self._stacks_from_container_labels(snap)
+        snap.stacks = self._apply_stack_icons(snap.stacks, snap.host_config)
         snap.stacks_updated = time.monotonic()
 
     def _stacks_from_container_labels(self, snap: HostSnapshot) -> list[StackSummary]:
