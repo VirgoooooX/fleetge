@@ -26,7 +26,7 @@ services:
       DATABASE_URL: sqlite:///./data/dashboard.db
       HOST_CONFIG_PATH: /app/data/hosts.yaml
     volumes:
-      - dashboard_data:/app/data
+      - ./data:/app/data
     ports:
       # Only expose to reverse proxy / frontend, not to the internet directly
       - "127.0.0.1:8000:8000"

@@ -285,18 +285,34 @@ async def run_update_check(
 ) -> list[UpdateCheckResult]:
     """Run update checks for multiple images on a host.
 
+    Deduplicates by image_ref — if the same image appears multiple times
+    (e.g. used by several containers), repo_digests are merged and only
+    one check is performed. Non-empty digests take priority over empty ones.
+
     Args:
         host_id: Host identifier.
         image_refs: List of (image_ref, repo_digests) tuples.
 
     Returns:
-        List of UpdateCheckResult.
+        List of UpdateCheckResult (one per unique image).
     """
-    results: list[UpdateCheckResult] = []
+    # Deduplicate: merge repo_digests for the same image_ref
+    merged: dict[str, list[str]] = {}
     for image_ref, repo_digests in image_refs:
-        result = await check_image(host_id, image_ref, repo_digests)
-        results.append(result)
-    return results
+        existing = merged.setdefault(image_ref, [])
+        for digest in repo_digests or []:
+            if digest and digest not in existing:
+                existing.append(digest)
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def check_one(image_ref: str, repo_digests: list[str]) -> UpdateCheckResult:
+        async with semaphore:
+            return await check_image(host_id, image_ref, repo_digests)
+
+    return await asyncio.gather(
+        *(check_one(image_ref, repo_digests) for image_ref, repo_digests in merged.items())
+    )
 
 
 def clear_cache() -> None:

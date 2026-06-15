@@ -1,8 +1,16 @@
 <template>
   <div class="login-page">
+    <div class="login-visual">
+      <div class="visual-kicker">Docker Ops Console</div>
+      <h1>Host Dashboard</h1>
+      <p>多主机运行态、镜像更新、Stack 操作和审计日志集中入口。</p>
+      <div class="visual-grid" aria-hidden="true">
+        <span v-for="n in 18" :key="n" />
+      </div>
+    </div>
     <div class="login-card">
-      <h1 class="login-title">Docker Dashboard</h1>
-      <p class="login-subtitle">多主机 Docker 管理控制台</p>
+      <h2 class="login-title">登录控制台</h2>
+      <p class="login-subtitle">使用管理员账号继续</p>
       <el-form
         ref="formRef"
         :model="form"
@@ -88,30 +96,87 @@ async function handleLogin() {
 
 <style scoped>
 .login-page {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
   align-items: center;
-  justify-content: center;
+  gap: 36px;
   min-height: 100vh;
-  background: var(--bg-dark);
+  padding: 48px;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(37, 99, 235, 0.24), transparent 32rem),
+    radial-gradient(circle at 88% 86%, rgba(34, 211, 238, 0.12), transparent 28rem),
+    var(--surface-base);
+}
+.login-visual {
+  max-width: 720px;
+}
+.visual-kicker {
+  color: var(--accent-blue);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.login-visual h1 {
+  margin: 12px 0 0;
+  font-size: clamp(44px, 7vw, 92px);
+  line-height: 0.92;
+  color: var(--text-primary);
+}
+.login-visual p {
+  max-width: 520px;
+  margin: 20px 0 0;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.8;
+}
+.visual-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 8px;
+  max-width: 460px;
+  margin-top: 34px;
+}
+.visual-grid span {
+  height: 46px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--login-grid-bg);
+}
+.visual-grid span:nth-child(4n + 1) {
+  background: var(--login-grid-accent);
+}
+.visual-grid span:nth-child(5n) {
+  background: var(--login-grid-success);
 }
 .login-card {
-  width: 380px;
+  width: 100%;
   padding: 40px;
-  background: var(--bg-card);
-  border-radius: 12px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--login-card-bg);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
 }
 .login-title {
-  text-align: center;
-  font-size: 24px;
+  font-size: 26px;
   font-weight: 700;
   color: var(--text-primary);
-  margin: 0 0 4px;
+  margin: 0 0 6px;
 }
 .login-subtitle {
-  text-align: center;
   font-size: 14px;
   color: var(--text-secondary);
   margin: 0 0 32px;
+}
+
+@media (max-width: 900px) {
+  .login-page {
+    grid-template-columns: 1fr;
+    padding: 28px;
+  }
+
+  .login-visual {
+    display: none;
+  }
 }
 </style>

@@ -1,12 +1,63 @@
-/* Docker Dashboard — 运维控制台暗色风格 */
+/* Host Dashboard — Ops Console dark system */
 
 :root {
-  --bg-dark: #0f1117;
-  --bg-card: #1a1d27;
-  --bg-elevated: #232736;
-  --border-color: #2a2e3a;
-  --text-primary: #e4e7ed;
-  --text-secondary: #909399;
+  --surface-base: #050914;
+  --surface-panel: #0b1220;
+  --surface-panel-raised: #111827;
+  --surface-elevated: #172033;
+  --surface-muted: #0f172a;
+  --border-subtle: rgba(148, 163, 184, 0.16);
+  --border-strong: rgba(148, 163, 184, 0.28);
+  --text-primary: #e5edf8;
+  --text-secondary: #9aa8bc;
+  --text-muted: #64748b;
+  --accent-blue: #60a5fa;
+  --accent-cyan: #22d3ee;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --focus-ring: rgba(96, 165, 250, 0.42);
+  --font-body: "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+
+  /* Backward-compatible aliases used by existing components. */
+  --bg-dark: var(--surface-base);
+  --bg-card: var(--surface-panel);
+  --bg-elevated: var(--surface-elevated);
+  --border-color: var(--border-subtle);
+
+  /* Themeable component surfaces */
+  --sidebar-bg: linear-gradient(180deg, rgba(14, 25, 43, 0.96), rgba(5, 9, 17, 0.98));
+  --sidebar-brand-bg: rgba(37, 99, 235, 0.14);
+  --topbar-bg: rgba(5, 9, 17, 0.88);
+  --pill-bg: rgba(15, 23, 42, 0.8);
+  --nav-hover-bg: rgba(148, 163, 184, 0.08);
+  --nav-active-bg: linear-gradient(135deg, rgba(96, 165, 250, 0.18), rgba(34, 211, 238, 0.06));
+  --nav-active-border: rgba(96, 165, 250, 0.42);
+  --nav-active-shadow: 0 10px 24px rgba(15, 23, 42, 0.24);
+  --nav-icon-active-bg: rgba(96, 165, 250, 0.18);
+  --page-header-bg: linear-gradient(135deg, rgba(96, 165, 250, 0.10), transparent 36%), rgba(11, 18, 32, 0.88);
+  --page-header-action-bg: rgba(15, 23, 42, 0.72);
+
+  /* Login page */
+  --login-card-bg: rgba(11, 18, 32, 0.92);
+  --login-grid-bg: rgba(15, 23, 42, 0.7);
+  --login-grid-accent: rgba(37, 99, 235, 0.22);
+  --login-grid-success: rgba(52, 211, 153, 0.16);
+
+  /* Host detail */
+  --detail-header-bg: linear-gradient(135deg, rgba(96, 165, 250, 0.1), transparent 34%), rgba(11, 18, 32, 0.9);
+  --detail-tabs-bg: rgba(11, 18, 32, 0.86);
+
+  /* Dashboard overview */
+  --dash-command-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent 36%), rgba(11, 18, 32, 0.88);
+  --dash-tile-bg: rgba(5, 9, 20, 0.56);
+  --dash-tile-critical-bg: rgba(127, 29, 29, 0.16);
+  --dash-tile-hover-bg: rgba(15, 23, 42, 0.92);
+
+  /* Host card */
+  --host-card-bg: linear-gradient(180deg, rgba(15, 23, 42, 0.96), rgba(8, 13, 24, 0.98));
+  --host-card-hover-shadow: 0 16px 38px rgba(0, 0, 0, 0.24);
 }
 
 /* ── Override Element Plus dark variables ─────────────────────────── */
@@ -18,31 +69,67 @@ html.dark {
 /* Global overrides for dark theme */
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
-  background: var(--bg-dark);
+  font-family: var(--font-body);
+  background:
+    radial-gradient(circle at 16% 0, rgba(37, 99, 235, 0.18), transparent 28rem),
+    radial-gradient(circle at 88% 4%, rgba(34, 211, 238, 0.08), transparent 24rem),
+    var(--surface-base);
   color: var(--text-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+a,
+.el-button,
+.el-card,
+.el-tabs__item {
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+button:focus-visible,
+.el-button:focus-visible,
+.el-input__wrapper.is-focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* Element Plus card override for dark bg */
 .el-card {
-  background: var(--bg-card) !important;
-  border: 1px solid var(--border-color) !important;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(10, 15, 26, 0.98)) !important;
+  border: 1px solid var(--border-subtle) !important;
   color: var(--text-primary) !important;
+  border-radius: 8px !important;
 }
 
 .el-table {
-  background: var(--bg-card) !important;
+  background: var(--surface-panel) !important;
   color: var(--text-primary) !important;
+  border-radius: 8px;
+  overflow: hidden;
 }
 
 .el-table th.el-table__cell {
-  background: var(--bg-elevated) !important;
+  background: var(--surface-muted) !important;
   color: var(--text-primary) !important;
+  font-weight: 700;
+}
+
+.el-table tr,
+.el-table td.el-table__cell {
+  background: var(--surface-panel) !important;
+  border-bottom-color: var(--border-subtle) !important;
 }
 
 .el-table__body tr:hover > td {
-  background: var(--bg-elevated) !important;
+  background: rgba(96, 165, 250, 0.08) !important;
 }
 
 .el-table--striped .el-table__body tr.el-table__row--striped td {
@@ -51,54 +138,82 @@ body {
 
 /* Progress bar background */
 .el-progress-bar__outer {
-  background: #2a2e3a !important;
+  background: rgba(148, 163, 184, 0.16) !important;
 }
 
 /* Tabs */
 .el-tabs__item {
   color: var(--text-secondary) !important;
+  font-weight: 600;
 }
 .el-tabs__item.is-active {
-  color: var(--el-color-primary) !important;
+  color: var(--accent-blue) !important;
+}
+.el-tabs__active-bar {
+  background: var(--accent-blue) !important;
 }
 
 /* Collapse */
 .el-collapse {
-  border-color: var(--border-color) !important;
+  border-color: var(--border-subtle) !important;
 }
 .el-collapse-item__header {
-  background: var(--bg-card) !important;
+  background: var(--surface-panel) !important;
   color: var(--text-primary) !important;
-  border-color: var(--border-color) !important;
+  border-color: var(--border-subtle) !important;
 }
 .el-collapse-item__wrap {
-  background: var(--bg-dark) !important;
+  background: var(--surface-base) !important;
 }
 
 /* Description */
 .el-descriptions {
-  background: var(--bg-card) !important;
+  background: var(--surface-panel) !important;
 }
 .el-descriptions__title {
   color: var(--text-primary) !important;
 }
 .el-descriptions__label {
-  background: var(--bg-elevated) !important;
+  background: var(--surface-muted) !important;
   color: var(--text-secondary) !important;
 }
 .el-descriptions__content {
-  background: var(--bg-card) !important;
+  background: var(--surface-panel) !important;
   color: var(--text-primary) !important;
 }
 
 /* Drawer */
 .el-drawer {
-  background: var(--bg-dark) !important;
+  background: var(--surface-base) !important;
 }
 
 /* Alert */
 .el-alert {
-  background: var(--bg-card) !important;
+  background: var(--surface-panel) !important;
+  border: 1px solid var(--border-subtle);
+}
+
+.el-button {
+  border-radius: 7px !important;
+}
+
+.el-button--primary {
+  background: #2563eb !important;
+  border-color: #3b82f6 !important;
+}
+
+.el-tag {
+  border-radius: 6px !important;
+}
+
+.el-input__wrapper {
+  background: var(--surface-muted) !important;
+  border: 1px solid var(--border-subtle);
+  box-shadow: none !important;
+}
+
+.el-input__inner {
+  color: var(--text-primary) !important;
 }
 
 /* Scrollbar */
@@ -110,9 +225,20 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #3a3f4b;
+  background: rgba(100, 116, 139, 0.72);
   border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #4a4f5b;
+  background: rgba(148, 163, 184, 0.82);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -1,21 +1,5 @@
 <template>
   <div class="detail-layout">
-    <!-- Back button + header -->
-    <header class="detail-header">
-      <el-button text @click="$router.push('/')">
-        <el-icon><ArrowLeft /></el-icon>
-        返回
-      </el-button>
-      <h2 class="detail-title">{{ host?.display_name || hostId }}</h2>
-      <StatusIcon :status="host?.status || 'unknown'" />
-      <el-tag v-if="host?.os_info" size="small" type="info">{{ host?.os_info }}</el-tag>
-      <el-tag v-if="host?.docker_version" size="small">Docker {{ host?.docker_version }}</el-tag>
-    </header>
-
-    <!-- Loading -->
-    <div v-if="loading" class="loading-center"><el-icon class="is-loading" :size="32"><Loading /></el-icon></div>
-
-    <!-- Metrics bar -->
     <section v-if="host?.metrics" class="metrics-bar">
       <HostMetricsBar label="CPU" :percent="host.metrics.cpuPercent" unit="%" />
       <HostMetricsBar
@@ -33,12 +17,64 @@
         unit="GB"
       />
       <div class="metrics-item">
-        <span class="metrics-label">负载</span>
-        <span class="metrics-value">{{ loadText }}</span>
+        <div class="metrics-header">
+          <span class="metrics-label">负载</span>
+        </div>
+        <div class="metrics-value-container">
+          <span class="metrics-value font-mono">{{ loadText }}</span>
+        </div>
       </div>
       <div class="metrics-item">
-        <span class="metrics-label">运行时间</span>
-        <span class="metrics-value">{{ uptimeText }}</span>
+        <div class="metrics-header">
+          <span class="metrics-label">运行时间</span>
+        </div>
+        <div class="metrics-value-container">
+          <span class="metrics-value">{{ uptimeText }}</span>
+        </div>
+      </div>
+      <div class="metrics-item">
+        <div class="metrics-header">
+          <span class="activity-dot" :class="netActivityLevel" />
+          <span class="metrics-label">网络</span>
+        </div>
+        <div class="metrics-value-container telemetry-lines">
+          <div class="telemetry-line">
+            <span class="tl-label">↓</span>
+            <span class="tl-value">
+              <span class="tl-amount">{{ netRxParts.amount }}</span>
+              <span class="tl-unit">{{ netRxParts.unit }}</span>
+            </span>
+          </div>
+          <div class="telemetry-line">
+            <span class="tl-label">↑</span>
+            <span class="tl-value">
+              <span class="tl-amount">{{ netTxParts.amount }}</span>
+              <span class="tl-unit">{{ netTxParts.unit }}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="metrics-item">
+        <div class="metrics-header">
+          <span class="activity-dot" :class="ioActivityLevel" />
+          <span class="metrics-label">磁盘 I/O</span>
+        </div>
+        <div class="metrics-value-container telemetry-lines">
+          <div class="telemetry-line">
+            <span class="tl-label">R</span>
+            <span class="tl-value">
+              <span class="tl-amount">{{ ioReadParts.amount }}</span>
+              <span class="tl-unit">{{ ioReadParts.unit }}</span>
+            </span>
+          </div>
+          <div class="telemetry-line">
+            <span class="tl-label">W</span>
+            <span class="tl-value">
+              <span class="tl-amount">{{ ioWriteParts.amount }}</span>
+              <span class="tl-unit">{{ ioWriteParts.unit }}</span>
+            </span>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -52,8 +88,8 @@
           <h3 class="section-title">可更新镜像</h3>
         </div>
         <div class="updates-panel__actions">
-          <el-tag v-if="host.update_count > 0" type="danger" effect="dark">
-            {{ host.update_count }} 个待更新
+          <el-tag v-if="displayUpdateCount > 0" type="danger" effect="dark">
+            {{ displayUpdateCount }} 个待更新
           </el-tag>
           <el-tag v-else type="success" effect="dark">暂无更新</el-tag>
           <el-button size="small" :loading="updateLoading" @click="runUpdateCheck">
@@ -75,12 +111,26 @@
             <span>local {{ shortDigest(item.current_digest) }}</span>
             <span>registry {{ shortDigest(item.registry_digest) }}</span>
           </div>
-          <UpdateBadge :status="item.status" />
+          <div class="update-row__actions">
+            <UpdateBadge :status="item.status" />
+            <el-button
+              v-for="stackName in stacksByImage[item.image] || []"
+              :key="stackName"
+              size="small"
+              type="danger"
+              plain
+              :loading="updatingStack === stackName"
+              :disabled="!!updatingStack"
+              @click="updateStackFromImage(stackName)"
+            >
+              更新 {{ stackName }}
+            </el-button>
+          </div>
         </div>
       </div>
 
       <el-alert
-        v-else-if="host.update_count > 0 && !updateLoading"
+        v-else-if="displayUpdateCount > 0 && !updateLoading"
         title="更新计数已存在，但当前详情页还没有拿到镜像明细。点击“重新检查”刷新检测结果。"
         type="warning"
         show-icon
@@ -92,7 +142,6 @@
       </div>
     </section>
 
-    <!-- Tabs for stacks/containers -->
     <el-tabs v-model="activeTab" class="detail-tabs">
       <el-tab-pane label="Stacks" name="stacks">
         <StackGroup
@@ -101,7 +150,7 @@
           :host-id="hostId"
           @refresh="fetchDetail"
         />
-        <el-empty v-else-if="!loading" description="暂无 Stack" />
+        <el-empty v-else description="暂无 Stack" />
       </el-tab-pane>
       <el-tab-pane label="容器" name="containers">
         <ContainerTable
@@ -110,13 +159,9 @@
           :container-stats="containerStats"
           :update-statuses="updateStatuses"
         />
-        <el-empty v-else-if="!loading" description="暂无容器" />
+        <el-empty v-else description="暂无容器" />
       </el-tab-pane>
-    </el-tabs>
-
-    <!-- Docker info card (collapsible) -->
-    <el-collapse class="docker-info-collapse">
-      <el-collapse-item title="Docker 引擎信息">
+      <el-tab-pane label="Docker Info" name="docker">
         <el-descriptions :column="2" border size="small">
           <el-descriptions-item label="版本">{{ host?.docker_version || '-' }}</el-descriptions-item>
           <el-descriptions-item label="API 版本">{{ host?.api_version || '-' }}</el-descriptions-item>
@@ -125,17 +170,19 @@
           <el-descriptions-item label="镜像数量">{{ host?.image_count ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="运行容器">{{ host?.container_running ?? '-' }}</el-descriptions-item>
         </el-descriptions>
-      </el-collapse-item>
-    </el-collapse>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { ArrowLeft, Loading, Refresh } from "@element-plus/icons-vue";
+import { Refresh } from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { apiClient } from "@/api/client";
-import type { HostSummary } from "@/stores/dashboard";
+import { streamSse } from "@/api/sse";
+import { useDashboardStore, type HostSummary } from "@/stores/dashboard";
 
 interface StackService {
   name: string;
@@ -193,12 +240,12 @@ interface UpdateResult {
   status: string;
 }
 import HostMetricsBar from "@/components/HostMetricsBar.vue";
-import StatusIcon from "@/components/StatusIcon.vue";
 import StackGroup from "@/components/StackGroup.vue";
 import ContainerTable from "@/components/ContainerTable.vue";
 import UpdateBadge from "@/components/UpdateBadge.vue";
 
 const route = useRoute();
+const dashboardStore = useDashboardStore();
 const hostId = computed(() => route.params.hostId as string);
 
 const loading = ref(true);
@@ -208,6 +255,7 @@ const containers = ref<ContainerSummary[]>([]);
 const containerStats = ref<Record<string, ContainerStats>>({});
 const updateResults = ref<UpdateResult[]>([]);
 const updateLoading = ref(false);
+const updatingStack = ref("");
 const activeTab = ref("stacks");
 
 // Computed metrics
@@ -242,9 +290,22 @@ const uptimeText = computed(() => {
   return parts.join(" ") || "刚刚重启";
 });
 
-const updatableResults = computed(() =>
-  updateResults.value.filter((item) => item.status === "updatable")
-);
+const updatableResults = computed(() => {
+  // Deduplicate by image_ref — show one row per image
+  const seen = new Set<string>();
+  return updateResults.value.filter((item) => {
+    if (item.status !== "updatable") return false;
+    const key = `${item.host_id}:${item.image}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+});
+
+const displayUpdateCount = computed(() => {
+  if (updatableResults.value.length > 0) return updatableResults.value.length;
+  return dashboardStore.getHostUpdateCount(hostId.value);
+});
 
 const updateStatuses = computed(() => {
   const statuses: Record<string, string> = {};
@@ -262,13 +323,79 @@ const containersByImage = computed(() => {
   return counts;
 });
 
+const stacksByImage = computed(() => {
+  const stacksByImageRef: Record<string, string[]> = {};
+  for (const container of containers.value) {
+    if (!container.image || !container.stack_name) continue;
+    const existing = stacksByImageRef[container.image] || [];
+    if (!existing.includes(container.stack_name)) {
+      existing.push(container.stack_name);
+    }
+    stacksByImageRef[container.image] = existing;
+  }
+  return stacksByImageRef;
+});
+
 function shortDigest(digest?: string): string {
   if (!digest) return "-";
   const normalized = digest.replace(/^sha256:/, "");
   return `sha256:${normalized.slice(0, 12)}`;
 }
 
+function formatRate(bytesPerSec: number): string {
+  if (!bytesPerSec) return "0 B/s";
+  const abs = Math.abs(bytesPerSec);
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let i = 0;
+  let size = abs;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  return `${size.toFixed(1)}${units[i]}`;
+}
+
+function formatRateParts(bytesPerSec: number | undefined): { amount: string; unit: string } {
+  const bytes = Math.abs(bytesPerSec || 0);
+  if (bytes === 0) return { amount: "0", unit: "B/s" };
+
+  const units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+
+  return { amount: size.toFixed(1), unit: units[i] };
+}
+
+function activityLevel(totalRate: number): string {
+  if (totalRate >= 10 * 1024 * 1024) return "busy";
+  if (totalRate >= 512 * 1024) return "active";
+  if (totalRate > 0) return "low";
+  return "idle";
+}
+
+const netRxParts = computed(() => formatRateParts(host.value?.metrics?.networkRxRate));
+const netTxParts = computed(() => formatRateParts(host.value?.metrics?.networkTxRate));
+const ioReadParts = computed(() => formatRateParts(host.value?.metrics?.diskReadRate));
+const ioWriteParts = computed(() => formatRateParts(host.value?.metrics?.diskWriteRate));
+
+const netActivityLevel = computed(() => {
+  const m = host.value?.metrics;
+  if (!m) return "idle";
+  return activityLevel((m.networkRxRate || 0) + (m.networkTxRate || 0));
+});
+
+const ioActivityLevel = computed(() => {
+  const m = host.value?.metrics;
+  if (!m) return "idle";
+  return activityLevel((m.diskReadRate || 0) + (m.diskWriteRate || 0));
+});
+
 function applyUpdateResults(results: UpdateResult[]) {
+  dashboardStore.applyUpdateResults(results || []);
   updateResults.value = (results || []).filter(
     (item) => item.host_id === hostId.value
   );
@@ -290,8 +417,8 @@ async function fetchUpdateResults() {
 async function runUpdateCheck() {
   updateLoading.value = true;
   try {
-    const res = await apiClient.post("/api/update-checks/run");
-    applyUpdateResults(res.data.results || []);
+    const results = await dashboardStore.runUpdateCheck();
+    applyUpdateResults(results || []);
     await fetchDetail({ skipUpdates: true });
   } catch (e) {
     console.error("Failed to run update check:", e);
@@ -300,34 +427,100 @@ async function runUpdateCheck() {
   }
 }
 
-async function fetchDetail(options: { skipUpdates?: boolean } = {}) {
-  loading.value = true;
+async function updateStackFromImage(stackName: string) {
   try {
-    // Fetch hosts list to get the summary for this host
-    const hostsRes = await apiClient.get("/api/hosts");
-    host.value =
-      (hostsRes.data.hosts || []).find(
-        (h: HostSummary) => h.host_id === hostId.value
-      ) || null;
-
-    // Fetch stacks
-    const stacksRes = await apiClient.get(`/api/hosts/${hostId.value}/stacks`);
-    stacks.value = stacksRes.data || [];
-
-    // Fetch containers
-    const containersRes = await apiClient.get(
-      `/api/hosts/${hostId.value}/containers`
+    await ElMessageBox.confirm(
+      `确定要更新 Stack「${stackName}」吗？这会拉取最新镜像并重新创建相关容器。`,
+      "更新 Stack",
+      {
+        confirmButtonText: "更新",
+        cancelButtonText: "取消",
+        type: "warning",
+      }
     );
-    containers.value = containersRes.data || [];
+  } catch {
+    return;
+  }
 
-    // Fetch container stats (running containers only)
+  updatingStack.value = stackName;
+  try {
+    const updateUrl = `/api/hosts/${hostId.value}/stacks/${encodeURIComponent(stackName)}/update`;
+    let streamSuccess = false;
+    let streamMessage = "";
+
+    await streamSse({
+      url: updateUrl,
+      method: "POST",
+      timeoutMs: 240000,
+      onTimeout: () => {
+        streamSuccess = false;
+        streamMessage = "操作无响应，可能仍在 Dockge 后台执行，请稍后刷新确认。";
+      },
+      onEvent: (ev) => {
+        if (ev.event === "complete") {
+          const data = ev.data || {};
+          streamSuccess = data.status === "success";
+          streamMessage = data.message || "";
+        } else if (ev.event === "error") {
+          const data = ev.data || {};
+          streamSuccess = false;
+          streamMessage = data.message || "后端操作失败";
+        }
+      },
+    });
+
+    if (!streamSuccess) {
+      throw new Error(streamMessage || "操作失败");
+    }
+
+    ElMessage.success(`已触发 ${stackName} 更新`);
+
+    // Force refresh after update — skip stale update check, just fetch fresh data
+    await fetchDetail({ skipUpdates: true });
+
+    // Re-run registry digest check
     try {
-      const statsRes = await apiClient.get(
-        `/api/hosts/${hostId.value}/container-stats`
-      );
-      containerStats.value = statsRes.data || {};
+      const results = await dashboardStore.runUpdateCheck();
+      applyUpdateResults(results || []);
     } catch {
-      containerStats.value = {};
+      // Update check may fail; use what we have
+    }
+
+    // Final refresh with fresh update data
+    await fetchDetail({ skipUpdates: true });
+  } catch (e: any) {
+    const detail = e.response?.data?.detail || e.message;
+
+    // Even on failure, refresh to see actual image state
+    try {
+      await fetchDetail({ skipUpdates: true });
+      const results = await dashboardStore.runUpdateCheck();
+      applyUpdateResults(results || []);
+    } catch {
+      // Best-effort
+    }
+
+    ElMessage.error(`更新失败: ${detail}`);
+  } finally {
+    updatingStack.value = "";
+  }
+}
+
+async function fetchDetail(options: { skipUpdates?: boolean; silent?: boolean } = {}) {
+  if (!options.silent) {
+    loading.value = true;
+  }
+  try {
+    const res = await apiClient.post(
+      `/api/hosts/${encodeURIComponent(hostId.value)}/refresh`
+    );
+    host.value = res.data.host || null;
+    stacks.value = res.data.stacks || [];
+    containers.value = res.data.containers || [];
+    containerStats.value = res.data.container_stats || {};
+
+    if (host.value) {
+      dashboardStore.upsertHost(host.value);
     }
 
     if (!options.skipUpdates) {
@@ -337,72 +530,169 @@ async function fetchDetail(options: { skipUpdates?: boolean } = {}) {
   } catch (e: any) {
     console.error("Failed to fetch host detail:", e);
   } finally {
-    loading.value = false;
+    if (!options.silent) {
+      loading.value = false;
+    }
   }
 }
 
-onMounted(fetchDetail);
-watch(hostId, () => fetchDetail());
+let pollInterval: any = null;
+
+function startPolling() {
+  stopPolling();
+  pollInterval = setInterval(() => {
+    if (!document.hidden) {
+      fetchDetail({ skipUpdates: true, silent: true });
+    }
+  }, 10000);
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
+}
+
+onMounted(() => {
+  fetchDetail();
+  startPolling();
+});
+
+watch(hostId, () => {
+  fetchDetail();
+  startPolling();
+});
+
+watch(
+  () => dashboardStore.hosts.find((item) => item.host_id === hostId.value),
+  (nextHost) => {
+    if (nextHost) {
+      host.value = nextHost;
+    }
+  },
+  { deep: true }
+);
+
+onUnmounted(() => {
+  stopPolling();
+});
 </script>
 
 <style scoped>
 .detail-layout {
-  min-height: 100vh;
-  background: var(--bg-dark);
-  padding: 16px 24px;
-}
-.detail-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.detail-title {
-  font-size: 22px;
-  font-weight: 700;
-  margin: 0;
-  color: var(--text-primary);
-}
-.loading-center {
-  display: flex;
-  justify-content: center;
-  padding: 64px;
-}
-.metrics-bar {
-  display: flex;
-  gap: 1px;
-  background: var(--bg-card);
-  border-radius: 8px;
-  overflow: hidden;
-  margin-bottom: 16px;
-}
-.metrics-item {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  gap: 16px;
+}
+.metrics-bar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid var(--border-subtle);
+  background: var(--border-subtle);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.metrics-item {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   padding: 12px;
-  background: var(--bg-card);
+  background: var(--surface-panel);
+}
+.metrics-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .metrics-label {
   font-size: 12px;
   color: var(--text-secondary);
+  font-weight: 600;
+}
+.metrics-value-container {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-end;
+  min-height: 26px;
 }
 .metrics-value {
   font-size: 13px;
   color: var(--text-primary);
   font-weight: 600;
-  margin-top: 2px;
+  text-align: right;
 }
+.metrics-value.font-mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Telemetry lines styles similar to HostCard.vue */
+.telemetry-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.telemetry-line {
+  display: grid;
+  grid-template-columns: 14px max-content;
+  justify-content: end;
+  align-items: center;
+  gap: 3px;
+}
+.tl-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  user-select: none;
+}
+.tl-value {
+  display: grid;
+  grid-template-columns: 6.5ch 4.4ch;
+  justify-content: end;
+  align-items: baseline;
+  gap: 2px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.tl-amount {
+  min-width: 6.5ch;
+  text-align: right;
+}
+.tl-unit {
+  min-width: 4.4ch;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+/* Activity dot */
+.activity-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.activity-dot.idle { background: var(--text-muted); }
+.activity-dot.low { background: var(--accent-cyan); }
+.activity-dot.active { background: var(--warning); }
+.activity-dot.busy { background: var(--danger); }
 .metric-warning {
   margin-bottom: 16px;
 }
 .updates-panel {
-  border: 1px solid var(--border-color);
+  border: 1px solid rgba(248, 113, 113, 0.2);
   border-radius: 8px;
-  background: var(--bg-card);
-  padding: 14px 16px;
-  margin-bottom: 16px;
+  background:
+    linear-gradient(135deg, rgba(127, 29, 29, 0.14), transparent 36%),
+    var(--surface-panel);
+  padding: 16px;
 }
 .updates-panel__header {
   display: flex;
@@ -421,7 +711,9 @@ watch(hostId, () => fetchDetail());
 .section-kicker {
   font-size: 11px;
   line-height: 1;
-  color: var(--text-secondary);
+  color: var(--danger);
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .section-title {
@@ -442,7 +734,14 @@ watch(hostId, () => fetchDetail());
   padding: 10px 12px;
   border: 1px solid rgba(245, 108, 108, 0.22);
   border-radius: 6px;
-  background: rgba(245, 108, 108, 0.06);
+  background: rgba(127, 29, 29, 0.13);
+}
+.update-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 .update-row__main {
   display: flex;
@@ -469,7 +768,7 @@ watch(hostId, () => fetchDetail());
 }
 .image-ref {
   font-size: 12px;
-  background: var(--bg-dark);
+  background: var(--code-bg, rgba(5, 9, 20, 0.78));
   padding: 2px 6px;
   border-radius: 4px;
   color: var(--text-primary);
@@ -477,13 +776,17 @@ watch(hostId, () => fetchDetail());
   text-overflow: ellipsis;
 }
 .detail-tabs {
-  margin-bottom: 16px;
-}
-.docker-info-collapse {
-  margin-bottom: 24px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--detail-tabs-bg);
+  padding: 0 14px 14px;
 }
 
 @media (max-width: 900px) {
+  .metrics-bar {
+    grid-template-columns: 1fr;
+  }
+
   .updates-panel__header,
   .update-row,
   .update-row__main,

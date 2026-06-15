@@ -1,11 +1,11 @@
 """Snapshot aggregation and caching — the central data fusion layer.
 
-Polls three data sources per host (Dockge, docker-socket-proxy, host-metrics)
-on independent schedules and caches the merged result in-memory.
+Polls host structure at a low background cadence and refreshes host-metrics
+only while a frontend SSE stream is connected.
 
 Cache tiers:
-  - Metrics (exporter): 3s
-  - Containers/Stacks (proxy + Dockge): 10s
+  - Metrics (exporter): frontend-driven SSE
+  - Containers/Stacks (proxy + Dockge): 1h background, faster frontend-driven POST
   - Update checks (registry): 6h
 """
 
@@ -28,6 +28,7 @@ from app.schemas import (
     HostSummary,
     StackSummary,
     StackService,
+    UpdateCheckResult,
 )
 from app.services.crypto import decrypt_credentials
 from app.services.dockge_client import dockge_pool, DockgeClientError
@@ -57,6 +58,7 @@ class HostSnapshot:
         self.error_message: str = ""
         # Update check results per image, keyed by image_ref
         self.update_results: dict[str, str] = {}  # image_ref -> status (up_to_date/updatable/...)
+        self.update_check_results: list[UpdateCheckResult] = []
         self.update_count: int = 0
 
 
@@ -72,6 +74,9 @@ class SnapshotManager:
         # Clients — lazily created
         self._proxy_clients: dict[str, DockerProxyClient] = {}
         self._metrics_clients: dict[str, MetricsClient] = {}
+        self._host_refresh_locks: dict[str, asyncio.Lock] = {}
+        self._metrics_refresh_lock = asyncio.Lock()
+        self._update_check_lock = asyncio.Lock()
         # Dockge connections are managed by dockge_pool
 
     # ── Public ─────────────────────────────────────────────────────
@@ -85,12 +90,9 @@ class SnapshotManager:
         self._tasks = [
             asyncio.create_task(
                 self._poll_loop(
-                    "metrics", settings.METRICS_POLL_INTERVAL, self._refresh_metrics
-                )
-            ),
-            asyncio.create_task(
-                self._poll_loop(
-                    "docker", settings.DOCKER_POLL_INTERVAL, self._refresh_docker
+                    "structure",
+                    settings.BACKGROUND_STRUCTURE_REFRESH_INTERVAL,
+                    self._refresh_docker,
                 )
             ),
             asyncio.create_task(
@@ -99,7 +101,9 @@ class SnapshotManager:
                 )
             ),
         ]
-        logger.info("SnapshotManager started with tiered polling")
+        logger.info(
+            "SnapshotManager started with low-frequency structure polling; metrics are frontend-driven"
+        )
 
     async def stop(self) -> None:
         self._running = False
@@ -119,6 +123,35 @@ class SnapshotManager:
     def list_snapshots(self) -> list[HostSnapshot]:
         return list(self._snapshots.values())
 
+    def get_update_check_results(self) -> list[UpdateCheckResult]:
+        """Return cached update check results without hitting registries."""
+        results: list[UpdateCheckResult] = []
+        for snap in self._snapshots.values():
+            results.extend(snap.update_check_results)
+        return results
+
+    async def refresh_update_checks_now(self) -> list[UpdateCheckResult]:
+        """Run update checks immediately and return the refreshed cache."""
+        await self._refresh_update_checks()
+        return self.get_update_check_results()
+
+    async def refresh_metrics_now(self) -> list[HostSummary]:
+        """Refresh host metrics immediately and return current host summaries."""
+        await self._refresh_metrics()
+        return [self.build_host_summary(s) for s in self.list_snapshots()]
+
+    async def refresh_all_structure_now(self) -> list[HostSummary]:
+        """Refresh Docker/Dockge structure for all hosts and return summaries."""
+        await self.refresh_hosts()
+        await self._refresh_docker()
+        return [self.build_host_summary(s) for s in self.list_snapshots()]
+
+    async def refresh_host_structure_now(self, host_id: str) -> Optional[HostSnapshot]:
+        """Refresh Docker/Dockge structure for one host and return its snapshot."""
+        await self.refresh_hosts()
+        await self.refresh_host_docker(host_id)
+        return self.get_snapshot(host_id)
+
     async def refresh_hosts(self) -> None:
         """(Re)load host configurations from database into snapshots.
 
@@ -135,6 +168,7 @@ class SnapshotManager:
                     del self._snapshots[hid]
                     self._proxy_clients.pop(hid, None)
                     self._metrics_clients.pop(hid, None)
+                    self._host_refresh_locks.pop(hid, None)
                     await dockge_pool.remove(hid)
 
             # Add/update snapshots
@@ -162,154 +196,296 @@ class SnapshotManager:
 
     async def _refresh_metrics(self) -> None:
         """Poll all host-metrics exporters."""
-        for snap in self._snapshots.values():
-            if not snap.host_config:
-                continue
-            if snap.host_config.host_id not in self._metrics_clients:
-                self._metrics_clients[snap.host_config.host_id] = MetricsClient(
-                    snap.host_config
+        async with self._metrics_refresh_lock:
+            async def refresh_one(snap: HostSnapshot) -> None:
+                if not snap.host_config:
+                    return
+                if snap.host_config.host_id not in self._metrics_clients:
+                    self._metrics_clients[snap.host_config.host_id] = MetricsClient(
+                        snap.host_config
+                    )
+                client = self._metrics_clients[snap.host_config.host_id]
+                metrics = await client.fetch()
+                snap.metrics = metrics
+                snap.metrics_updated = time.monotonic()
+
+            results = await asyncio.gather(
+                *(refresh_one(snap) for snap in list(self._snapshots.values())),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.debug("Metrics poll task failed: %s", result)
+
+    async def refresh_host_docker(
+        self, host_id: str, trigger_initial_update_check: bool = True
+    ) -> None:
+        """Poll docker-socket-proxy and Dockge for a specific host immediately."""
+        lock = self._host_refresh_locks.setdefault(host_id, asyncio.Lock())
+        async with lock:
+            await self._refresh_host_docker_locked(
+                host_id,
+                trigger_initial_update_check=trigger_initial_update_check,
+            )
+
+    async def _refresh_host_docker_locked(
+        self, host_id: str, trigger_initial_update_check: bool = True
+    ) -> None:
+        """Poll docker-socket-proxy and Dockge for a specific host immediately."""
+        snap = self._snapshots.get(host_id)
+        if not snap or not snap.host_config:
+            return
+        cfg = snap.host_config
+        if cfg.host_id not in self._proxy_clients:
+            self._proxy_clients[cfg.host_id] = DockerProxyClient(cfg)
+        proxy = self._proxy_clients[cfg.host_id]
+
+        try:
+            # Version / Info
+            ver = await proxy.version()
+            info = await proxy.info()
+            snap.docker_info = DockerInfo(
+                version=ver.get("Version"),
+                api_version=ver.get("ApiVersion"),
+                os=info.get("OSType"),
+                architecture=info.get("Architecture"),
+                docker_root_dir=info.get("DockerRootDir"),
+                server_version=info.get("ServerVersion"),
+                kernel_version=info.get("KernelVersion"),
+                operating_system=info.get("OperatingSystem"),
+                n_cpus=info.get("NCPU"),
+                memory_total=info.get("MemTotal"),
+                name=info.get("Name"),
+            )
+
+            # Disk usage
+            df = await proxy.disk_usage()
+            snap.docker_disk = DockerDiskUsage(
+                images_total=len(df.get("Images", [])),
+                images_size=sum(
+                    i.get("Size", 0) for i in df.get("Images", [])
+                ),
+                containers_total=len(df.get("Containers", [])),
+                containers_size=sum(
+                    c.get("SizeRw", 0) for c in df.get("Containers", [])
+                ),
+                volumes_total=len(df.get("Volumes", [])),
+                volumes_size=sum(
+                    v.get("UsageData", {}).get("Size", 0)
+                    for v in df.get("Volumes", [])
+                ),
+                build_cache_total=len(df.get("BuildCache", [])),
+                build_cache_size=sum(
+                    b.get("Size", 0) for b in df.get("BuildCache", [])
+                ),
+            )
+            snap.containers_updated = time.monotonic()
+
+            # Container list
+            raw_containers = await proxy.list_containers(all=True)
+            snap.containers = []
+            for c in raw_containers:
+                ports = [
+                    ContainerPort(
+                        private_port=p.get("PrivatePort"),
+                        public_port=p.get("PublicPort"),
+                        ip=p.get("IP"),
+                        type=p.get("Type", "tcp"),
+                    )
+                    for p in c.get("Ports", [])
+                ]
+                # Extract stack/service from compose labels
+                labels = c.get("Labels", {}) or {}
+                stack_name = (
+                    labels.get("com.docker.compose.project")
+                    or labels.get("com.dockge.stack")
                 )
-            client = self._metrics_clients[snap.host_config.host_id]
-            metrics = await client.fetch()
-            snap.metrics = metrics
-            snap.metrics_updated = time.monotonic()
+                service_name = labels.get("com.docker.compose.service")
 
-    async def _refresh_docker(self) -> None:
-        """Poll all docker-socket-proxy instances (info, containers, stats)."""
-        for snap in self._snapshots.values():
-            if not snap.host_config:
-                continue
-            cfg = snap.host_config
-            if cfg.host_id not in self._proxy_clients:
-                self._proxy_clients[cfg.host_id] = DockerProxyClient(cfg)
-            proxy = self._proxy_clients[cfg.host_id]
+                names = c.get("Names") or []
+                container_name = (
+                    names[0].lstrip("/")
+                    if isinstance(names, list) and names
+                    else c.get("Name", "").lstrip("/")
+                )
 
+                snap.containers.append(
+                    ContainerSummary(
+                        id=c.get("Id", "")[:12],
+                        name=container_name,
+                        image=c.get("Image", ""),
+                        image_id=c.get("ImageID", ""),
+                        state=c.get("State", "unknown"),
+                        status=c.get("Status", ""),
+                        created=c.get("Created", 0),
+                        ports=ports,
+                        labels=labels,
+                        stack_name=stack_name,
+                        service_name=service_name,
+                    )
+                )
+
+            # Fetch RepoDigests for each unique image
+            unique_images = list({c.image for c in snap.containers if c.image})
+            image_semaphore = asyncio.Semaphore(8)
+
+            async def inspect_image(img_name: str) -> tuple[str, list[str]]:
+                async with image_semaphore:
+                    img_info = await proxy.image_inspect(img_name)
+                rd = img_info.get("RepoDigests", []) or []
+                return img_name, rd
+
+            inspect_results = await asyncio.gather(
+                *(inspect_image(img_name) for img_name in unique_images),
+                return_exceptions=True,
+            )
+            image_digests: dict[str, list[str]] = {
+                img_name: [] for img_name in unique_images
+            }
+            for img_name, result in zip(unique_images, inspect_results):
+                if isinstance(result, Exception):
+                    logger.debug(
+                        "Image inspect failed for %s/%s: %s",
+                        cfg.host_id, img_name, result,
+                    )
+                    continue
+                try:
+                    img_name, rd = result
+                    image_digests[img_name] = rd
+                except Exception as exc:
+                    logger.debug(
+                        "Image inspect parse failed for %s/%s: %s",
+                        cfg.host_id, img_name, exc,
+                    )
+            for c in snap.containers:
+                c.repo_digests = image_digests.get(c.image, [])
+
+            # Stacks from Dockge
+            await self._refresh_stacks(snap, cfg)
+
+            snap.status = "online"
+            snap.error_message = ""
+
+            # Container stats are useful but must not block stack refresh
+            # or the host's online status. Collect them after the core
+            # snapshot is visible.
+            await self._refresh_container_stats(snap, proxy, cfg)
+
+            # Trigger an initial update check after the first successful
+            # docker poll that has containers.  This handles the gap where
+            # the update check loop (6h) runs before containers are ready.
+            if (
+                trigger_initial_update_check
+                and snap.containers
+                and not hasattr(snap, "_update_triggered")
+            ):
+                snap._update_triggered = True
+                asyncio.create_task(self._refresh_update_checks_single(cfg.host_id, snap))
+
+        except Exception as exc:
+            logger.warning(
+                "Docker proxy poll failed for %s: %s", cfg.host_id, exc
+            )
+            snap.status = "degraded"
+            snap.error_message = str(exc)
+
+    async def refresh_host_docker_with_retry(
+        self, host_id: str, steps: list[float] = [0.0, 2.0, 5.0, 8.0]
+    ) -> None:
+        """Refresh host Docker state multiple times with delays to capture transition states."""
+        for i, delay in enumerate(steps):
+            if delay > 0:
+                await asyncio.sleep(delay)
             try:
-                # Version / Info
-                ver = await proxy.version()
-                info = await proxy.info()
-                snap.docker_info = DockerInfo(
-                    version=ver.get("Version"),
-                    api_version=ver.get("ApiVersion"),
-                    os=info.get("OSType"),
-                    architecture=info.get("Architecture"),
-                    docker_root_dir=info.get("DockerRootDir"),
-                    server_version=info.get("ServerVersion"),
-                    kernel_version=info.get("KernelVersion"),
-                    operating_system=info.get("OperatingSystem"),
-                    n_cpus=info.get("NCPU"),
-                    memory_total=info.get("MemTotal"),
-                    name=info.get("Name"),
-                )
-
-                # Disk usage
-                df = await proxy.disk_usage()
-                snap.docker_disk = DockerDiskUsage(
-                    images_total=len(df.get("Images", [])),
-                    images_size=sum(
-                        i.get("Size", 0) for i in df.get("Images", [])
-                    ),
-                    containers_total=len(df.get("Containers", [])),
-                    containers_size=sum(
-                        c.get("SizeRw", 0) for c in df.get("Containers", [])
-                    ),
-                    volumes_total=len(df.get("Volumes", [])),
-                    volumes_size=sum(
-                        v.get("UsageData", {}).get("Size", 0)
-                        for v in df.get("Volumes", [])
-                    ),
-                    build_cache_total=len(df.get("BuildCache", [])),
-                    build_cache_size=sum(
-                        b.get("Size", 0) for b in df.get("BuildCache", [])
-                    ),
-                )
-                snap.containers_updated = time.monotonic()
-
-                # Container list
-                raw_containers = await proxy.list_containers(all=True)
-                snap.containers = []
-                for c in raw_containers:
-                    ports = [
-                        ContainerPort(
-                            private_port=p.get("PrivatePort"),
-                            public_port=p.get("PublicPort"),
-                            ip=p.get("IP"),
-                            type=p.get("Type", "tcp"),
-                        )
-                        for p in c.get("Ports", [])
-                    ]
-                    # Extract stack/service from compose labels
-                    labels = c.get("Labels", {}) or {}
-                    stack_name = (
-                        labels.get("com.docker.compose.project")
-                        or labels.get("com.dockge.stack")
-                    )
-                    service_name = labels.get("com.docker.compose.service")
-
-                    names = c.get("Names") or []
-                    container_name = (
-                        names[0].lstrip("/")
-                        if isinstance(names, list) and names
-                        else c.get("Name", "").lstrip("/")
-                    )
-
-                    snap.containers.append(
-                        ContainerSummary(
-                            id=c.get("Id", "")[:12],
-                            name=container_name,
-                            image=c.get("Image", ""),
-                            image_id=c.get("ImageID", ""),
-                            state=c.get("State", "unknown"),
-                            status=c.get("Status", ""),
-                            created=c.get("Created", 0),
-                            ports=ports,
-                            labels=labels,
-                            stack_name=stack_name,
-                            service_name=service_name,
-                        )
-                    )
-
-                # Fetch RepoDigests for each unique image
-                unique_images = list({c.image for c in snap.containers if c.image})
-                image_digests: dict[str, list[str]] = {}
-                for img_name in unique_images:
-                    try:
-                        img_info = await proxy.image_inspect(img_name)
-                        rd = img_info.get("RepoDigests", []) or []
-                        image_digests[img_name] = rd
-                    except Exception as exc:
-                        logger.debug(
-                            "Image inspect failed for %s/%s: %s",
-                            cfg.host_id, img_name, exc,
-                        )
-                        image_digests[img_name] = []
-                for c in snap.containers:
-                    c.repo_digests = image_digests.get(c.image, [])
-
-                # Stacks from Dockge
-                await self._refresh_stacks(snap, cfg)
-
-                snap.status = "online"
-                snap.error_message = ""
-
-                # Container stats are useful but must not block stack refresh
-                # or the host's online status. Collect them after the core
-                # snapshot is visible.
-                await self._refresh_container_stats(snap, proxy, cfg)
-
-                # Trigger an initial update check after the first successful
-                # docker poll that has containers.  This handles the gap where
-                # the update check loop (6h) runs before containers are ready.
-                if snap.containers and not hasattr(snap, "_update_triggered"):
-                    snap._update_triggered = True
-                    asyncio.create_task(self._refresh_update_checks_single(cfg.host_id, snap))
-
+                await self.refresh_host_docker(host_id)
             except Exception as exc:
                 logger.warning(
-                    "Docker proxy poll failed for %s: %s", cfg.host_id, exc
+                    "Retry refresh failed for host %s (step %d): %s",
+                    host_id, i, exc
                 )
-                snap.status = "degraded"
-                snap.error_message = str(exc)
+
+    async def _refresh_docker(
+        self, trigger_initial_update_check: bool = True
+    ) -> None:
+        """Poll all docker-socket-proxy instances (info, containers, stats)."""
+        semaphore = asyncio.Semaphore(4)
+
+        async def refresh_one(snap: HostSnapshot) -> None:
+            if not snap.host_config:
+                return
+            async with semaphore:
+                await self.refresh_host_docker(
+                    snap.host_config.host_id,
+                    trigger_initial_update_check=trigger_initial_update_check,
+                )
+
+        results = await asyncio.gather(
+            *(refresh_one(snap) for snap in list(self._snapshots.values())),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Docker poll task failed: %s", result)
+
+    def parse_dockge_stacks(self, raw_stacks: list) -> list[StackSummary]:
+        """Parse raw Dockge stacks payload into StackSummary schemas."""
+        stacks: list[StackSummary] = []
+        for s in raw_stacks:
+            name = s.get("name", s.get("Name", ""))
+            services_raw = s.get("services", s.get("Services", [])) or []
+            compose_file = s.get("composeFile", s.get("filePath"))
+
+            svcs: list[StackService] = []
+            running = 0
+            for svc in services_raw:
+                state = svc.get("state", svc.get("State", "unknown"))
+                if state == "running":
+                    running += 1
+                svcs.append(
+                    StackService(
+                        name=svc.get("name", svc.get("Name", "")),
+                        container_id=svc.get("containerId"),
+                        state=state,
+                        status=svc.get("status", ""),
+                    )
+                )
+
+            # Overall stack status
+            if not svcs:
+                overall = "unknown"
+            elif running == len(svcs):
+                overall = "running"
+            elif running == 0:
+                overall = "stopped"
+            else:
+                overall = "partially running"
+
+            stacks.append(
+                StackSummary(
+                    name=name,
+                    status=overall,
+                    compose_file=compose_file,
+                    service_count=len(svcs),
+                    running_count=running,
+                    services=svcs,
+                )
+            )
+        return stacks
+
+    def update_host_stacks_realtime(self, host_id: str, raw_stacks: list) -> None:
+        """Real-time update of host stacks when Dockge pushes stackList event."""
+        snap = self._snapshots.get(host_id)
+        if not snap:
+            return
+        try:
+            logger.info("Real-time stack list update received for %s", host_id)
+            stacks = self.parse_dockge_stacks(raw_stacks)
+            snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
+            snap.stacks_updated = time.monotonic()
+            # Trigger background docker proxy refresh since container states might have changed
+            asyncio.create_task(self.refresh_host_docker(host_id))
+        except Exception as exc:
+            logger.error("Failed to apply real-time stacks update for %s: %s", host_id, exc)
 
     async def _refresh_stacks(self, snap: HostSnapshot, cfg: HostConfig) -> None:
         """Fetch and merge Dockge stacks with container states."""
@@ -319,54 +495,51 @@ class SnapshotManager:
             conn = await dockge_pool.get_or_create(cfg, creds["password"])
 
             raw_stacks = await conn.list_stacks()
-            stacks: list[StackSummary] = []
-            for s in raw_stacks:
-                name = s.get("name", s.get("Name", ""))
-                services_raw = s.get("services", s.get("Services", [])) or []
-                compose_file = s.get("composeFile", s.get("filePath"))
-
-                svcs: list[StackService] = []
-                running = 0
-                for svc in services_raw:
-                    state = svc.get("state", svc.get("State", "unknown"))
-                    if state == "running":
-                        running += 1
-                    svcs.append(
-                        StackService(
-                            name=svc.get("name", svc.get("Name", "")),
-                            container_id=svc.get("containerId"),
-                            state=state,
-                            status=svc.get("status", ""),
-                        )
-                    )
-
-                # Overall stack status
-                if not svcs:
-                    overall = "unknown"
-                elif running == len(svcs):
-                    overall = "running"
-                elif running == 0:
-                    overall = "stopped"
-                else:
-                    overall = "partially running"
-
-                stacks.append(
-                    StackSummary(
-                        name=name,
-                        status=overall,
-                        compose_file=compose_file,
-                        service_count=len(svcs),
-                        running_count=running,
-                        services=svcs,
-                    )
-                )
-
-            snap.stacks = stacks
+            stacks = self.parse_dockge_stacks(raw_stacks)
+            snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
 
         except Exception as exc:
             logger.warning("Dockge refresh failed for %s: %s", cfg.host_id, exc)
             self._build_stacks_from_container_labels(snap)
+
+    def _merge_stacks_with_container_labels(
+        self, dockge_stacks: list[StackSummary], snap: HostSnapshot
+    ) -> list[StackSummary]:
+        """Fill missing Dockge service states from Docker Compose labels.
+
+        Some Dockge versions return only the stack names in ``stackList``.
+        When that happens the UI would show ``unknown`` even though the
+        docker-socket-proxy already has reliable container state and compose
+        labels for the same stacks.
+        """
+        label_stacks = self._stacks_from_container_labels(snap)
+        label_by_name = {stack.name: stack for stack in label_stacks}
+
+        merged: list[StackSummary] = []
+        seen: set[str] = set()
+        for stack in dockge_stacks:
+            seen.add(stack.name)
+            fallback = label_by_name.get(stack.name)
+            if fallback and not stack.services:
+                merged.append(
+                    StackSummary(
+                        name=stack.name,
+                        status=fallback.status,
+                        compose_file=stack.compose_file or fallback.compose_file,
+                        service_count=fallback.service_count,
+                        running_count=fallback.running_count,
+                        services=fallback.services,
+                    )
+                )
+            else:
+                merged.append(stack)
+
+        for stack in label_stacks:
+            if stack.name not in seen:
+                merged.append(stack)
+
+        return merged
 
     async def _refresh_container_stats(
         self, snap: HostSnapshot, proxy: DockerProxyClient, cfg: HostConfig
@@ -460,6 +633,11 @@ class SnapshotManager:
         stored Dockge credential is invalid. Mutating stack operations still
         require a working Dockge connection.
         """
+        snap.stacks = self._stacks_from_container_labels(snap)
+        snap.stacks_updated = time.monotonic()
+
+    def _stacks_from_container_labels(self, snap: HostSnapshot) -> list[StackSummary]:
+        """Build stack summaries from Docker Compose labels."""
         grouped: dict[str, list[ContainerSummary]] = {}
         for container in snap.containers:
             if not container.stack_name:
@@ -505,8 +683,7 @@ class SnapshotManager:
                 )
             )
 
-        snap.stacks = stacks
-        snap.stacks_updated = time.monotonic()
+        return stacks
 
     # ── Update checks ─────────────────────────────────────────────
 
@@ -515,30 +692,50 @@ class SnapshotManager:
 
         Runs every 6 hours. Results are cached in-memory.
         """
-        for snap in self._snapshots.values():
-            if not snap.host_config or not snap.containers:
-                continue
-            host_id = snap.host_config.host_id
+        async with self._update_check_lock:
+            await self.refresh_hosts()
+            await self._refresh_docker(trigger_initial_update_check=False)
+            semaphore = asyncio.Semaphore(3)
 
-            # Build (image_ref, repo_digests) tuples
-            image_refs: list[tuple[str, list[str]]] = []
-            for c in snap.containers:
-                image_refs.append((c.image, c.repo_digests))
+            async def refresh_one(snap: HostSnapshot) -> None:
+                async with semaphore:
+                    await self._refresh_update_checks_for_snapshot(snap)
 
-            try:
-                results = await run_update_check(host_id, image_refs)
-                # Store per-image status
-                updatable = 0
-                snap.update_results.clear()
-                for r in results:
-                    snap.update_results[r.image] = r.status
-                    if r.status == "updatable":
-                        updatable += 1
-                snap.update_count = updatable
-            except Exception as exc:
-                logger.warning(
-                    "Update check failed for %s: %s", host_id, exc, exc_info=True
-                )
+            results = await asyncio.gather(
+                *(refresh_one(snap) for snap in list(self._snapshots.values())),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning("Update check task failed: %s", result)
+
+    async def _refresh_update_checks_for_snapshot(self, snap: HostSnapshot) -> None:
+        """Refresh cached update-check results for a single host snapshot."""
+        if not snap.host_config:
+            return
+        if not snap.containers:
+            snap.update_results.clear()
+            snap.update_check_results = []
+            snap.update_count = 0
+            return
+
+        host_id = snap.host_config.host_id
+        image_refs = [(c.image, c.repo_digests) for c in snap.containers]
+
+        try:
+            results = await run_update_check(host_id, image_refs)
+            updatable = 0
+            snap.update_results.clear()
+            snap.update_check_results = results
+            for r in results:
+                snap.update_results[r.image] = r.status
+                if r.status == "updatable":
+                    updatable += 1
+            snap.update_count = updatable
+        except Exception as exc:
+            logger.warning(
+                "Update check failed for %s: %s", host_id, exc, exc_info=True
+            )
 
     async def _refresh_update_checks_single(
         self, host_id: str, snap: HostSnapshot
@@ -550,17 +747,12 @@ class SnapshotManager:
         """
         if not snap.host_config or not snap.containers:
             return
-        image_refs = [(c.image, c.repo_digests) for c in snap.containers]
         try:
-            results = await run_update_check(host_id, image_refs)
-            updatable = 0
-            for r in results:
-                if r.status == "updatable":
-                    updatable += 1
-            snap.update_count = updatable
+            async with self._update_check_lock:
+                await self._refresh_update_checks_for_snapshot(snap)
             logger.info(
                 "Initial update check for %s: %d updatable out of %d",
-                host_id, updatable, len(results),
+                host_id, snap.update_count, len(snap.update_check_results),
             )
         except Exception as exc:
             logger.warning(

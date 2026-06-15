@@ -34,6 +34,14 @@ class HostMetrics(BaseModel):
     memoryTotal: int
     diskUsed: int
     diskTotal: int
+    networkRxBytes: int = 0
+    networkTxBytes: int = 0
+    networkRxRate: float = 0.0
+    networkTxRate: float = 0.0
+    diskReadBytes: int = 0
+    diskWriteBytes: int = 0
+    diskReadRate: float = 0.0
+    diskWriteRate: float = 0.0
     loadavg: list[float]
     uptime: int
     _warnings: Optional[dict] = None
@@ -126,9 +134,25 @@ class StackSummary(BaseModel):
     services: list[StackService] = []
 
 
+class StackComposeDetail(BaseModel):
+    name: str
+    compose_yaml: str = ""
+    compose_env: str = ""
+    compose_file_name: str = "compose.yaml"
+    is_managed_by_dockge: bool = False
+
+
+class StackComposeSaveRequest(BaseModel):
+    compose_yaml: str
+    compose_env: str = ""
+
+
 class StackOperationResponse(BaseModel):
     success: bool
     message: str
+    detail: Optional[str] = None
+    log_tail: Optional[str] = None
+    duration_ms: Optional[int] = None
 
 
 # ── Docker Info ─────────────────────────────────────────────────────────

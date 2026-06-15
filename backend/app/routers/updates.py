@@ -1,8 +1,6 @@
 """Update check router — run manual checks, get cached results."""
 
-from datetime import datetime, timezone
-
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from sqlmodel import Session
 
 from app.auth.handler import get_current_user
@@ -10,7 +8,7 @@ from app.database import get_session
 from app.models import AuditLog
 from app.schemas import UpdateCheckResult, UpdateCheckRunResponse
 from app.services.snapshot import snapshot_manager
-from app.services.update_check import clear_cache, run_update_check
+from app.services.update_check import clear_cache
 
 router = APIRouter(
     prefix="/api",
@@ -26,24 +24,7 @@ async def get_update_checks():
     Results are refreshed every 6h by the background task,
     or immediately by POST /api/update-checks/run.
     """
-    results: list[UpdateCheckResult] = []
-    # Collect image references from all hosts
-    for snap in snapshot_manager.list_snapshots():
-        if snap.host_config is None:
-            continue
-        host_id = snap.host_config.host_id
-
-        # Gather image refs with RepoDigests from containers
-        image_refs: list[tuple[str, list[str]]] = [
-            (container.image, container.repo_digests or [])
-            for container in snap.containers
-        ]
-
-        if image_refs:
-            host_results = await run_update_check(host_id, image_refs)
-            results.extend(host_results)
-
-    return results
+    return snapshot_manager.get_update_check_results()
 
 
 @router.post("/update-checks/run", response_model=UpdateCheckRunResponse)
@@ -69,5 +50,5 @@ async def run_manual_update_check(
     session.add(log)
     session.commit()
 
-    results = await get_update_checks()
+    results = await snapshot_manager.refresh_update_checks_now()
     return UpdateCheckRunResponse(started=True, results=results)

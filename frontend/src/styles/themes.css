@@ -1,0 +1,290 @@
+/* ── Light theme ─────────────────────────────────────────────────
+ * Override dark-system CSS vars when data-theme="light" is set on <html>.
+ * The dark default values live in dashboard.css — this file only ships
+ * the light overrides, keeping everything else (spacing, typography, etc.)
+ * identical.
+ * ──────────────────────────────────────────────────────────────── */
+
+[data-theme="light"] {
+  --surface-base: #f5f7fa;
+  --surface-panel: #ffffff;
+  --surface-panel-raised: #f0f2f5;
+  --surface-elevated: #e8ecf1;
+  --surface-muted: #f0f2f5;
+  --border-subtle: rgba(60, 72, 88, 0.14);
+  --border-strong: rgba(60, 72, 88, 0.28);
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --accent-blue: #2563eb;
+  --accent-cyan: #0891b2;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --focus-ring: rgba(37, 99, 235, 0.30);
+
+  /* Backward-compatible aliases */
+  --bg-dark: var(--surface-base);
+  --bg-card: var(--surface-panel);
+  --bg-elevated: var(--surface-elevated);
+  --border-color: var(--border-subtle);
+
+  /* ── Stack / service tokens ─────────────────────────────── */
+  --stack-card-bg: #ffffff;
+  --stack-service-bg: #f6f8fb;
+  --stack-service-hover-bg: #eef4ff;
+  --code-bg: #eef2f7;
+  --update-soft-bg: #fff5f5;
+  --stack-operation-running-bg: rgba(37, 99, 235, 0.08);
+  --stack-operation-success-bg: rgba(22, 163, 74, 0.08);
+  --stack-operation-error-bg: rgba(220, 38, 38, 0.08);
+  --stack-operation-timeout-bg: rgba(217, 119, 6, 0.08);
+}
+
+/* ── Body background ───────────────────────────────────────────── */
+[data-theme="light"] body {
+  background:
+    radial-gradient(circle at 16% 0, rgba(37, 99, 235, 0.06), transparent 28rem),
+    radial-gradient(circle at 88% 4%, rgba(8, 145, 178, 0.04), transparent 24rem),
+    var(--surface-base);
+  color: var(--text-primary);
+}
+
+/* ── Element Plus overrides for light ──────────────────────────── */
+[data-theme="light"] .el-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 247, 250, 0.98)) !important;
+  border: 1px solid var(--border-subtle) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .el-table {
+  background: var(--surface-panel) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .el-table th.el-table__cell {
+  background: var(--surface-muted) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .el-table tr,
+[data-theme="light"] .el-table td.el-table__cell {
+  background: var(--surface-panel) !important;
+  border-bottom-color: var(--border-subtle) !important;
+}
+
+[data-theme="light"] .el-table--striped .el-table__body tr.el-table__row--striped td {
+  background: rgba(0, 0, 0, 0.02) !important;
+}
+
+[data-theme="light"] .el-progress-bar__outer {
+  background: rgba(60, 72, 88, 0.12) !important;
+}
+
+[data-theme="light"] .el-tabs__item {
+  color: var(--text-secondary) !important;
+}
+[data-theme="light"] .el-tabs__item.is-active {
+  color: var(--accent-blue) !important;
+}
+
+[data-theme="light"] .el-collapse {
+  border-color: var(--border-subtle) !important;
+}
+[data-theme="light"] .el-collapse-item__header {
+  background: var(--surface-panel) !important;
+  color: var(--text-primary) !important;
+  border-color: var(--border-subtle) !important;
+}
+[data-theme="light"] .el-collapse-item__wrap {
+  background: var(--surface-base) !important;
+}
+
+[data-theme="light"] .el-descriptions {
+  background: var(--surface-panel) !important;
+}
+[data-theme="light"] .el-descriptions__title {
+  color: var(--text-primary) !important;
+}
+[data-theme="light"] .el-descriptions__label {
+  background: var(--surface-muted) !important;
+  color: var(--text-secondary) !important;
+}
+[data-theme="light"] .el-descriptions__content {
+  background: var(--surface-panel) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="light"] .el-drawer {
+  background: var(--surface-base) !important;
+}
+
+[data-theme="light"] .el-alert {
+  background: var(--surface-panel) !important;
+  border: 1px solid var(--border-subtle);
+}
+
+[data-theme="light"] .el-button--primary {
+  background: #2563eb !important;
+  border-color: #3b82f6 !important;
+}
+
+[data-theme="light"] .el-input__wrapper {
+  background: var(--surface-muted) !important;
+  border: 1px solid var(--border-subtle);
+}
+
+[data-theme="light"] .el-input__inner {
+  color: var(--text-primary) !important;
+}
+
+/* ── Sidebar ───────────────────────────────────────────────────── */
+[data-theme="light"] {
+  --sidebar-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 247, 250, 0.98));
+  --sidebar-brand-bg: rgba(37, 99, 235, 0.10);
+  --topbar-bg: rgba(255, 255, 255, 0.92);
+  --pill-bg: rgba(240, 242, 245, 0.9);
+  --nav-hover-bg: rgba(60, 72, 88, 0.06);
+  --nav-active-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.12), rgba(8, 145, 178, 0.04));
+  --nav-active-border: rgba(37, 99, 235, 0.40);
+  --nav-active-shadow: 0 10px 22px rgba(37, 99, 235, 0.10);
+  --nav-icon-active-bg: rgba(37, 99, 235, 0.12);
+  --page-header-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 34%), rgba(255, 255, 255, 0.92);
+  --page-header-action-bg: rgba(240, 245, 252, 0.94);
+
+  /* Login page */
+  --login-card-bg: rgba(255, 255, 255, 0.96);
+  --login-grid-bg: rgba(60, 72, 88, 0.06);
+  --login-grid-accent: rgba(37, 99, 235, 0.10);
+  --login-grid-success: rgba(22, 163, 74, 0.08);
+
+  /* Host detail */
+  --detail-header-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 34%), rgba(255, 255, 255, 0.9);
+  --detail-tabs-bg: rgba(255, 255, 255, 0.86);
+
+  /* Dashboard overview */
+  --dash-command-bg: linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 36%), rgba(255, 255, 255, 0.88);
+  --dash-tile-bg: rgba(255, 255, 255, 0.7);
+  --dash-tile-critical-bg: rgba(220, 38, 38, 0.06);
+  --dash-tile-hover-bg: rgba(240, 242, 245, 0.95);
+
+  /* Host card */
+  --host-card-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 247, 250, 0.98));
+  --host-card-hover-shadow: 0 16px 38px rgba(0, 0, 0, 0.10);
+}
+
+/* ── Host detail ───────────────────────────────────────────────── */
+[data-theme="light"] .detail-header {
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent 34%),
+    rgba(255, 255, 255, 0.9);
+}
+
+[data-theme="light"] .detail-tabs {
+  background: rgba(255, 255, 255, 0.86);
+}
+
+/* ── Dashboard ─────────────────────────────────────────────────── */
+[data-theme="light"] .command-copy,
+[data-theme="light"] .summary-grid {
+  background:
+    linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent 36%),
+    rgba(255, 255, 255, 0.88);
+}
+
+[data-theme="light"] .summary-tile {
+  background: rgba(255, 255, 255, 0.7);
+}
+
+[data-theme="light"] button.summary-tile:hover {
+  border-color: var(--border-strong);
+  background: rgba(240, 242, 245, 0.95);
+}
+
+[data-theme="light"] .summary-tile.critical {
+  background: rgba(220, 38, 38, 0.06);
+}
+
+[data-theme="light"] .host-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(245, 247, 250, 0.98)) !important;
+}
+
+[data-theme="light"] .host-card:hover {
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.10);
+}
+
+/* ── Network traffic ───────────────────────────────────────────── */
+[data-theme="light"] .network-panel {
+  background: var(--surface-panel);
+}
+
+[data-theme="light"] .network-track {
+  background: rgba(60, 72, 88, 0.10);
+}
+
+/* ── HostCard specific ─────────────────────────────────────────── */
+[data-theme="light"] .card-header .host-name {
+  color: var(--text-primary);
+}
+[data-theme="light"] .card-header .host-meta {
+  color: var(--text-muted);
+}
+[data-theme="light"] .docker-stat {
+  color: var(--text-secondary);
+}
+[data-theme="light"] .docker-stat.strong {
+  color: var(--text-primary);
+}
+
+/* ── Stack & service rows ───────────────────────────────── */
+[data-theme="light"] .stack-card {
+  background: var(--stack-card-bg) !important;
+}
+[data-theme="light"] .service-row {
+  background: var(--stack-service-bg) !important;
+}
+[data-theme="light"] .service-row:hover {
+  background: var(--stack-service-hover-bg) !important;
+}
+
+/* ── Stack operation status ──────────────────────────────── */
+[data-theme="light"] .stack-operation-status.op-running {
+  background: var(--stack-operation-running-bg, rgba(59, 130, 246, 0.08)) !important;
+}
+[data-theme="light"] .stack-operation-status.op-success {
+  background: var(--stack-operation-success-bg, rgba(22, 163, 74, 0.08)) !important;
+}
+[data-theme="light"] .stack-operation-status.op-error {
+  background: var(--stack-operation-error-bg, rgba(220, 38, 38, 0.08)) !important;
+}
+[data-theme="light"] .stack-operation-status.op-timeout {
+  background: var(--stack-operation-timeout-bg, rgba(217, 119, 6, 0.08)) !important;
+}
+
+/* ── Code / image-ref ────────────────────────────────────── */
+[data-theme="light"] .image-ref {
+  background: var(--code-bg, #eef2f7) !important;
+  color: var(--text-primary) !important;
+}
+
+/* ── Update panel / rows ─────────────────────────────────── */
+[data-theme="light"] .updates-panel {
+  background:
+    linear-gradient(135deg, rgba(220, 38, 38, 0.04), transparent 36%),
+    var(--surface-panel) !important;
+}
+[data-theme="light"] .update-row {
+  background: var(--update-soft-bg, #fff5f5) !important;
+  border-color: rgba(220, 38, 38, 0.20) !important;
+}
+
+/* ── Container stats ─────────────────────────────────────── */
+[data-theme="light"] .container-stats .stat-item {
+  color: var(--text-secondary) !important;
+}
+
+/* ── Metrics bar items ───────────────────────────────────── */
+[data-theme="light"] .metrics-item {
+  background: var(--surface-panel) !important;
+}

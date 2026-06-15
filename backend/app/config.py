@@ -30,7 +30,11 @@ class Settings:
 
     # ── Poll intervals (seconds) ──────────────────────────────────────
     METRICS_POLL_INTERVAL: int = int(os.environ.get("METRICS_POLL_INTERVAL", "3"))
+    METRICS_STREAM_INTERVAL: float = float(os.environ.get("METRICS_STREAM_INTERVAL", "1"))
     DOCKER_POLL_INTERVAL: int = int(os.environ.get("DOCKER_POLL_INTERVAL", "10"))
+    BACKGROUND_STRUCTURE_REFRESH_INTERVAL: int = int(
+        os.environ.get("BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "3600")
+    )
     UPDATE_CHECK_INTERVAL: int = int(os.environ.get("UPDATE_CHECK_INTERVAL", "21600"))  # 6h
 
     # ── Uvicorn ───────────────────────────────────────────────────────

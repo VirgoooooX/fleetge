@@ -1,13 +1,17 @@
 <template>
   <div class="audit-layout">
     <header class="page-header">
-      <el-button text @click="$router.push('/')">
+      <div>
+        <div class="section-kicker">Audit Trail</div>
+        <h2 class="page-title">操作审计</h2>
+      </div>
+      <el-button class="page-action-button" @click="$router.push('/')">
         <el-icon><ArrowLeft /></el-icon> 返回
       </el-button>
-      <h2 class="page-title">操作审计</h2>
     </header>
 
-    <el-table :data="logs" stripe style="width: 100%" v-if="logs.length > 0" :default-sort="{ prop: 'timestamp', order: 'descending' }">
+    <div class="table-panel" v-if="logs.length > 0">
+      <el-table :data="logs" stripe style="width: 100%" :default-sort="{ prop: 'timestamp', order: 'descending' }">
       <el-table-column label="时间" prop="timestamp" width="170" sortable>
         <template #default="{ row }">
           {{ formatTime(row.timestamp) }}
@@ -38,7 +42,8 @@
           <span class="detail-text">{{ row.detail || '-' }}</span>
         </template>
       </el-table-column>
-    </el-table>
+      </el-table>
+    </div>
 
     <el-empty v-else description="暂无操作记录" />
   </div>
@@ -70,6 +75,8 @@ const actionLabels: Record<string, string> = {
   "stack.stop": "停止 Stack",
   "stack.restart": "重启 Stack",
   "stack.update": "更新 Stack",
+  "stack.compose.save": "保存 Compose",
+  "stack.compose.deploy": "部署 Compose",
   "update_checks.run": "检查更新",
 };
 
@@ -78,6 +85,8 @@ const actionTypes: Record<string, string> = {
   "stack.stop": "warning",
   "stack.restart": "",
   "stack.update": "primary",
+  "stack.compose.save": "info",
+  "stack.compose.deploy": "primary",
   "update_checks.run": "info",
 };
 
@@ -109,25 +118,53 @@ onMounted(fetchLogs);
 
 <style scoped>
 .audit-layout {
-  min-height: 100vh;
-  background: var(--bg-dark);
-  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .page-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--page-header-bg);
+  padding: 16px;
 }
 .page-title {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   margin: 0;
   color: var(--text-primary);
+}
+.section-kicker {
+  color: var(--accent-blue);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.page-action-button {
+  border-color: var(--border-subtle) !important;
+  background: var(--page-header-action-bg) !important;
+  color: var(--text-secondary) !important;
+}
+.page-action-button:hover,
+.page-action-button:focus-visible {
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
 }
 .detail-text {
   font-size: 12px;
   color: var(--text-secondary);
   word-break: break-all;
+}
+.table-panel {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-panel);
 }
 </style>

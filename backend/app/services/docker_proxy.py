@@ -6,7 +6,7 @@ Every request is read-only — the proxy must have POST=0.
 
 import asyncio
 import logging
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import httpx
 
@@ -153,6 +153,27 @@ class DockerProxyClient:
                 self._host_id, container_id, exc,
             )
             return f"[Error fetching container logs: {exc}]"
+
+    async def stream_container_logs(
+        self, container_id: str, tail: int = 200
+    ) -> AsyncIterator[str]:
+        """Stream /containers/{id}/logs?follow=1 as decoded text chunks."""
+        async with self._client.stream(
+            "GET",
+            f"/containers/{container_id}/logs",
+            params={
+                "stdout": "1",
+                "stderr": "1",
+                "follow": "1",
+                "tail": str(min(tail, 5000)),
+            },
+            headers=self._headers(),
+            timeout=None,
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                if chunk:
+                    yield chunk.decode("utf-8", errors="replace")
 
     async def close(self) -> None:
         await self._client.aclose()

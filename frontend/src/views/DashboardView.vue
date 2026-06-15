@@ -1,51 +1,35 @@
 <template>
   <div class="dashboard-layout">
-    <!-- Header -->
-    <header class="dashboard-header">
-      <div class="header-left">
-        <h1 class="header-title">Docker Dashboard</h1>
-        <el-tag type="success" size="small" v-if="store.onlineCount > 0">
-          {{ store.onlineCount }}/{{ store.hosts.length }} 在线
-        </el-tag>
+    <section class="command-strip">
+      <div class="command-copy">
+        <div class="section-kicker">Fleet Health</div>
+        <h2>多主机运行态</h2>
+        <p>按在线状态、容器运行数和镜像更新优先排序，异常项保持在首屏可见。</p>
       </div>
-      <div class="header-right">
-        <el-button text @click="refresh">
-          <el-icon><Refresh /></el-icon>
-          刷新
-        </el-button>
-        <el-button text @click="logout">
-          <el-icon><SwitchButton /></el-icon>
-          退出
-        </el-button>
-      </div>
-    </header>
-
-    <!-- Summary bar -->
-    <section class="summary-bar">
-      <div class="summary-item">
-        <span class="summary-value">{{ store.onlineCount }}</span>
-        <span class="summary-label">在线主机</span>
-      </div>
-      <div class="summary-item">
-        <span class="summary-value">{{ store.runningContainers }}</span>
-        <span class="summary-label">运行容器</span>
-      </div>
-      <div class="summary-item">
-        <span class="summary-value">{{ store.totalContainers }}</span>
-        <span class="summary-label">容器总数</span>
-      </div>
-      <div class="summary-item">
-        <span class="summary-value">{{ store.updateCount }}</span>
-        <span class="summary-label">可更新镜像</span>
+      <div class="summary-grid">
+        <div class="summary-tile">
+          <span class="summary-label">在线主机</span>
+          <strong>{{ store.onlineCount }}</strong>
+          <small>/ {{ store.hosts.length }}</small>
+        </div>
+        <div class="summary-tile">
+          <span class="summary-label">运行容器</span>
+          <strong>{{ store.runningContainers }}</strong>
+          <small>running</small>
+        </div>
+        <div class="summary-tile">
+          <span class="summary-label">停止容器</span>
+          <strong>{{ stoppedContainers }}</strong>
+          <small>stopped</small>
+        </div>
+        <button class="summary-tile critical" type="button" @click="router.push('/updates')">
+          <span class="summary-label">可更新镜像</span>
+          <strong>{{ store.updateCount }}</strong>
+          <small>updates</small>
+        </button>
       </div>
     </section>
 
-    <!-- Loading indicator -->
-    <div v-if="store.loading" class="loading-bar">
-      <el-progress :percentage="100" :stroke-width="2" :show-text="false" />
-    </div>
-
-    <!-- Error alert -->
     <el-alert
       v-if="store.error"
       :title="store.error"
@@ -55,17 +39,17 @@
       class="error-alert"
     />
 
-    <!-- Host grid -->
-    <main class="host-grid">
+    <main class="host-grid" aria-label="主机状态矩阵">
       <HostCard
-        v-for="host in store.hosts"
+        v-for="host in sortedHosts"
         :key="host.host_id"
         :host="host"
+        :update-count="store.getHostUpdateCount(host.host_id)"
         @click="goToHost(host.host_id)"
+        @updates="goToHost(host.host_id)"
       />
     </main>
 
-    <!-- Empty state -->
     <el-empty
       v-if="!store.loading && store.hosts.length === 0"
       description="暂无主机配置"
@@ -74,33 +58,31 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { computed } from "vue";
 import { useRouter } from "vue-router";
-import { Refresh, SwitchButton } from "@element-plus/icons-vue";
 import { useDashboardStore } from "@/stores/dashboard";
-import { useAuthStore } from "@/stores/auth";
 import HostCard from "@/components/HostCard.vue";
 
 const router = useRouter();
 const store = useDashboardStore();
-const auth = useAuthStore();
 
-onMounted(() => {
-  store.startPolling(10000);
-});
+const stoppedContainers = computed(() =>
+  store.hosts.reduce((sum, host) => sum + host.container_stopped, 0)
+);
 
-onUnmounted(() => {
-  store.stopPolling();
-});
-
-function refresh() {
-  store.fetchHosts();
-}
-
-function logout() {
-  auth.logout();
-  router.push("/login");
-}
+const sortedHosts = computed(() =>
+  [...store.hosts].sort((a, b) => {
+    const riskA =
+      (a.status === "online" ? 0 : 100) +
+      store.getHostUpdateCount(a.host_id) * 10 +
+      a.container_stopped;
+    const riskB =
+      (b.status === "online" ? 0 : 100) +
+      store.getHostUpdateCount(b.host_id) * 10 +
+      b.container_stopped;
+    return riskB - riskA;
+  })
+);
 
 function goToHost(hostId: string) {
   router.push(`/hosts/${hostId}`);
@@ -109,68 +91,131 @@ function goToHost(hostId: string) {
 
 <style scoped>
 .dashboard-layout {
-  min-height: 100vh;
-  background: var(--bg-dark);
-}
-.dashboard-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 24px;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-color);
-}
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.header-title {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0;
-  color: var(--text-primary);
-}
-.header-right {
-  display: flex;
-  gap: 8px;
-}
-.summary-bar {
-  display: flex;
-  gap: 1px;
-  background: var(--bg-card);
-  margin: 16px 24px;
-  border-radius: 8px;
-  overflow: hidden;
-}
-.summary-item {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 16px;
-  background: var(--bg-card);
+  gap: 18px;
 }
-.summary-value {
-  font-size: 28px;
+
+.command-strip {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(520px, 1.4fr);
+  align-items: stretch;
+  gap: 16px;
+}
+
+.command-copy,
+.summary-grid {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--dash-command-bg);
+  padding: 18px;
+}
+
+.section-kicker {
+  color: var(--accent-blue);
+  font-size: 11px;
   font-weight: 700;
-  color: var(--el-color-primary);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
-.summary-label {
-  font-size: 13px;
+
+.command-copy h2 {
+  margin: 0;
+  margin-top: 8px;
+  font-size: 24px;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.command-copy p {
+  max-width: 560px;
+  margin: 10px 0 0;
   color: var(--text-secondary);
-  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.7;
 }
-.loading-bar {
-  padding: 0 24px;
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
 }
+
+.summary-tile {
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: space-between;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--dash-tile-bg);
+  color: var(--text-primary);
+  padding: 12px;
+  text-align: left;
+}
+
+button.summary-tile {
+  cursor: pointer;
+}
+
+.summary-tile:hover {
+  border-color: var(--border-strong);
+  background: var(--dash-tile-hover-bg);
+}
+
+.summary-tile.critical {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: var(--dash-tile-critical-bg);
+}
+
+.summary-tile strong {
+  font-size: 31px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.summary-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.summary-tile small {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.summary-tile.critical strong,
+.summary-tile.critical small {
+  color: var(--danger);
+}
+
 .error-alert {
-  margin: 12px 24px 0;
+  margin: 0;
 }
+
 .host-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 16px;
-  padding: 16px 24px 24px;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 14px;
+}
+
+@media (max-width: 1100px) {
+  .command-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .host-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

@@ -1,13 +1,18 @@
 <template>
   <div class="updates-layout">
     <header class="page-header">
-      <el-button text @click="$router.push('/')">
-        <el-icon><ArrowLeft /></el-icon> 返回
-      </el-button>
-      <h2 class="page-title">镜像更新检测</h2>
-      <el-button type="primary" :loading="checking" @click="runCheck">
-        <el-icon><Refresh /></el-icon> 立即检查
-      </el-button>
+      <div>
+        <div class="section-kicker">Image Registry</div>
+        <h2 class="page-title">镜像更新检测</h2>
+      </div>
+      <div class="page-actions">
+        <el-button class="page-action-button" @click="$router.push('/')">
+          <el-icon><ArrowLeft /></el-icon> 返回
+        </el-button>
+        <el-button type="primary" :loading="checking" @click="runCheck">
+          <el-icon><Refresh /></el-icon> 立即检查
+        </el-button>
+      </div>
     </header>
 
     <div v-if="checking" class="loading-center">
@@ -16,7 +21,8 @@
     </div>
 
     <div v-else>
-      <el-table :data="results" stripe style="width: 100%" v-if="results.length > 0">
+      <div class="table-panel" v-if="results.length > 0">
+        <el-table :data="results" stripe style="width: 100%">
         <el-table-column label="主机" prop="host_id" width="120" />
         <el-table-column label="镜像" prop="image" min-width="300">
           <template #default="{ row }">
@@ -38,7 +44,8 @@
             <span class="digest-text">{{ row.registry_digest ? row.registry_digest.slice(0, 19) + '...' : '-' }}</span>
           </template>
         </el-table-column>
-      </el-table>
+        </el-table>
+      </div>
 
       <el-empty v-else description="暂无更新检测结果" />
     </div>
@@ -48,7 +55,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { ArrowLeft, Refresh, Loading } from "@element-plus/icons-vue";
-import { apiClient } from "@/api/client";
+import { useDashboardStore } from "@/stores/dashboard";
 import UpdateBadge from "@/components/UpdateBadge.vue";
 
 interface UpdateResult {
@@ -61,12 +68,12 @@ interface UpdateResult {
 
 const results = ref<UpdateResult[]>([]);
 const checking = ref(false);
+const dashboardStore = useDashboardStore();
 
 async function fetchResults() {
   checking.value = true;
   try {
-    const res = await apiClient.get("/api/update-checks");
-    results.value = res.data || [];
+    results.value = await dashboardStore.fetchUpdateChecks();
   } catch (e) {
     console.error("Failed to fetch update checks:", e);
   } finally {
@@ -77,8 +84,7 @@ async function fetchResults() {
 async function runCheck() {
   checking.value = true;
   try {
-    const res = await apiClient.post("/api/update-checks/run");
-    results.value = res.data.results || [];
+    results.value = await dashboardStore.runUpdateCheck();
   } catch (e) {
     console.error("Failed to run update check:", e);
   } finally {
@@ -91,22 +97,50 @@ onMounted(fetchResults);
 
 <style scoped>
 .updates-layout {
-  min-height: 100vh;
-  background: var(--bg-dark);
-  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .page-header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--page-header-bg);
+  padding: 16px;
 }
 .page-title {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 700;
   margin: 0;
-  flex: 1;
   color: var(--text-primary);
+}
+.section-kicker {
+  color: var(--accent-blue);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.page-action-button {
+  border-color: var(--border-subtle) !important;
+  background: var(--page-header-action-bg) !important;
+  color: var(--text-secondary) !important;
+}
+.page-action-button:hover,
+.page-action-button:focus-visible {
+  border-color: var(--border-strong) !important;
+  color: var(--text-primary) !important;
 }
 .loading-center {
   display: flex;
@@ -118,13 +152,26 @@ onMounted(fetchResults);
 }
 .image-ref {
   font-size: 13px;
-  background: var(--bg-dark);
+  background: rgba(5, 9, 20, 0.78);
   padding: 2px 6px;
   border-radius: 4px;
 }
 .digest-text {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-secondary);
+}
+.table-panel {
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-panel);
+}
+
+@media (max-width: 720px) {
+  .page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 </style>

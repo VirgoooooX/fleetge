@@ -33,9 +33,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { nextTick, onUnmounted, ref, watch } from "vue";
 import { Refresh, Loading } from "@element-plus/icons-vue";
-import { apiClient } from "@/api/client";
+import { streamSse } from "@/api/sse";
 
 const props = defineProps<{
   visible: boolean;
@@ -48,28 +48,97 @@ defineEmits<{ close: [] }>();
 const loading = ref(false);
 const logs = ref("");
 const tail = ref(200);
+const logContent = ref<HTMLElement | null>(null);
+let logStreamController: AbortController | null = null;
+
+const MAX_LOG_CHARS = 300000;
+
+function appendLogLine(text: string) {
+  logs.value += `${logs.value ? "\n" : ""}${text}`;
+  if (logs.value.length > MAX_LOG_CHARS) {
+    logs.value = logs.value.slice(logs.value.length - MAX_LOG_CHARS);
+  }
+  nextTick(() => {
+    if (logContent.value) {
+      logContent.value.scrollTop = logContent.value.scrollHeight;
+    }
+  });
+}
+
+function stopLogs() {
+  if (logStreamController) {
+    logStreamController.abort();
+    logStreamController = null;
+  }
+  loading.value = false;
+}
 
 async function loadLogs() {
+  stopLogs();
   loading.value = true;
-  try {
-    const res = await apiClient.get(
-      `/api/hosts/${props.hostId}/stacks/${props.stackName}/logs`,
-      { params: { tail: tail.value } }
-    );
-    logs.value = res.data.logs || "";
-  } catch (e: any) {
-    logs.value = `Failed to fetch logs: ${e.response?.data?.detail || e.message}`;
-  } finally {
-    loading.value = false;
-  }
+  logs.value = "";
+
+  const controller = new AbortController();
+  logStreamController = controller;
+
+  const url =
+    `/api/hosts/${encodeURIComponent(props.hostId)}` +
+    `/stacks/${encodeURIComponent(props.stackName)}` +
+    `/logs/stream?tail=${encodeURIComponent(String(tail.value))}`;
+
+  void streamSse({
+    url,
+    signal: controller.signal,
+    onEvent: (ev) => {
+      if (ev.event === "ready") {
+        loading.value = false;
+        return;
+      }
+      if (ev.event === "line") {
+        loading.value = false;
+        const service = ev.data?.service;
+        const text = ev.data?.text ?? "";
+        appendLogLine(service ? `[${service}] ${text}` : text);
+        return;
+      }
+      if (ev.event === "error") {
+        loading.value = false;
+        appendLogLine(`Error: ${ev.data?.message || "log stream failed"}`);
+        return;
+      }
+      if (ev.event === "complete") {
+        loading.value = false;
+        appendLogLine(ev.data?.message || "Log stream ended.");
+      }
+    },
+  })
+    .catch((e: any) => {
+      if (controller.signal.aborted) return;
+      logs.value = `Failed to stream logs: ${e.message}`;
+    })
+    .finally(() => {
+      if (logStreamController === controller) {
+        logStreamController = null;
+      }
+      loading.value = false;
+    });
 }
 
 watch(
   () => props.visible,
   (v) => {
-    if (v) loadLogs();
-  }
+    if (v) {
+      loadLogs();
+    } else {
+      stopLogs();
+    }
+  },
+  { immediate: true }
 );
+
+onUnmounted(() => {
+  stopLogs();
+});
 </script>
 
 <style scoped>

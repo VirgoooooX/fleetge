@@ -48,12 +48,12 @@ function formatBytes(bytes: number): string {
 
 <style scoped>
 .metrics-bar-item {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: center;
+  gap: 6px;
   padding: 12px;
-  background: var(--bg-card);
+  background: var(--surface-panel);
 }
 .bar-label {
   font-size: 12px;
@@ -64,7 +64,8 @@ function formatBytes(bytes: number): string {
   text-align: right;
 }
 .bar-value {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   color: var(--text-secondary);
 }
 </style>
