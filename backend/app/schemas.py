@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # ── Auth ────────────────────────────────────────────────────────────────
@@ -96,6 +96,21 @@ class ContainerSummary(BaseModel):
     labels: dict[str, str] = {}
     stack_name: Optional[str] = None  # derived from compose label
     service_name: Optional[str] = None
+    restart_count: Optional[int] = None
+    driver: Optional[str] = None
+    platform: Optional[str] = None
+    hostname: Optional[str] = None
+    domainname: Optional[str] = None
+    user: Optional[str] = None
+    working_dir: Optional[str] = None
+    entrypoint: Optional[list[str] | str] = None
+    command: Optional[list[str] | str] = None
+    restart_policy: Optional[dict] = None
+    network_mode: Optional[str] = None
+    privileged: Optional[bool] = None
+    mounts: list[dict] = Field(default_factory=list)
+    networks: dict[str, dict] = Field(default_factory=dict)
+    health: Optional[dict] = None
 
 
 class ContainerStats(BaseModel):

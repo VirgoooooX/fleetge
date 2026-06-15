@@ -101,11 +101,13 @@ class DockgeConnection:
             self._sio.on("agent", self._on_agent_event)
 
             try:
-                await self._sio.connect(
-                    self._url,
-                    socketio_path="/socket.io",
-                    transports=["websocket", "polling"],
-                    wait_timeout=10,
+                await asyncio.wait_for(
+                    self._sio.connect(
+                        self._url,
+                        socketio_path="/socket.io",
+                        transports=["websocket", "polling"],
+                    ),
+                    timeout=15.0,
                 )
             except Exception as exc:
                 self._cleanup()
@@ -295,7 +297,7 @@ class DockgeConnection:
             # requestStackList itself acknowledges only that refresh was
             # requested; the actual stack data arrives as agent("stackList", ...).
             await self._agent_call("requestStackList", timeout=10)
-            return await asyncio.wait_for(future, timeout=30)
+            return await asyncio.wait_for(future, timeout=10.0)
         except asyncio.TimeoutError:
             raise DockgeClientError(
                 f"Dockge {self._host_id}: requestStackList timed out (no agent stackList event)"

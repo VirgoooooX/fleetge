@@ -81,107 +81,24 @@
     <!-- No metrics warning -->
     <el-alert v-else-if="host" title="主机指标不可用" type="warning" show-icon :closable="false" class="metric-warning" />
 
-    <section v-if="host" class="updates-panel">
-      <div class="updates-panel__header">
-        <div>
-          <div class="section-kicker">Image Updates</div>
-          <h3 class="section-title">可更新镜像</h3>
-        </div>
-        <div class="updates-panel__actions">
-          <el-tag v-if="displayUpdateCount > 0" type="danger" effect="dark">
-            {{ displayUpdateCount }} 个待更新
-          </el-tag>
-          <el-tag v-else type="success" effect="dark">暂无更新</el-tag>
-          <el-button size="small" :loading="updateLoading" @click="runUpdateCheck">
-            <el-icon><Refresh /></el-icon>
-            重新检查
-          </el-button>
-        </div>
-      </div>
-
-      <div v-if="updatableResults.length > 0" class="update-list">
-        <div v-for="item in updatableResults" :key="item.image" class="update-row">
-          <div class="update-row__main">
-            <code class="image-ref">{{ item.image }}</code>
-            <span class="update-row__containers">
-              {{ containersByImage[item.image] || 0 }} 个容器使用
-            </span>
-          </div>
-          <div class="update-row__digests">
-            <span>local {{ shortDigest(item.current_digest) }}</span>
-            <span>registry {{ shortDigest(item.registry_digest) }}</span>
-          </div>
-          <div class="update-row__actions">
-            <UpdateBadge :status="item.status" />
-            <el-button
-              v-for="stackName in stacksByImage[item.image] || []"
-              :key="stackName"
-              size="small"
-              type="danger"
-              plain
-              :loading="updatingStack === stackName"
-              :disabled="!!updatingStack"
-              @click="updateStackFromImage(stackName)"
-            >
-              更新 {{ stackName }}
-            </el-button>
-          </div>
-        </div>
-      </div>
-
-      <el-alert
-        v-else-if="displayUpdateCount > 0 && !updateLoading"
-        title="更新计数已存在，但当前详情页还没有拿到镜像明细。点击“重新检查”刷新检测结果。"
-        type="warning"
-        show-icon
-        :closable="false"
-      />
-
-      <div v-else class="updates-empty">
-        当前主机的镜像检查结果没有发现可更新项。
-      </div>
-    </section>
-
-    <el-tabs v-model="activeTab" class="detail-tabs">
-      <el-tab-pane label="Stacks" name="stacks">
-        <StackGroup
-          v-if="stacks.length > 0"
-          :stacks="stacks"
-          :host-id="hostId"
-          @refresh="fetchDetail"
-        />
-        <el-empty v-else description="暂无 Stack" />
-      </el-tab-pane>
-      <el-tab-pane label="容器" name="containers">
-        <ContainerTable
-          v-if="containers.length > 0"
-          :containers="containers"
-          :container-stats="containerStats"
-          :update-statuses="updateStatuses"
-        />
-        <el-empty v-else description="暂无容器" />
-      </el-tab-pane>
-      <el-tab-pane label="Docker Info" name="docker">
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="版本">{{ host?.docker_version || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="API 版本">{{ host?.api_version || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="系统架构">{{ host?.architecture || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="Docker Root">{{ host?.docker_root_dir || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="镜像数量">{{ host?.image_count ?? '-' }}</el-descriptions-item>
-          <el-descriptions-item label="运行容器">{{ host?.container_running ?? '-' }}</el-descriptions-item>
-        </el-descriptions>
-      </el-tab-pane>
-    </el-tabs>
+    <HostStackWorkspace
+      v-if="host"
+      :host-id="hostId"
+      :stacks="stacks"
+      :containers="containers"
+      :container-stats="containerStats"
+      :update-statuses="updateStatuses"
+      :update-loading="updateLoading"
+      @refresh="fetchDetail"
+      @check-updates="runUpdateCheck"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
-import { Refresh } from "@element-plus/icons-vue";
-import { ElMessage, ElMessageBox } from "element-plus";
 import { apiClient } from "@/api/client";
-import { streamSse } from "@/api/sse";
 import { useDashboardStore, type HostSummary } from "@/stores/dashboard";
 
 interface StackService {
@@ -240,9 +157,7 @@ interface UpdateResult {
   status: string;
 }
 import HostMetricsBar from "@/components/HostMetricsBar.vue";
-import StackGroup from "@/components/StackGroup.vue";
-import ContainerTable from "@/components/ContainerTable.vue";
-import UpdateBadge from "@/components/UpdateBadge.vue";
+import HostStackWorkspace from "@/components/HostStackWorkspace.vue";
 
 const route = useRoute();
 const dashboardStore = useDashboardStore();
@@ -255,8 +170,6 @@ const containers = ref<ContainerSummary[]>([]);
 const containerStats = ref<Record<string, ContainerStats>>({});
 const updateResults = ref<UpdateResult[]>([]);
 const updateLoading = ref(false);
-const updatingStack = ref("");
-const activeTab = ref("stacks");
 
 // Computed metrics
 const memPercent = computed(() => {
@@ -290,23 +203,6 @@ const uptimeText = computed(() => {
   return parts.join(" ") || "刚刚重启";
 });
 
-const updatableResults = computed(() => {
-  // Deduplicate by image_ref — show one row per image
-  const seen = new Set<string>();
-  return updateResults.value.filter((item) => {
-    if (item.status !== "updatable") return false;
-    const key = `${item.host_id}:${item.image}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-});
-
-const displayUpdateCount = computed(() => {
-  if (updatableResults.value.length > 0) return updatableResults.value.length;
-  return dashboardStore.getHostUpdateCount(hostId.value);
-});
-
 const updateStatuses = computed(() => {
   const statuses: Record<string, string> = {};
   for (const item of updateResults.value) {
@@ -314,33 +210,6 @@ const updateStatuses = computed(() => {
   }
   return statuses;
 });
-
-const containersByImage = computed(() => {
-  const counts: Record<string, number> = {};
-  for (const container of containers.value) {
-    counts[container.image] = (counts[container.image] || 0) + 1;
-  }
-  return counts;
-});
-
-const stacksByImage = computed(() => {
-  const stacksByImageRef: Record<string, string[]> = {};
-  for (const container of containers.value) {
-    if (!container.image || !container.stack_name) continue;
-    const existing = stacksByImageRef[container.image] || [];
-    if (!existing.includes(container.stack_name)) {
-      existing.push(container.stack_name);
-    }
-    stacksByImageRef[container.image] = existing;
-  }
-  return stacksByImageRef;
-});
-
-function shortDigest(digest?: string): string {
-  if (!digest) return "-";
-  const normalized = digest.replace(/^sha256:/, "");
-  return `sha256:${normalized.slice(0, 12)}`;
-}
 
 function formatRate(bytesPerSec: number): string {
   if (!bytesPerSec) return "0 B/s";
@@ -427,82 +296,35 @@ async function runUpdateCheck() {
   }
 }
 
-async function updateStackFromImage(stackName: string) {
-  try {
-    await ElMessageBox.confirm(
-      `确定要更新 Stack「${stackName}」吗？这会拉取最新镜像并重新创建相关容器。`,
-      "更新 Stack",
-      {
-        confirmButtonText: "更新",
-        cancelButtonText: "取消",
-        type: "warning",
-      }
-    );
-  } catch {
-    return;
+async function fetchDetailCached(options: { skipUpdates?: boolean; silent?: boolean } = {}) {
+  if (!options.silent) {
+    loading.value = true;
   }
-
-  updatingStack.value = stackName;
   try {
-    const updateUrl = `/api/hosts/${hostId.value}/stacks/${encodeURIComponent(stackName)}/update`;
-    let streamSuccess = false;
-    let streamMessage = "";
+    // GET returns instantly from the in-memory cache — no blocking Docker/Dockge calls.
+    // The backend's SSE-driven 10s structure poll keeps the cache fresh.
+    const res = await apiClient.get(
+      `/api/hosts/${encodeURIComponent(hostId.value)}`
+    );
+    host.value = res.data.host || null;
+    stacks.value = res.data.stacks || [];
+    containers.value = res.data.containers || [];
+    containerStats.value = res.data.container_stats || {};
 
-    await streamSse({
-      url: updateUrl,
-      method: "POST",
-      timeoutMs: 240000,
-      onTimeout: () => {
-        streamSuccess = false;
-        streamMessage = "操作无响应，可能仍在 Dockge 后台执行，请稍后刷新确认。";
-      },
-      onEvent: (ev) => {
-        if (ev.event === "complete") {
-          const data = ev.data || {};
-          streamSuccess = data.status === "success";
-          streamMessage = data.message || "";
-        } else if (ev.event === "error") {
-          const data = ev.data || {};
-          streamSuccess = false;
-          streamMessage = data.message || "后端操作失败";
-        }
-      },
-    });
-
-    if (!streamSuccess) {
-      throw new Error(streamMessage || "操作失败");
+    if (host.value) {
+      dashboardStore.upsertHost(host.value);
     }
 
-    ElMessage.success(`已触发 ${stackName} 更新`);
-
-    // Force refresh after update — skip stale update check, just fetch fresh data
-    await fetchDetail({ skipUpdates: true });
-
-    // Re-run registry digest check
-    try {
-      const results = await dashboardStore.runUpdateCheck();
-      applyUpdateResults(results || []);
-    } catch {
-      // Update check may fail; use what we have
+    if (!options.skipUpdates) {
+      await fetchUpdateResults();
     }
 
-    // Final refresh with fresh update data
-    await fetchDetail({ skipUpdates: true });
   } catch (e: any) {
-    const detail = e.response?.data?.detail || e.message;
-
-    // Even on failure, refresh to see actual image state
-    try {
-      await fetchDetail({ skipUpdates: true });
-      const results = await dashboardStore.runUpdateCheck();
-      applyUpdateResults(results || []);
-    } catch {
-      // Best-effort
-    }
-
-    ElMessage.error(`更新失败: ${detail}`);
+    console.error("Failed to fetch host detail:", e);
   } finally {
-    updatingStack.value = "";
+    if (!options.silent) {
+      loading.value = false;
+    }
   }
 }
 
@@ -542,7 +364,7 @@ function startPolling() {
   stopPolling();
   pollInterval = setInterval(() => {
     if (!document.hidden) {
-      fetchDetail({ skipUpdates: true, silent: true });
+      fetchDetailCached({ skipUpdates: true, silent: true });
     }
   }, 10000);
 }
@@ -555,12 +377,12 @@ function stopPolling() {
 }
 
 onMounted(() => {
-  fetchDetail();
+  fetchDetailCached();
   startPolling();
 });
 
 watch(hostId, () => {
-  fetchDetail();
+  fetchDetailCached();
   startPolling();
 });
 
@@ -584,6 +406,14 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  height: calc(100vh - 118px);
+  min-height: 560px;
+  overflow: hidden;
+}
+
+.detail-layout :deep(.host-workspace) {
+  flex: 1;
+  min-height: 0;
 }
 .metrics-bar {
   display: grid;
@@ -686,120 +516,10 @@ onUnmounted(() => {
 .metric-warning {
   margin-bottom: 16px;
 }
-.updates-panel {
-  border: 1px solid rgba(248, 113, 113, 0.2);
-  border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(127, 29, 29, 0.14), transparent 36%),
-    var(--surface-panel);
-  padding: 16px;
-}
-.updates-panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-.updates-panel__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.section-kicker {
-  font-size: 11px;
-  line-height: 1;
-  color: var(--danger);
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-.section-title {
-  margin: 4px 0 0;
-  font-size: 16px;
-  line-height: 1.2;
-  color: var(--text-primary);
-}
-.update-list {
-  display: grid;
-  gap: 8px;
-}
-.update-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, auto) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid rgba(245, 108, 108, 0.22);
-  border-radius: 6px;
-  background: rgba(127, 29, 29, 0.13);
-}
-.update-row__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-}
-.update-row__main {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-.update-row__containers {
-  color: var(--text-secondary);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.update-row__digests {
-  display: flex;
-  gap: 10px;
-  color: var(--text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
-  white-space: nowrap;
-}
-.updates-empty {
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-.image-ref {
-  font-size: 12px;
-  background: var(--code-bg, rgba(5, 9, 20, 0.78));
-  padding: 2px 6px;
-  border-radius: 4px;
-  color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.detail-tabs {
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--detail-tabs-bg);
-  padding: 0 14px 14px;
-}
 
 @media (max-width: 900px) {
   .metrics-bar {
     grid-template-columns: 1fr;
-  }
-
-  .updates-panel__header,
-  .update-row,
-  .update-row__main,
-  .update-row__digests {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-  .update-row {
-    display: flex;
-  }
-  .update-row__digests {
-    gap: 4px;
-    white-space: normal;
   }
 }
 </style>

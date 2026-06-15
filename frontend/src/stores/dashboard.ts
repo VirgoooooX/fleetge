@@ -229,7 +229,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     pollTimer = setInterval(() => {
       // Pause when tab is hidden
       if (!document.hidden) {
-        refreshHosts();
+        fetchHosts();
       }
     }, hostPollInterval);
     updatePollTimer = setInterval(() => {
@@ -242,13 +242,16 @@ export const useDashboardStore = defineStore("dashboard", () => {
       if (document.hidden) {
         stopMetricsStream();
       } else {
-        refreshHosts();
+        fetchHosts();
         startMetricsStream();
       }
     };
     document.addEventListener("visibilitychange", visibilityHandler);
 
-    refreshAll();
+    // Load cached data instantly (GET), then stream live metrics.
+    // The SSE connection triggers the backend to switch from 1h → 10s structure polling.
+    fetchHosts();
+    fetchUpdateChecks();
     startMetricsStream();
   }
 

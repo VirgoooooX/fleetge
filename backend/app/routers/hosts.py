@@ -30,6 +30,26 @@ async def refresh_hosts_structure():
     return HostListResponse(hosts=summaries)
 
 
+@router.get("/hosts/{host_id}", response_model=dict)
+async def get_host_details(host_id: str):
+    """Return cached Docker/Dockge structure and stats for one host instantly."""
+    await snapshot_manager.refresh_hosts()
+    snap = snapshot_manager.get_snapshot(host_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    host = snapshot_manager.build_host_summary(snap)
+    return {
+        "host": host.model_dump(),
+        "stacks": [stack.model_dump() for stack in snap.stacks],
+        "containers": [container.model_dump() for container in snap.containers],
+        "container_stats": {
+            cid: stats.model_dump()
+            for cid, stats in snap.container_stats.items()
+        },
+    }
+
+
 @router.post("/hosts/{host_id}/refresh", response_model=dict)
 async def refresh_host_structure(host_id: str):
     """Refresh Docker/Dockge structure for one host on frontend demand."""
@@ -89,6 +109,7 @@ async def host_metrics_stream():
     interval = max(settings.METRICS_STREAM_INTERVAL, 0.5)
 
     async def generate():
+        snapshot_manager.increment_connections()
         try:
             while True:
                 summaries = await snapshot_manager.refresh_metrics_now()
@@ -102,5 +123,7 @@ async def host_metrics_stream():
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             raise
+        finally:
+            snapshot_manager.decrement_connections()
 
     return StreamingResponse(generate(), media_type="text/event-stream")

@@ -2,8 +2,20 @@
 
 import os
 from functools import lru_cache
+from pathlib import Path
 
+from dotenv import load_dotenv
 import yaml
+
+# Auto-load .env from project root (works whether cwd is backend/ or project root)
+_ROOT = Path(__file__).resolve().parent.parent.parent  # backend/app/ → backend/ → root
+_ENV_FILE = _ROOT / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE, override=False)  # override=False: don't override existing env vars
+
+# Default paths resolved relative to project root (not CWD)
+# docker-compose.yml overrides these for production via environment:
+_ROOT_DATA_DIR = str(_ROOT / "data")
 
 
 class Settings:
@@ -22,11 +34,13 @@ class Settings:
 
     # ── Database ──────────────────────────────────────────────────────
     DATABASE_URL: str = os.environ.get(
-        "DATABASE_URL", "sqlite:///./data/dashboard.db"
+        "DATABASE_URL", f"sqlite:///{_ROOT_DATA_DIR}/dashboard-local.db"
     )
 
     # ── Host configuration (YAML file) ────────────────────────────────
-    HOST_CONFIG_PATH: str = os.environ.get("HOST_CONFIG_PATH", "/app/data/hosts.yaml")
+    HOST_CONFIG_PATH: str = os.environ.get(
+        "HOST_CONFIG_PATH", str(_ROOT / "data" / "hosts.yaml")
+    )
 
     # ── Poll intervals (seconds) ──────────────────────────────────────
     METRICS_POLL_INTERVAL: int = int(os.environ.get("METRICS_POLL_INTERVAL", "3"))

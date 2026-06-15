@@ -77,7 +77,22 @@ class SnapshotManager:
         self._host_refresh_locks: dict[str, asyncio.Lock] = {}
         self._metrics_refresh_lock = asyncio.Lock()
         self._update_check_lock = asyncio.Lock()
+        self._stats_tasks: dict[str, asyncio.Task] = {}
+        self._realtime_refresh_tasks: dict[str, asyncio.Task] = {}  # coalesce WebSocket-triggered refreshes
         # Dockge connections are managed by dockge_pool
+
+        # Active connection tracking for polling optimization
+        self._active_connections = 0
+        self._connection_event = asyncio.Event()
+
+    def increment_connections(self) -> None:
+        self._active_connections += 1
+        self._connection_event.set()
+        logger.info("Active connections incremented: %d", self._active_connections)
+
+    def decrement_connections(self) -> None:
+        self._active_connections = max(0, self._active_connections - 1)
+        logger.info("Active connections decremented: %d", self._active_connections)
 
     # ── Public ─────────────────────────────────────────────────────
 
@@ -109,7 +124,16 @@ class SnapshotManager:
         self._running = False
         for t in self._tasks:
             t.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        for t in list(self._stats_tasks.values()):
+            t.cancel()
+        for t in list(self._realtime_refresh_tasks.values()):
+            t.cancel()
+        await asyncio.gather(
+            *self._tasks, *self._stats_tasks.values(),
+            *self._realtime_refresh_tasks.values(), return_exceptions=True,
+        )
+        self._stats_tasks.clear()
+        self._realtime_refresh_tasks.clear()
         await dockge_pool.disconnect_all()
         for c in self._proxy_clients.values():
             await c.close()
@@ -195,7 +219,28 @@ class SnapshotManager:
                 break
             except Exception as exc:
                 logger.error("Poll loop %s error: %s", name, exc, exc_info=True)
-            await asyncio.sleep(interval)
+
+            if name == "structure":
+                try:
+                    # If we have active connections, we poll every 10 seconds.
+                    # If we don't, we wait for a connection to be made (event set) or the low-frequency interval to pass.
+                    timeout = 10.0 if self._active_connections > 0 else float(interval)
+                    self._connection_event.clear()
+                    if self._active_connections > 0:
+                        await asyncio.sleep(timeout)
+                    else:
+                        try:
+                            await asyncio.wait_for(self._connection_event.wait(), timeout=timeout)
+                            logger.info("Wake up structure poll loop due to new connection")
+                        except asyncio.TimeoutError:
+                            pass
+                except asyncio.CancelledError:
+                    break
+            else:
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    break
 
     async def _refresh_metrics(self) -> None:
         """Poll all host-metrics exporters."""
@@ -221,15 +266,45 @@ class SnapshotManager:
                     logger.debug("Metrics poll task failed: %s", result)
 
     async def refresh_host_docker(
-        self, host_id: str, trigger_initial_update_check: bool = True
+        self,
+        host_id: str,
+        trigger_initial_update_check: bool = True,
+        force_status_on_timeout: bool = True,
+        lock_timeout: float = 10.0,
+        execution_timeout: float = 15.0,
     ) -> None:
         """Poll docker-socket-proxy and Dockge for a specific host immediately."""
         lock = self._host_refresh_locks.setdefault(host_id, asyncio.Lock())
-        async with lock:
-            await self._refresh_host_docker_locked(
-                host_id,
-                trigger_initial_update_check=trigger_initial_update_check,
+        snap = self._snapshots.get(host_id)
+
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=lock_timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Host %s refresh lock contention timeout", host_id)
+            if force_status_on_timeout and snap:
+                snap.status = "degraded"
+                snap.error_message = "refresh lock contention timeout"
+            return
+
+        try:
+            await asyncio.wait_for(
+                self._refresh_host_docker_locked(
+                    host_id,
+                    trigger_initial_update_check=trigger_initial_update_check,
+                ),
+                timeout=execution_timeout,
             )
+        except asyncio.TimeoutError:
+            logger.warning("Host %s refresh execution timeout", host_id)
+            if force_status_on_timeout and snap:
+                snap.status = "degraded"
+                snap.error_message = "refresh execution timeout"
+        finally:
+            try:
+                lock.release()
+            except RuntimeError:
+                # In case the lock was not held or already released
+                pass
 
     async def _refresh_host_docker_locked(
         self, host_id: str, trigger_initial_update_check: bool = True
@@ -286,8 +361,45 @@ class SnapshotManager:
 
             # Container list
             raw_containers = await proxy.list_containers(all=True)
+            inspect_semaphore = asyncio.Semaphore(8)
+
+            async def inspect_container(container_id: str) -> tuple[str, dict]:
+                async with inspect_semaphore:
+                    return container_id, await proxy.container_inspect(container_id)
+
+            inspect_results = await asyncio.gather(
+                *(
+                    inspect_container(c.get("Id", ""))
+                    for c in raw_containers
+                    if c.get("Id")
+                ),
+                return_exceptions=True,
+            )
+            inspect_by_id: dict[str, dict] = {}
+            for result in inspect_results:
+                if isinstance(result, Exception):
+                    logger.debug(
+                        "Container inspect failed for %s: %s",
+                        cfg.host_id, result,
+                    )
+                    continue
+                try:
+                    container_id, detail = result
+                    inspect_by_id[container_id] = detail
+                except Exception as exc:
+                    logger.debug(
+                        "Container inspect parse failed for %s: %s",
+                        cfg.host_id, exc,
+                    )
+
             snap.containers = []
             for c in raw_containers:
+                inspect = inspect_by_id.get(c.get("Id", ""), {})
+                host_config = inspect.get("HostConfig", {}) or {}
+                config = inspect.get("Config", {}) or {}
+                state_detail = inspect.get("State", {}) or {}
+                network_settings = inspect.get("NetworkSettings", {}) or {}
+                networks = network_settings.get("Networks", {}) or {}
                 ports = [
                     ContainerPort(
                         private_port=p.get("PrivatePort"),
@@ -325,6 +437,21 @@ class SnapshotManager:
                         labels=labels,
                         stack_name=stack_name,
                         service_name=service_name,
+                        restart_count=inspect.get("RestartCount"),
+                        driver=inspect.get("Driver"),
+                        platform=inspect.get("Platform"),
+                        hostname=config.get("Hostname"),
+                        domainname=config.get("Domainname"),
+                        user=config.get("User"),
+                        working_dir=config.get("WorkingDir"),
+                        entrypoint=config.get("Entrypoint"),
+                        command=config.get("Cmd"),
+                        restart_policy=host_config.get("RestartPolicy"),
+                        network_mode=host_config.get("NetworkMode"),
+                        privileged=host_config.get("Privileged"),
+                        mounts=inspect.get("Mounts", []) or [],
+                        networks=networks,
+                        health=state_detail.get("Health"),
                     )
                 )
 
@@ -372,7 +499,11 @@ class SnapshotManager:
             # Container stats are useful but must not block stack refresh
             # or the host's online status. Collect them after the core
             # snapshot is visible.
-            await self._refresh_container_stats(snap, proxy, cfg)
+            existing_task = self._stats_tasks.get(cfg.host_id)
+            if existing_task is None or existing_task.done():
+                task = asyncio.create_task(self._refresh_container_stats(snap, proxy, cfg))
+                self._stats_tasks[cfg.host_id] = task
+                task.add_done_callback(lambda _: self._stats_tasks.pop(cfg.host_id, None))
 
             # Trigger an initial update check after the first successful
             # docker poll that has containers.  This handles the gap where
@@ -400,7 +531,12 @@ class SnapshotManager:
             if delay > 0:
                 await asyncio.sleep(delay)
             try:
-                await self.refresh_host_docker(host_id)
+                await self.refresh_host_docker(
+                    host_id,
+                    lock_timeout=3.0,
+                    execution_timeout=5.0,
+                    force_status_on_timeout=False,
+                )
             except Exception as exc:
                 logger.warning(
                     "Retry refresh failed for host %s (step %d): %s",
@@ -485,8 +621,21 @@ class SnapshotManager:
             stacks = self.parse_dockge_stacks(raw_stacks)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
-            # Trigger background docker proxy refresh since container states might have changed
-            asyncio.create_task(self.refresh_host_docker(host_id))
+            # Coalesce rapid stackList events: cancel previous pending refresh and
+            # create a new one so only one realtime refresh is queued per host.
+            prev_task = self._realtime_refresh_tasks.get(host_id)
+            if prev_task and not prev_task.done():
+                prev_task.cancel()
+            task = asyncio.create_task(
+                self.refresh_host_docker(host_id, force_status_on_timeout=False)
+            )
+            self._realtime_refresh_tasks[host_id] = task
+
+            def cleanup(_t: asyncio.Task, hid: str = host_id) -> None:
+                if self._realtime_refresh_tasks.get(hid) is _t:
+                    self._realtime_refresh_tasks.pop(hid, None)
+
+            task.add_done_callback(cleanup)
         except Exception as exc:
             logger.error("Failed to apply real-time stacks update for %s: %s", host_id, exc)
 
