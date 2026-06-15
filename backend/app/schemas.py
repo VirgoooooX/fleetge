@@ -66,6 +66,7 @@ class HostSummary(BaseModel):
     docker_disk_volumes: Optional[int] = None
     docker_disk_build_cache: Optional[int] = None
     update_count: int = 0
+    error_message: Optional[str] = None
 
 
 class HostListResponse(BaseModel):

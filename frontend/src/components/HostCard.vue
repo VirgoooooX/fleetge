@@ -9,14 +9,26 @@
           <span class="host-meta">{{ host.os_info || host.metrics?.hostname || host.host_id }}</span>
         </div>
       </div>
-      <button
-        v-if="displayUpdateCount > 0"
-        class="update-action"
-        type="button"
-        @click.stop="$emit('updates')"
-      >
-        {{ displayUpdateCount }} 更新
-      </button>
+      <div class="card-header-right">
+        <el-tooltip
+          v-if="hasError"
+          :content="host.error_message"
+          placement="top"
+          effect="dark"
+        >
+          <span class="error-badge">
+            <el-icon :size="14"><Warning /></el-icon>
+          </span>
+        </el-tooltip>
+        <button
+          v-if="displayUpdateCount > 0"
+          class="update-action"
+          type="button"
+          @click.stop="$emit('updates')"
+        >
+          {{ displayUpdateCount }} 更新
+        </button>
+      </div>
     </div>
 
     <!-- Capacity: CPU / memory / disk with progress bars -->
@@ -94,7 +106,7 @@
 
 <script setup lang="ts">
 import { computed } from "vue";
-import { Monitor } from "@element-plus/icons-vue";
+import { Monitor, Warning } from "@element-plus/icons-vue";
 import StatusIcon from "./StatusIcon.vue";
 import type { HostSummary } from "@/stores/dashboard";
 
@@ -102,6 +114,12 @@ const props = defineProps<{ host: HostSummary; updateCount?: number }>();
 defineEmits<{ click: []; updates: [] }>();
 
 const displayUpdateCount = computed(() => props.updateCount ?? props.host.update_count);
+
+const hasError = computed(() => !!props.host.error_message);
+const isTimeout = computed(() => {
+  const msg = props.host.error_message;
+  return msg ? /(timeout|network|econnaborted)/i.test(msg) : false;
+});
 
 const memPercent = computed(() => {
   const m = props.host.metrics;
@@ -286,6 +304,26 @@ function formatRateParts(bytesPerSec: number | undefined): { amount: string; uni
 .update-action:hover {
   background: rgba(248, 113, 113, 0.16);
   border-color: rgba(248, 113, 113, 0.58);
+}
+
+.card-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.error-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  background: rgba(127, 29, 29, 0.24);
+  color: var(--danger);
+  cursor: help;
 }
 
 /* ── Capacity grid (CPU / 内存 / 磁盘) ──────────────────── */

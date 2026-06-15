@@ -40,6 +40,7 @@ export interface HostSummary {
   docker_disk_volumes?: number;
   docker_disk_build_cache?: number;
   update_count: number;
+  error_message?: string;
 }
 
 export interface UpdateResult {
@@ -57,6 +58,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const loading = ref(false);
   const updateLoading = ref(false);
   const error = ref("");
+  const manualLoading = ref(false);
 
   const updateCountsByHost = computed(() => {
     const counts: Record<string, number> = {};
@@ -123,7 +125,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
       const res = await apiClient.get("/api/hosts");
       applyHosts(res.data.hosts || []);
     } catch (e: any) {
-      error.value = e.message || "Failed to fetch hosts";
+      const msg = e.message || "Failed to fetch hosts";
+      if (!/(timeout|network|econnaborted)/i.test(msg)) {
+        error.value = msg;
+      }
     } finally {
       loading.value = false;
     }
@@ -137,7 +142,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
       const res = await apiClient.post("/api/hosts/refresh");
       applyHosts(res.data.hosts || []);
     } catch (e: any) {
-      error.value = e.message || "Failed to refresh hosts";
+      const msg = e.message || "Failed to refresh hosts";
+      if (!/(timeout|network|econnaborted)/i.test(msg)) {
+        error.value = msg;
+      }
     } finally {
       loading.value = false;
     }
@@ -206,7 +214,12 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   async function refreshAll() {
-    await Promise.all([refreshHosts(), fetchUpdateChecks()]);
+    manualLoading.value = true;
+    try {
+      await Promise.all([refreshHosts(), fetchUpdateChecks()]);
+    } finally {
+      manualLoading.value = false;
+    }
   }
 
   function startPolling(intervalMs = 15000) {
@@ -261,6 +274,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     updateChecksLoaded,
     loading,
     updateLoading,
+    manualLoading,
     error,
     onlineCount,
     runningContainers,

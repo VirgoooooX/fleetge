@@ -70,19 +70,7 @@ const stoppedContainers = computed(() =>
   store.hosts.reduce((sum, host) => sum + host.container_stopped, 0)
 );
 
-const sortedHosts = computed(() =>
-  [...store.hosts].sort((a, b) => {
-    const riskA =
-      (a.status === "online" ? 0 : 100) +
-      store.getHostUpdateCount(a.host_id) * 10 +
-      a.container_stopped;
-    const riskB =
-      (b.status === "online" ? 0 : 100) +
-      store.getHostUpdateCount(b.host_id) * 10 +
-      b.container_stopped;
-    return riskB - riskA;
-  })
-);
+const sortedHosts = computed(() => store.hosts);
 
 function goToHost(hostId: string) {
   router.push(`/hosts/${hostId}`);

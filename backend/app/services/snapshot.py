@@ -121,7 +121,10 @@ class SnapshotManager:
         return self._snapshots.get(host_id)
 
     def list_snapshots(self) -> list[HostSnapshot]:
-        return list(self._snapshots.values())
+        return sorted(
+            self._snapshots.values(),
+            key=lambda s: (s.host_config.sort_order if s.host_config else 0, s.host_config.id if s.host_config else 0),
+        )
 
     def get_update_check_results(self) -> list[UpdateCheckResult]:
         """Return cached update check results without hitting registries."""
@@ -794,6 +797,7 @@ class SnapshotManager:
             docker_disk_volumes=disk.volumes_size if disk else None,
             docker_disk_build_cache=disk.build_cache_size if disk else None,
             update_count=snap.update_count,  # From update_check background task
+            error_message=snap.error_message,  # From snapshot error state
         )
 
 

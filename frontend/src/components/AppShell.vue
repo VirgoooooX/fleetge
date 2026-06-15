@@ -86,7 +86,7 @@
           <el-button
             class="ops-control ops-action-button"
             size="small"
-            :loading="store.loading || store.updateLoading"
+            :loading="store.manualLoading"
             @click="store.refreshAll"
           >
             <el-icon><Refresh /></el-icon>
