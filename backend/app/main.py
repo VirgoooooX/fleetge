@@ -15,6 +15,7 @@ from app.models import HostConfig, AuditLog
 from app.host_loader import load_hosts_from_yaml
 from app.routers import auth, hosts, stacks, containers, updates, audit
 from app.services.snapshot import snapshot_manager
+from app.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ async def lifespan(app: FastAPI):
 settings = get_settings()
 app = FastAPI(
     title="Fleetge API",
-    version="0.1.0",
+    version=__version__,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     lifespan=lifespan,
@@ -81,7 +82,10 @@ app.include_router(audit.router)
 import mimetypes
 mimetypes.add_type("image/svg+xml", ".svg")
 
-_STACK_ICONS_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "stack_icons"
+_HOST_CONFIG_PATH = Path(settings.HOST_CONFIG_PATH).expanduser()
+if not _HOST_CONFIG_PATH.is_absolute():
+    _HOST_CONFIG_PATH = Path.cwd() / _HOST_CONFIG_PATH
+_STACK_ICONS_DIR = _HOST_CONFIG_PATH.parent / "stack_icons"
 _STACK_ICONS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/api/static/icons", StaticFiles(directory=str(_STACK_ICONS_DIR)), name="stack_icons")
 

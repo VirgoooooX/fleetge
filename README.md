@@ -33,6 +33,32 @@ cp .env.example .env           # 编辑 JWT_SECRET, CREDENTIALS_KEY, ADMIN_PASSW
 cp hosts.yaml.example data/hosts.yaml   # 编辑各主机连接信息
 ```
 
+如果是从现有本地数据切换到 Docker 部署，直接保留并挂载当前 `data/` 目录即可：
+
+```text
+data/
+  hosts.yaml
+  dashboard-local.db
+  dashboard-local.db-wal
+  dashboard-local.db-shm
+  stack_icons/
+```
+
+镜像内不包含这些数据。`docker-compose.yml` 会把宿主机 `./data` 挂载到容器的 `/app/data`，后端默认读取：
+
+```env
+DATABASE_URL=sqlite:////app/data/dashboard-local.db
+HOST_CONFIG_PATH=/app/data/hosts.yaml
+```
+
+注意：`ADMIN_PASSWORD_HASH` 是 Argon2 字符串，里面包含 `$`。在 `.env` 里请保留单引号，否则 Docker Compose 会把 `$argon2id`、`$v`、`$m` 等当成环境变量插值：
+
+```env
+ADMIN_PASSWORD_HASH='$argon2id$v=19$m=65536,t=3,p=4$...'
+```
+
+`CREDENTIALS_KEY` 用于解密数据库里已保存的远端凭据。复用旧数据库时，优先沿用原来的 `CREDENTIALS_KEY`。
+
 **hosts.yaml** 结构：
 
 ```yaml
@@ -123,3 +149,72 @@ npm run dev
 ```
 
 前端开发服务器自动代理 `/api` 到 `127.0.0.1:8000`。
+
+## GitHub Actions 镜像构建
+
+推送到 `main` 后，GitHub Actions 会构建并推送多架构镜像到 GHCR：
+
+```text
+ghcr.io/<owner>/host-dashboard-backend-public:latest
+ghcr.io/<owner>/host-dashboard-frontend-public:latest
+ghcr.io/<owner>/host-dashboard-metrics-public:latest
+```
+
+每次构建还会额外推送以 commit SHA 命名的标签，方便固定版本部署。
+
+### 正式发布流程
+
+本地执行一条命令完成版本 bump、前端构建、后端测试、commit、tag、push：
+
+```powershell
+.\scripts\release.ps1 -Version 0.1.1
+```
+
+脚本会更新：
+
+```text
+VERSION
+backend/app/version.py
+frontend/package.json
+frontend/package-lock.json
+```
+
+然后提交：
+
+```text
+chore: release v0.1.1
+```
+
+并推送 `v0.1.1` tag。GitHub 收到 tag 后会运行 Release workflow：
+
+1. 构建并推送 backend/frontend/metrics 三个多架构镜像。
+2. 给镜像打 `latest`、`0.1.1`、`v0.1.1`、`<commit-sha>` 标签。
+3. 自动创建 GitHub Release，并生成 release notes。
+
+如果只想本地 bump 和打 tag，不推送：
+
+```powershell
+.\scripts\release.ps1 -Version 0.1.1 -NoPush
+```
+
+### 使用 GHCR 镜像部署
+
+正式发布后可以用预构建镜像部署：
+
+```bash
+cp compose.ghcr.example.yml docker-compose.yml
+```
+
+在 `.env` 里增加：
+
+```env
+GHCR_OWNER=your-github-owner
+FLEETGE_VERSION=0.1.1
+```
+
+然后启动：
+
+```bash
+docker compose pull
+docker compose up -d
+```

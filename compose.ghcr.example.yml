@@ -1,0 +1,38 @@
+# Fleetge deployment using prebuilt GHCR images.
+#
+# Required .env values:
+#   GHCR_OWNER=your-github-owner
+#   FLEETGE_VERSION=latest
+#   JWT_SECRET=...
+#   CREDENTIALS_KEY=...
+#   ADMIN_PASSWORD_HASH='$argon2id$v=19$m=...'
+#
+# The ./data directory is the only persistent application state.
+
+services:
+  backend:
+    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER}/host-dashboard-backend-public:${FLEETGE_VERSION:-latest}
+    container_name: dashboard-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:////app/data/dashboard-local.db
+      HOST_CONFIG_PATH: /app/data/hosts.yaml
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER}/host-dashboard-frontend-public:${FLEETGE_VERSION:-latest}
+    container_name: dashboard-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend

@@ -22,8 +22,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Override DB path to use a persistent volume
-      DATABASE_URL: sqlite:///./data/dashboard.db
+      # Runtime state lives in the mounted data directory; images stay stateless.
+      DATABASE_URL: sqlite:////app/data/dashboard-local.db
       HOST_CONFIG_PATH: /app/data/hosts.yaml
     volumes:
       - ./data:/app/data
@@ -47,7 +47,3 @@ services:
       - "80:80"
     depends_on:
       - backend
-
-volumes:
-  dashboard_data:
-    name: docker-dashboard_data
