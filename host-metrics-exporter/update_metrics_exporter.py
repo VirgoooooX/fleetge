@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 One-shot script: update the host-metrics-exporter stack on all configured hosts.
 
@@ -12,6 +13,10 @@ Usage:
 import asyncio
 import sys
 from pathlib import Path
+
+# Force UTF-8 output on Windows to avoid UnicodeEncodeError
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 import yaml
 import socketio
