@@ -154,7 +154,7 @@ npm run dev
 推送到 `main` 后，GitHub Actions 会构建并推送主应用多架构镜像到 GHCR：
 
 ```text
-ghcr.io/<owner>/host-dashboard-public:latest
+ghcr.io/<owner>/fleetge:latest
 ```
 
 每次构建还会额外推送以 commit SHA 命名的标签，方便固定版本部署。`host-metrics-exporter` 有独立 workflow，会发布：

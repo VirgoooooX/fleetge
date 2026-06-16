@@ -11,7 +11,7 @@
 
 services:
   fleetge:
-    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER}/host-dashboard-public:${FLEETGE_VERSION:-latest}
+    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER}/fleetge:${FLEETGE_VERSION:-latest}
     container_name: fleetge
     restart: unless-stopped
     env_file: .env
