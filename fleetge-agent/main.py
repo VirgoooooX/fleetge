@@ -1,8 +1,8 @@
 import os
 import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from starlette.requests import HTTPConnection
-from fastapi.middleware.cors import CORSMiddleware
 from metrics_runner import start_metrics_collector, get_metrics
 import docker_client
 import compose_runner
@@ -50,28 +50,22 @@ async def verify_token(connection: HTTPConnection):
     )
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Startup: begin metrics collection.  Shutdown: close Docker proxy client."""
+    print("[agent] Starting Fleetge Agent metrics collector thread...")
+    start_metrics_collector()
+    yield
+    await docker_client.close_docker_client()
+
+
 # Apply the token verification globally
 app = FastAPI(
     title="Fleetge Agent",
     version="1.0.0",
-    dependencies=[Depends(verify_token)]
+    dependencies=[Depends(verify_token)],
+    lifespan=lifespan,
 )
-
-# Enable CORS for convenience
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Startup lifespan hook: start the background metrics collection loop."""
-    print("[agent] Starting Fleetge Agent metrics collector thread...")
-    start_metrics_collector()
 
 
 @app.get("/api/agent/health")

@@ -266,14 +266,13 @@ class AgentClient:
         elif action == "updateStack" or action == "update":
             agent_action = "update"
 
-        # Establish WebSocket URI: wss://agent/api/agent/stacks/{name}/execute?token=...
+        # Establish WebSocket URI — token passed via Authorization header
         ws_uri = f"{self._ws_base_url}/api/agent/stacks/{name}/execute"
-        if self._token:
-            ws_uri += f"?token={urllib.parse.quote(self._token)}"
+        extra_headers = self._headers()
 
         # Run process via WebSocket connection
         try:
-            async with websockets.connect(ws_uri) as ws:
+            async with websockets.connect(ws_uri, extra_headers=extra_headers) as ws:
                 # Send action payload
                 await ws.send(f'{{"action": "{agent_action}"}}')
                 
@@ -327,11 +326,10 @@ class AgentClient:
         ``{"success": bool, "message": str}`` dict.
         """
         ws_uri = f"{self._ws_base_url}/api/agent/host/prune"
-        if self._token:
-            ws_uri += f"?token={urllib.parse.quote(self._token)}"
+        extra_headers = self._headers()
 
         try:
-            async with websockets.connect(ws_uri) as ws:
+            async with websockets.connect(ws_uri, extra_headers=extra_headers) as ws:
                 exit_code = 0
                 error_msg = ""
 

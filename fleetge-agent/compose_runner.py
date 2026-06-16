@@ -203,7 +203,7 @@ async def delete_stack(name: str):
 
     async with lock:
         try:
-            shutil.rmtree(stack_path)
+            await asyncio.to_thread(shutil.rmtree, stack_path)
             return {"success": True, "message": f"Stack '{name}' deleted successfully."}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to delete stack directory: {exc}")

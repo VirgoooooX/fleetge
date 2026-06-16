@@ -131,6 +131,11 @@ else:
         docker_client = httpx.AsyncClient(transport=transport, base_url="http://localhost")
 
 
+async def close_docker_client():
+    """Close the module-level httpx client (called from app lifespan)."""
+    await docker_client.aclose()
+
+
 @router.get("/docker/{docker_path:path}")
 async def proxy_docker(docker_path: str, request: Request):
     """Enforce read-only GET whitelist on all proxied Docker socket requests."""
