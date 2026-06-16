@@ -48,13 +48,24 @@
             type="button"
             @click="selectStack(stack.name)"
           >
-            <span
-              class="dot-state nav-status-dot"
-              :class="`dot-${stackStatusType(stack.status)}`"
-              :title="statusLabel(stack.status)"
-            />
-            <span class="nav-stack-name">{{ stack.name }}</span>
-            <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
+            <span class="nav-stack-icon-wrap">
+              <img
+                v-if="stack.icon_url"
+                :src="stack.icon_url"
+                class="nav-stack-icon-img"
+                @error="onIconError"
+              />
+              <el-icon v-else class="nav-stack-icon"><FolderOpened /></el-icon>
+            </span>
+            <span class="nav-stack-copy">
+              <span class="nav-stack-name">{{ stack.name }}</span>
+              <span class="nav-stack-meta">
+                <span class="nav-status-pill" :class="`status-${stackStatusType(stack.status)}`">
+                  {{ statusLabel(stack.status) }}
+                </span>
+                <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
+              </span>
+            </span>
           </button>
         </div>
       </template>
@@ -1088,16 +1099,16 @@ onUnmounted(() => {
 .stack-nav-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
   overflow: auto;
 }
 
 .stack-nav-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
-  min-height: 40px;
+  min-height: 60px;
   padding: 7px 9px;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -1118,18 +1129,92 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-.nav-stack-name {
+.nav-stack-icon-wrap {
+  position: relative;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.42), rgba(203, 213, 225, 0.36)),
+    rgba(148, 163, 184, 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.nav-stack-icon-img {
+  width: 40px;
+  height: 40px;
+  display: block;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.nav-stack-icon {
+  color: var(--text-secondary);
+  font-size: 32px;
+}
+
+.nav-stack-copy {
+  min-width: 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nav-stack-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
   font-weight: 650;
+  line-height: 1.05;
 }
 
-.nav-status-dot {
-  flex: 0 0 auto;
+.nav-stack-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.nav-status-pill {
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.nav-status-pill.status-running {
+  border-color: rgba(34, 197, 94, 0.22);
+  background: rgba(34, 197, 94, 0.08);
+  color: var(--success);
+}
+
+.nav-status-pill.status-stopped {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(148, 163, 184, 0.10);
+  color: var(--text-secondary);
+}
+
+.nav-status-pill.status-partial {
+  border-color: rgba(245, 158, 11, 0.28);
+  background: rgba(245, 158, 11, 0.10);
+  color: var(--warning);
 }
 
 .nav-count {
