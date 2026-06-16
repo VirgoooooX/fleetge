@@ -5,11 +5,10 @@
 ## 架构
 
 ```
-用户浏览器 ─HTTPS→ Fleetge Frontend (Vue 3)
-                    ─REST→ Fleetge Backend (FastAPI)
-                              ├─→ Dockge Socket.IO ─ stack 管理
-                              ├─→ docker-socket-proxy ─ Docker 只读状态
-                              └─→ host-metrics exporter ─ 主机指标
+用户浏览器 ─HTTPS→ Fleetge 单容器 (FastAPI + Vue 静态前端)
+                    ├─→ Dockge Socket.IO ─ stack 管理
+                    ├─→ docker-socket-proxy ─ Docker 只读状态
+                    └─→ host-metrics exporter ─ 主机指标
 ```
 
 ## 部署
@@ -44,7 +43,7 @@ data/
   stack_icons/
 ```
 
-镜像内不包含这些数据。`docker-compose.yml` 会把宿主机 `./data` 挂载到容器的 `/app/data`，后端默认读取：
+镜像内不包含这些数据。`docker-compose.yml` 会把宿主机 `./data` 挂载到容器的 `/app/data`，服务默认读取：
 
 ```env
 DATABASE_URL=sqlite:////app/data/dashboard-local.db
@@ -152,15 +151,17 @@ npm run dev
 
 ## GitHub Actions 镜像构建
 
-推送到 `main` 后，GitHub Actions 会构建并推送多架构镜像到 GHCR：
+推送到 `main` 后，GitHub Actions 会构建并推送主应用多架构镜像到 GHCR：
 
 ```text
-ghcr.io/<owner>/host-dashboard-backend-public:latest
-ghcr.io/<owner>/host-dashboard-frontend-public:latest
-ghcr.io/<owner>/host-dashboard-metrics-public:latest
+ghcr.io/<owner>/host-dashboard-public:latest
 ```
 
-每次构建还会额外推送以 commit SHA 命名的标签，方便固定版本部署。
+每次构建还会额外推送以 commit SHA 命名的标签，方便固定版本部署。`host-metrics-exporter` 有独立 workflow，会发布：
+
+```text
+ghcr.io/<owner>/host-dashboard-metrics-public:latest
+```
 
 ### 正式发布流程
 
@@ -187,7 +188,7 @@ chore: release v0.1.1
 
 并推送 `v0.1.1` tag。GitHub 收到 tag 后会运行 Release workflow：
 
-1. 构建并推送 backend/frontend/metrics 三个多架构镜像。
+1. 构建并推送主应用和 metrics exporter 两个多架构镜像。
 2. 给镜像打 `latest`、`0.1.1`、`v0.1.1`、`<commit-sha>` 标签。
 3. 自动创建 GitHub Release，并生成 release notes。
 

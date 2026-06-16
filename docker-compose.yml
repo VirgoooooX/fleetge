@@ -14,11 +14,11 @@
 #   docker compose up -d
 
 services:
-  backend:
+  fleetge:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
-    container_name: dashboard-backend
+    container_name: fleetge
     restart: unless-stopped
     env_file: .env
     environment:
@@ -28,22 +28,10 @@ services:
     volumes:
       - ./data:/app/data
     ports:
-      # Only expose to reverse proxy / frontend, not to the internet directly
-      - "127.0.0.1:8000:8000"
+      # The user-facing port — put this behind Lucky / nginx with HTTPS if needed.
+      - "80:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
-
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: dashboard-frontend
-    restart: unless-stopped
-    ports:
-      # The user-facing port — put this behind Lucky / nginx with HTTPS
-      - "80:80"
-    depends_on:
-      - backend

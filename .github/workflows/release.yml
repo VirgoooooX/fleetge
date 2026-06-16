@@ -17,12 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - service: backend
-            context: backend
-            image_suffix: host-dashboard-backend-public
-          - service: frontend
-            context: frontend
-            image_suffix: host-dashboard-frontend-public
+          - service: app
+            context: .
+            image_suffix: host-dashboard-public
           - service: metrics
             context: host-metrics-exporter
             image_suffix: host-dashboard-metrics-public
@@ -107,6 +104,5 @@ jobs:
           generate_release_notes: true
           body: |
             Images:
-            - `ghcr.io/${{ steps.owner.outputs.name }}/host-dashboard-backend-public:${{ steps.version.outputs.version }}`
-            - `ghcr.io/${{ steps.owner.outputs.name }}/host-dashboard-frontend-public:${{ steps.version.outputs.version }}`
+            - `ghcr.io/${{ steps.owner.outputs.name }}/host-dashboard-public:${{ steps.version.outputs.version }}`
             - `ghcr.io/${{ steps.owner.outputs.name }}/host-dashboard-metrics-public:${{ steps.version.outputs.version }}`

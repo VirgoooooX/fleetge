@@ -5,8 +5,9 @@ from pathlib import Path
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
@@ -98,9 +99,34 @@ async def health():
     return {"status": "ok", "service": "fleetge"}
 
 
-# ── Serve static frontend (optional, nginx frontend preferred) ─────────
+# ── Serve static frontend ──────────────────────────────────────────────
+
+
+_FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend_dist"
+_FRONTEND_ASSETS_DIR = _FRONTEND_DIST_DIR / "assets"
+_FRONTEND_INDEX = _FRONTEND_DIST_DIR / "index.html"
+
+if _FRONTEND_ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(_FRONTEND_ASSETS_DIR)), name="assets")
 
 
 @app.get("/")
 async def root():
+    if _FRONTEND_INDEX.exists():
+        return FileResponse(_FRONTEND_INDEX)
     return {"message": "Fleetge API — see /api/docs for Swagger"}
+
+
+@app.get("/{path:path}")
+async def spa_fallback(path: str):
+    if not _FRONTEND_DIST_DIR.exists() or not _FRONTEND_INDEX.exists():
+        raise HTTPException(status_code=404, detail="Not found")
+
+    requested = (_FRONTEND_DIST_DIR / path).resolve()
+    if (
+        requested.is_file()
+        and _FRONTEND_DIST_DIR.resolve() in requested.parents
+    ):
+        return FileResponse(requested)
+
+    return FileResponse(_FRONTEND_INDEX)
