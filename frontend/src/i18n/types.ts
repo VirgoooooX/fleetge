@@ -97,6 +97,13 @@ export interface I18nSchema {
   "stack.action.stopStack": string;
   "stack.action.restartStack": string;
   "stack.action.updateStack": string;
+  "stack.action.delete": string;
+  "stack.action.deleteStack": string;
+  "stack.delete.title": string;
+  "stack.delete.message": string;
+  "stack.delete.ok": string;
+  "stack.delete.success": string;
+  "stack.delete.failure": string;
   "stack.confirm.title": string;
   "stack.confirm.message": string;
   "stack.confirm.ok": string;
@@ -116,6 +123,7 @@ export interface I18nSchema {
   "stackOp.stopping": string;
   "stackOp.restarting": string;
   "stackOp.updating": string;
+  "stackOp.pruning": string;
   "stackOp.operation": string;
   "stackOp.completed": string;
   "stackOp.failed": string;
@@ -190,6 +198,9 @@ export interface I18nSchema {
   "workspace.running": string;
   "workspace.editCompose": string;
   "workspace.viewDetail": string;
+  "workspace.pruneDocker": string;
+  "workspace.pruneConfirm": string;
+  "workspace.pruneMessage": string;
   "workspace.noMatchingStack": string;
   "workspace.containerGroup": string;
   "workspace.containers": string;

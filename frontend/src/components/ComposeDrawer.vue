@@ -87,15 +87,20 @@
       </el-tabs>
 
       <div v-if="saving === 'deploy'" class="deploy-terminal">
-        <div class="deploy-terminal-header">{{ t('compose.deployOutput') }}</div>
-        <div class="deploy-terminal-viewport" ref="deployViewportRef">
-          <div
-            v-for="(line, i) in deployLines"
-            :key="i"
-            class="deploy-terminal-line"
-          >{{ line }}</div>
-          <div v-if="deployStreamActive" class="deploy-terminal-cursor">▊</div>
+        <div class="deploy-terminal-header">
+          <span>{{ t('compose.deployOutput') }}</span>
+          <el-button
+            v-if="deployChunks.length > 0"
+            class="ui-button ui-button--compact"
+            size="small"
+            text
+            :icon="DocumentCopy"
+            @click="copyDeployOutput"
+          >
+            {{ deployCopied ? t('terminal.copied') : t('terminal.copyOutput') }}
+          </el-button>
         </div>
+        <div class="deploy-terminal-viewport" ref="deployTerminalRef" />
       </div>
 
       <div v-if="operationStatus" class="compose-operation-status" :class="`op-${operationStatus.status}`">
@@ -109,12 +114,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from "vue";
+import { ref, computed, watch, nextTick, onUnmounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useI18n } from "vue-i18n";
-import { Loading, SuccessFilled, WarningFilled } from "@element-plus/icons-vue";
+import { Loading, SuccessFilled, WarningFilled, DocumentCopy } from "@element-plus/icons-vue";
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
+import { Terminal as XtermTerminal, type ITheme } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{
   visible: boolean;
@@ -141,9 +149,41 @@ const operationStatus = ref<{
   logTail?: string;
 } | null>(null);
 
-const deployLines = ref<string[]>([]);
+const deployChunks = ref<string[]>([]);
 const deployStreamActive = ref(false);
-const deployViewportRef = ref<HTMLElement | null>(null);
+const deployCopied = ref(false);
+const deployTerminalRef = ref<HTMLElement | null>(null);
+let deployTerminal: XtermTerminal | null = null;
+let deployFitAddon: FitAddon | null = null;
+let deployRenderedChunkCount = 0;
+let deployResizeObserver: ResizeObserver | null = null;
+let deployThemeObserver: MutationObserver | null = null;
+
+const darkDeployTheme: ITheme = {
+  background: "#0d1117",
+  foreground: "#e6edf3",
+  cursor: "#58a6ff",
+  black: "#0d1117",
+  blue: "#58a6ff",
+  cyan: "#22d3ee",
+  green: "#3fb950",
+  red: "#f85149",
+  yellow: "#f0883e",
+  white: "#e6edf3",
+};
+
+const lightDeployTheme: ITheme = {
+  background: "#f8fafc",
+  foreground: "#0f172a",
+  cursor: "#2563eb",
+  black: "#0f172a",
+  blue: "#2563eb",
+  cyan: "#0891b2",
+  green: "#16a34a",
+  red: "#dc2626",
+  yellow: "#d97706",
+  white: "#f8fafc",
+};
 
 const DEFAULT_COMPOSE_YAML = `services:
   app:
@@ -179,7 +219,7 @@ watch(
   (visible) => {
     if (visible) {
       operationStatus.value = null;
-      deployLines.value = [];
+      deployChunks.value = [];
       deployStreamActive.value = false;
       if (createMode.value) {
         initializeCreateCompose();
@@ -192,12 +232,19 @@ watch(
 );
 
 watch(
-  () => deployLines.value.length,
-  async () => {
-    await nextTick();
-    if (deployViewportRef.value) {
-      deployViewportRef.value.scrollTop = deployViewportRef.value.scrollHeight;
-    }
+  () => deployChunks.value,
+  () => {
+    deployRenderedChunkCount = 0;
+    deployTerminal?.clear();
+    deployTerminal?.reset();
+    writeDeployChunks(0, true);
+  }
+);
+
+watch(
+  () => deployChunks.value.length,
+  () => {
+    writeDeployChunks(deployRenderedChunkCount);
   }
 );
 
@@ -314,8 +361,9 @@ async function save(deploy: boolean) {
   }
 
   saving.value = "deploy";
-  deployLines.value = [];
+  deployChunks.value = [];
   deployStreamActive.value = true;
+  nextTick(() => initDeployTerminal());
 
   operationStatus.value = {
     status: "running",
@@ -348,8 +396,11 @@ async function save(deploy: boolean) {
         ElMessage.warning(operationStatus.value.message);
       },
       onEvent: (ev) => {
-        if (ev.event === "line") {
-          deployLines.value.push(ev.data?.text ?? ev.rawData);
+        if (ev.event === "chunk") {
+          deployChunks.value.push(ev.data?.raw ?? ev.rawData);
+        } else if (ev.event === "line") {
+          // Backward compatibility for old SSE protocol
+          deployChunks.value.push(ev.data?.text ?? ev.rawData);
         } else if (ev.event === "complete") {
           completed = true;
           deployStreamActive.value = false;
@@ -400,6 +451,116 @@ async function save(deploy: boolean) {
     ElMessage.error(t("compose.deployFailed", { detail }));
   } finally {
     saving.value = null;
+  }
+}
+
+watch(
+  () => saving.value,
+  (newVal, oldVal) => {
+    if (newVal !== "deploy" && oldVal === "deploy") {
+      disposeDeployTerminal();
+    }
+  }
+);
+
+onUnmounted(() => {
+  disposeDeployTerminal();
+});
+
+function currentDeployTheme(): ITheme {
+  return document.documentElement.dataset.theme === "light"
+    ? lightDeployTheme
+    : darkDeployTheme;
+}
+
+function applyDeployTheme() {
+  if (!deployTerminal) return;
+  deployTerminal.options.theme = currentDeployTheme();
+}
+
+function initDeployTerminal() {
+  if (deployTerminal || !deployTerminalRef.value) return;
+
+  deployTerminal = new XtermTerminal({
+    convertEol: true,
+    cursorBlink: true,
+    cursorStyle: "bar",
+    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+    fontSize: 12,
+    lineHeight: 1.55,
+    scrollback: 2000,
+    theme: currentDeployTheme(),
+  });
+
+  deployFitAddon = new FitAddon();
+  deployTerminal.loadAddon(deployFitAddon);
+
+  deployTerminal.open(deployTerminalRef.value);
+  deployRenderedChunkCount = 0;
+  writeDeployChunks(0, true);
+  nextTick(() => deployFitAddon?.fit());
+
+  deployResizeObserver = new ResizeObserver(() => deployFitAddon?.fit());
+  deployResizeObserver.observe(deployTerminalRef.value);
+
+  deployThemeObserver = new MutationObserver(() => applyDeployTheme());
+  deployThemeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme", "class"],
+  });
+}
+
+function disposeDeployTerminal() {
+  deployResizeObserver?.disconnect();
+  deployResizeObserver = null;
+  deployThemeObserver?.disconnect();
+  deployThemeObserver = null;
+  deployTerminal?.dispose();
+  deployTerminal = null;
+  deployFitAddon = null;
+  deployRenderedChunkCount = 0;
+}
+
+function writeDeployChunks(startIndex: number, force = false) {
+  if (!deployTerminal) return;
+
+  if (deployChunks.value.length === 0) {
+    deployRenderedChunkCount = 0;
+    if (force) {
+      deployTerminal.clear();
+    }
+    return;
+  }
+
+  if (startIndex === 0 && deployRenderedChunkCount === 0) {
+    deployTerminal.clear();
+  }
+
+  for (let i = startIndex; i < deployChunks.value.length; i++) {
+    deployTerminal.write(deployChunks.value[i]);
+  }
+  deployRenderedChunkCount = deployChunks.value.length;
+  deployFitAddon?.fit();
+}
+
+function getDeployTerminalPlainText(): string {
+  if (!deployTerminal) return "";
+  const buffer = deployTerminal.buffer.active;
+  const lines: string[] = [];
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i);
+    if (line) lines.push(line.translateToString().trimEnd());
+  }
+  return lines.join("\n").trimEnd();
+}
+
+async function copyDeployOutput() {
+  try {
+    await navigator.clipboard.writeText(getDeployTerminalPlainText());
+    deployCopied.value = true;
+    setTimeout(() => { deployCopied.value = false; }, 2000);
+  } catch {
+    ElMessage.warning(t("terminal.copyFailed"));
   }
 }
 </script>
@@ -489,12 +650,19 @@ async function save(deploy: boolean) {
 }
 
 .deploy-terminal {
+  display: flex;
+  flex-direction: column;
+  max-height: 60vh;
   border: 1px solid #30363d;
   border-radius: 6px;
   overflow: hidden;
 }
 
 .deploy-terminal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 6px 12px;
   background: #161b22;
   color: #8b949e;
@@ -506,30 +674,38 @@ async function save(deploy: boolean) {
 }
 
 .deploy-terminal-viewport {
-  background: #0d1117;
+  flex: 1;
+  min-height: 260px;
+  height: 50vh;
   padding: 12px;
-  max-height: 60vh;
-  overflow-y: auto;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-all;
+  overflow: hidden;
+  background: #0d1117;
 }
 
-.deploy-terminal-line {
-  color: #e6edf3;
-  min-height: 1.55em;
+.deploy-terminal-viewport :deep(.xterm) {
+  height: 100%;
 }
 
-.deploy-terminal-cursor {
-  display: inline-block;
-  color: #58a6ff;
-  animation: blink 1s step-end infinite;
+.deploy-terminal-viewport :deep(.xterm-viewport) {
+  background: #0d1117 !important;
 }
 
-@keyframes blink {
-  50% { opacity: 0; }
+:global([data-theme="light"] .deploy-terminal) {
+  border-color: rgba(60, 72, 88, 0.16);
+}
+
+:global([data-theme="light"] .deploy-terminal-header) {
+  background: #eef2f7;
+  color: #64748b;
+  border-bottom-color: rgba(60, 72, 88, 0.16);
+}
+
+:global([data-theme="light"] .deploy-terminal-viewport) {
+  background: #f8fafc;
+}
+
+:global([data-theme="light"] .deploy-terminal-viewport) :deep(.xterm-viewport) {
+  background: #f8fafc !important;
 }
 
 .compose-operation-status {

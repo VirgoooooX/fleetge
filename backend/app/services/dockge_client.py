@@ -40,6 +40,7 @@ ALLOWED_ACTIONS: set[str] = {
     "updateStack",
     "saveStack",
     "deployStack",
+    "deleteStack",
 }
 
 # Read-only events allowed through the agent proxy (checked in _agent_call)
@@ -478,6 +479,16 @@ class DockgeConnection:
         return await self._run_with_terminal(
             name, action, name, timeout=60, log_queue=log_queue
         )
+
+    async def delete_stack(self, name: str) -> dict:
+        """Delete a stack directory via Dockge's deleteStack agent event.
+
+        Returns a dict with ``ok`` / ``success`` keys as returned by Dockge.
+        """
+        result = await self._agent_call("deleteStack", name, timeout=30)
+        if isinstance(result, dict):
+            return {"success": result.get("ok", True), "message": str(result)}
+        return {"success": True, "message": str(result)}
 
     async def get_logs(self, name: str, tail: int = 200) -> str:
         """Fetch stack logs via Docker proxy container logs.

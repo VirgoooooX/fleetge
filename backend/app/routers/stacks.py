@@ -19,7 +19,8 @@ from app.schemas import (
     StackSummary,
 )
 from app.services.crypto import decrypt_credentials
-from app.services.dockge_client import dockge_pool, DockgeClientError
+from app.services.dockge_client import dockge_pool
+from app.services.agent_client import AgentClient
 from app.services.snapshot import snapshot_manager
 
 logger = logging.getLogger(__name__)
@@ -151,21 +152,29 @@ async def get_stack_compose(host_id: str, stack_name: str):
     if snap is None or snap.host_config is None:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
+    conn = None
     try:
-        creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
-        conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
-        result = await conn.get_stack(stack_name)
+        if snap.host_config.agent_url:
+            conn = AgentClient(snap.host_config)
+            result = await conn.get_stack(stack_name)
+        else:
+            creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
+            conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
+            result = await conn.get_stack(stack_name)
         detail = _normalize_stack_detail(stack_name, result or {})
         if not detail.compose_yaml.strip():
             raise HTTPException(
                 status_code=409,
-                detail="Dockge did not return a compose file for this stack.",
+                detail="Dockge/Agent did not return a compose file for this stack.",
             )
         return detail
     except HTTPException:
         raise
-    except DockgeClientError as exc:
+    except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        if conn and isinstance(conn, AgentClient):
+            await conn.close()
 
 
 async def _save_stack_compose(
@@ -190,16 +199,27 @@ async def _save_stack_compose(
         )
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
+    conn = None
     try:
-        creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
-        conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
-        result = await conn.save_stack(
-            stack_name,
-            payload.compose_yaml,
-            payload.compose_env,
-            deploy=False,
-            is_add=payload.is_add,
-        )
+        if snap.host_config.agent_url:
+            conn = AgentClient(snap.host_config)
+            result = await conn.save_stack(
+                stack_name,
+                payload.compose_yaml,
+                payload.compose_env,
+                deploy=False,
+                is_add=payload.is_add,
+            )
+        else:
+            creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
+            conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
+            result = await conn.save_stack(
+                stack_name,
+                payload.compose_yaml,
+                payload.compose_env,
+                deploy=False,
+                is_add=payload.is_add,
+            )
 
         _write_audit_log(
             session, username, "stack.compose.save",
@@ -215,22 +235,18 @@ async def _save_stack_compose(
             message=f"Stack '{stack_name}' compose saved",
             detail=str(result),
         )
-    except DockgeClientError as exc:
+    except Exception as exc:
         _write_audit_log(
             session, username, "stack.compose.save",
             host_id, stack_name, "error", str(exc),
             request.client.host if request.client else None,
         )
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(status_code=502, detail=str(exc))
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _write_audit_log(
-            session, username, "stack.compose.save",
-            host_id, stack_name, "error", f"Unexpected: {exc}",
-            request.client.host if request.client else None,
-        )
-        raise HTTPException(status_code=500, detail=f"保存异常: {exc}")
+    finally:
+        if conn and isinstance(conn, AgentClient):
+            await conn.close()
 
 
 @router.put(
@@ -291,23 +307,35 @@ async def deploy_stack_compose(
     async def _stream() -> AsyncGenerator[str, None]:
         log_queue: asyncio.Queue = asyncio.Queue()
         task: Optional[asyncio.Task] = None
+        conn: Optional[AgentClient] = None
         try:
-            creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
-            conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
-            task = asyncio.create_task(
-                conn.save_stack(
-                    stack_name, payload.compose_yaml, payload.compose_env,
-                    deploy=True,
-                    is_add=payload.is_add,
-                    log_queue=log_queue,
+            if snap.host_config.agent_url:
+                conn = AgentClient(snap.host_config)
+                task = asyncio.create_task(
+                    conn.save_stack(
+                        stack_name, payload.compose_yaml, payload.compose_env,
+                        deploy=True,
+                        is_add=payload.is_add,
+                        log_queue=log_queue,
+                    )
                 )
-            )
+            else:
+                creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
+                dockge_conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
+                task = asyncio.create_task(
+                    dockge_conn.save_stack(
+                        stack_name, payload.compose_yaml, payload.compose_env,
+                        deploy=True,
+                        is_add=payload.is_add,
+                        log_queue=log_queue,
+                    )
+                )
 
             while True:
-                line = await log_queue.get()
-                if line is None:
+                chunk = await log_queue.get()
+                if chunk is None:
                     break
-                yield _sse_event("line", {"text": line})
+                yield _sse_event("chunk", {"raw": chunk})
 
             result = await task
             task = None
@@ -330,7 +358,9 @@ async def deploy_stack_compose(
                 "success" if success else "error", msg, ip,
             )
 
-        except DockgeClientError as exc:
+        except HTTPException:
+            raise
+        except Exception as exc:
             if task and not task.done():
                 task.cancel()
             yield _sse_event("error", {"message": str(exc)})
@@ -338,19 +368,160 @@ async def deploy_stack_compose(
                 username, "stack.compose.deploy", host_id, stack_name,
                 "error", str(exc), ip,
             )
-        except Exception as exc:
-            if task and not task.done():
-                task.cancel()
-            logger.exception("Deploy stream failed for %s/%s", host_id, stack_name)
-            yield _sse_event("error", {"message": f"Unexpected error: {exc}"})
-            _write_audit_log_standalone(
-                username, "stack.compose.deploy", host_id, stack_name,
-                "error", f"Unexpected: {exc}", ip,
-            )
         finally:
             # Ensure background task is cleaned up even if client disconnects
             if task is not None and not task.done():
                 task.cancel()
+            if conn is not None:
+                await conn.close()
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@router.delete(
+    "/hosts/{host_id}/stacks/{stack_name}",
+    response_model=StackOperationResponse,
+)
+async def delete_stack(
+    host_id: str,
+    stack_name: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    username: str = Depends(get_current_user),
+):
+    """Delete a stack directory permanently.
+
+    This removes the compose file, .env, and any other contents of the
+    stack directory. For the Agent path this calls :http:delete:`/api/agent/stacks/{name}`;
+    for the Legacy Dockge path it emits the ``deleteStack`` Socket.IO event.
+    """
+    snap = snapshot_manager.get_snapshot(host_id)
+    if snap is None or snap.host_config is None:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    ip = request.client.host if request.client else None
+    _write_audit_log(
+        session, username, "stack.delete",
+        host_id, stack_name, "running", "Delete started", ip,
+    )
+
+    conn = None
+    try:
+        if snap.host_config.agent_url:
+            conn = AgentClient(snap.host_config)
+            result = await conn.delete_stack(stack_name)
+        else:
+            creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
+            conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
+            result = await conn.delete_stack(stack_name)
+
+        _write_audit_log(
+            session, username, "stack.delete",
+            host_id, stack_name, "success", str(result), ip,
+        )
+
+        asyncio.create_task(
+            snapshot_manager.refresh_host_docker_with_retry(host_id)
+        )
+
+        return StackOperationResponse(
+            success=True,
+            message=f"Stack '{stack_name}' deleted successfully.",
+            detail=str(result),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _write_audit_log(
+            session, username, "stack.delete",
+            host_id, stack_name, "error", str(exc), ip,
+        )
+        raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        if conn and isinstance(conn, AgentClient):
+            await conn.close()
+
+
+@router.post("/hosts/{host_id}/prune")
+async def prune_docker_system(
+    host_id: str,
+    request: Request,
+    session: Session = Depends(get_session),
+    username: str = Depends(get_current_user),
+):
+    """Run ``docker system prune -a -f`` on the host and stream output.
+
+    Only supported for hosts that have an Agent configured.
+    Returns a ``text/event-stream`` SSE response.
+    """
+    snap = snapshot_manager.get_snapshot(host_id)
+    if snap is None or snap.host_config is None:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    if not snap.host_config.agent_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Docker system prune is only supported for hosts with a Fleetge Agent.",
+        )
+
+    ip = request.client.host if request.client else None
+    _write_audit_log(
+        session, username, "docker.prune",
+        host_id, None, "running", "Prune started", ip,
+    )
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        log_queue: asyncio.Queue = asyncio.Queue()
+        task: Optional[asyncio.Task] = None
+        conn: Optional[AgentClient] = None
+        try:
+            conn = AgentClient(snap.host_config)
+            task = asyncio.create_task(
+                conn.prune_system(log_queue=log_queue)
+            )
+
+            while True:
+                chunk = await log_queue.get()
+                if chunk is None:
+                    break
+                yield _sse_event("chunk", {"raw": chunk})
+
+            result = await task
+            task = None
+
+            success = True
+            msg = str(result)
+            if isinstance(result, dict):
+                ok_val = result.get("success", True)
+                success = bool(ok_val) if ok_val is not None else True
+                msg = result.get("message", str(result))
+
+            yield _sse_event(
+                "complete",
+                {"status": "success" if success else "error", "message": msg},
+            )
+
+            asyncio.create_task(snapshot_manager.refresh_all_structure_now())
+            _write_audit_log_standalone(
+                username, "docker.prune", host_id, None,
+                "success" if success else "error", msg, ip,
+            )
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if task and not task.done():
+                task.cancel()
+            yield _sse_event("error", {"message": str(exc)})
+            _write_audit_log_standalone(
+                username, "docker.prune", host_id, None,
+                "error", str(exc), ip,
+            )
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+            if conn is not None:
+                await conn.close()
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
@@ -579,18 +750,25 @@ async def stack_action(
     async def _stream() -> AsyncGenerator[str, None]:
         log_queue: asyncio.Queue = asyncio.Queue()
         task: Optional[asyncio.Task] = None
+        conn: Optional[AgentClient] = None
         try:
-            creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
-            conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
-            task = asyncio.create_task(
-                conn.stack_action(stack_name, socket_event, log_queue=log_queue)
-            )
+            if snap.host_config.agent_url:
+                conn = AgentClient(snap.host_config)
+                task = asyncio.create_task(
+                    conn.stack_action(stack_name, socket_event, log_queue=log_queue)
+                )
+            else:
+                creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
+                dockge_conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
+                task = asyncio.create_task(
+                    dockge_conn.stack_action(stack_name, socket_event, log_queue=log_queue)
+                )
 
             while True:
-                line = await log_queue.get()
-                if line is None:  # EOF sentinel from _run_with_terminal
+                chunk = await log_queue.get()
+                if chunk is None:  # EOF sentinel from _run_with_terminal
                     break
-                yield _sse_event("line", {"text": line})
+                yield _sse_event("chunk", {"raw": chunk})
 
             result = await task
             task = None
@@ -615,7 +793,9 @@ async def stack_action(
                 "success" if success else "error", msg, ip,
             )
 
-        except DockgeClientError as exc:
+        except HTTPException:
+            raise
+        except Exception as exc:
             if task and not task.done():
                 task.cancel()
             yield _sse_event("error", {"message": str(exc)})
@@ -623,17 +803,10 @@ async def stack_action(
                 username, f"stack.{action}", host_id, stack_name,
                 "error", str(exc), ip,
             )
-        except Exception as exc:
-            if task and not task.done():
-                task.cancel()
-            logger.exception("Stack action stream failed for %s/%s", host_id, stack_name)
-            yield _sse_event("error", {"message": f"Unexpected error: {exc}"})
-            _write_audit_log_standalone(
-                username, f"stack.{action}", host_id, stack_name,
-                "error", f"Unexpected: {exc}", ip,
-            )
         finally:
             if task is not None and not task.done():
                 task.cancel()
+            if conn is not None:
+                await conn.close()
 
     return StreamingResponse(_stream(), media_type="text/event-stream")

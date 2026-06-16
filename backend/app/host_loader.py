@@ -11,7 +11,11 @@ from sqlmodel import Session
 from app.config import get_settings
 from app.database import engine
 from app.models import HostConfig
-from app.services.crypto import encrypt_credentials, encrypt_authorization_header
+from app.services.crypto import (
+    encrypt_credentials,
+    encrypt_authorization_header,
+    encrypt_string,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,18 +28,9 @@ def load_hosts_from_yaml() -> int:
     hosts:
       - host_id: oc-chicago
         display_name: OC Chicago
-        dockge:
-          url: https://dockge.1989009.xyz
-          username: admin
-          password: "the-dockge-password"
-        docker_proxy:
-          url: https://docker.1989009.xyz
-          username: monitor
-          password: "the-basic-auth-pass"
-        metrics:
-          url: https://metrics.1989009.xyz
-          username: monitor
-          password: "the-basic-auth-pass"
+        agent:
+          url: http://localhost:8080
+          token: "secret-token"
         sort_order: 1
         enabled: true
     ```
@@ -66,6 +61,7 @@ def load_hosts_from_yaml() -> int:
             dockge = entry.get("dockge", {})
             docker_proxy = entry.get("docker_proxy", {})
             metrics = entry.get("metrics", {})
+            agent = entry.get("agent", {})
 
             # Encrypt Dockge credentials
             dockge_password_encrypted = encrypt_credentials(
@@ -86,6 +82,12 @@ def load_hosts_from_yaml() -> int:
                     metrics["username"], metrics["password"]
                 )
 
+            # Encrypt agent token
+            agent_url = agent.get("url")
+            agent_token_encrypted = None
+            if agent_url and agent.get("token"):
+                agent_token_encrypted = encrypt_string(agent["token"])
+
             # Upsert
             existing = session.query(HostConfig).filter(
                 HostConfig.host_id == host_id
@@ -102,6 +104,8 @@ def load_hosts_from_yaml() -> int:
                 existing.docker_proxy_auth_encrypted = dp_auth
                 existing.metrics_url = metrics.get("url", "")
                 existing.metrics_auth_encrypted = m_auth
+                existing.agent_url = agent_url
+                existing.agent_token_encrypted = agent_token_encrypted
                 # Stack icons
                 stack_icons = entry.get("stack_icons")
                 existing.stack_icons = json.dumps(stack_icons, ensure_ascii=False) if stack_icons else None
@@ -118,6 +122,8 @@ def load_hosts_from_yaml() -> int:
                     docker_proxy_auth_encrypted=dp_auth,
                     metrics_url=metrics.get("url", ""),
                     metrics_auth_encrypted=m_auth,
+                    agent_url=agent_url,
+                    agent_token_encrypted=agent_token_encrypted,
                     stack_icons=json.dumps(stack_icons, ensure_ascii=False) if (stack_icons := entry.get("stack_icons")) else None,
                 )
                 session.add(host)

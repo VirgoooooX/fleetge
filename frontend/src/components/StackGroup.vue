@@ -27,7 +27,7 @@
             :stack-name="stack.name"
             @refresh="$emit('refresh')"
             @operation-start="onOperationStart(stack.name, $event)"
-            @terminal-line="onTerminalLine(stack.name, $event)"
+            @terminal-chunk="onTerminalChunk(stack.name, $event)"
             @operation-complete="onOperationComplete(stack.name, $event)"
           />
           <el-button
@@ -141,7 +141,7 @@ import { useI18n } from "vue-i18n";
 import { FolderOpened, Document, EditPen, Loading, SuccessFilled, WarningFilled, Clock } from "@element-plus/icons-vue";
 import StatusIcon from "./StatusIcon.vue";
 import StackActions from "./StackActions.vue";
-import type { OperationState, TerminalLineEvent } from "./StackActions.vue";
+import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import LogDrawer from "./LogDrawer.vue";
 import ComposeDrawer from "./ComposeDrawer.vue";
 import TerminalDrawer from "./TerminalDrawer.vue";
@@ -180,11 +180,11 @@ const terminalDrawerStack = ref("");
 const terminalDrawerStatus = ref<"running" | "success" | "error" | "idle">("idle");
 const terminalDrawerMessage = ref("");
 
-function onTerminalLine(stackName: string, payload: TerminalLineEvent) {
+function onTerminalChunk(stackName: string, payload: TerminalChunkEvent) {
   if (!terminalOutputs[stackName]) {
     terminalOutputs[stackName] = [];
   }
-  terminalOutputs[stackName].push(payload.line);
+  terminalOutputs[stackName].push(payload.chunk);
 
   // Open drawer on first line if not already open for this stack
   if (!terminalDrawerVisible.value || terminalDrawerStack.value !== stackName) {

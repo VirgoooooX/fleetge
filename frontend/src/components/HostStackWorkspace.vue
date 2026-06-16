@@ -18,7 +18,29 @@
             <el-icon v-if="!updateLoading"><Refresh /></el-icon>
           </el-button>
         </el-tooltip>
+        <el-tooltip :content="t('workspace.pruneDocker')" placement="top">
+          <el-button
+            class="ui-icon-button ui-icon-button--danger sidebar-icon-button"
+            size="small"
+            :loading="pruneLoading"
+            :aria-label="t('workspace.pruneDocker')"
+            @click="confirmPrune"
+          >
+            <el-icon v-if="!pruneLoading"><Brush /></el-icon>
+          </el-button>
+        </el-tooltip>
       </div>
+
+      <StackOperationDock
+        v-if="operationPanelVisible && operationPanelStack === '__prune__'"
+        class="sidebar-prune-dock"
+        stack-name="Docker System"
+        :action="operationPanelAction"
+        :lines="terminalOutputs['__prune__'] || []"
+        :status="operationPanelStatus"
+        :message="operationPanelMessage"
+        @close="closeOperationDock"
+      />
 
       <div class="sidebar-search">
         <el-icon><Search /></el-icon>
@@ -112,7 +134,7 @@
                   :stack-name="stack.name"
                   @refresh="$emit('refresh')"
                   @operation-start="onOperationStart(stack.name, $event)"
-                  @terminal-line="onTerminalLine(stack.name, $event)"
+                  @terminal-chunk="onTerminalChunk(stack.name, $event)"
                   @operation-complete="onOperationComplete(stack.name, $event)"
                 />
                 <el-tooltip :content="t('workspace.editCompose')" placement="top">
@@ -201,7 +223,7 @@
               :stack-name="selectedStack.name"
               @refresh="$emit('refresh')"
               @operation-start="onOperationStart(selectedStack.name, $event)"
-              @terminal-line="onTerminalLine(selectedStack.name, $event)"
+              @terminal-chunk="onTerminalChunk(selectedStack.name, $event)"
               @operation-complete="onOperationComplete(selectedStack.name, $event)"
             />
             <el-button class="ui-button detail-compose-button" @click="openCompose(selectedStack.name)">
@@ -722,6 +744,7 @@ import {
   Top,
   Calendar,
   ArrowRight,
+  Brush,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
@@ -729,7 +752,7 @@ import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
 import StatusIcon from "./StatusIcon.vue";
 import StackActions from "./StackActions.vue";
-import type { OperationState, TerminalLineEvent } from "./StackActions.vue";
+import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import StackOperationDock from "./StackOperationDock.vue";
 import ComposeDrawer from "./ComposeDrawer.vue";
 import UpdateBadge from "./UpdateBadge.vue";
@@ -867,6 +890,7 @@ let operationAutoCloseTimer: ReturnType<typeof setTimeout> | null = null;
 const composeDrawerVisible = ref(false);
 const currentComposeStack = ref("");
 const composeDrawerMode = ref<"edit" | "create">("edit");
+const pruneLoading = ref(false);
 
 const filteredStacks = computed(() => {
   const query = stackSearch.value.trim().toLowerCase();
@@ -1107,6 +1131,81 @@ function openNewCompose() {
   composeDrawerVisible.value = true;
 }
 
+async function confirmPrune() {
+  try {
+    await ElMessageBox.confirm(
+      t("workspace.pruneMessage"),
+      t("workspace.pruneConfirm"),
+      {
+        confirmButtonText: t("stack.delete.ok"),
+        cancelButtonText: t("stack.confirm.cancel"),
+        type: "error",
+        confirmButtonClass: "el-button--danger",
+      }
+    );
+  } catch {
+    return;
+  }
+
+  pruneLoading.value = true;
+  const pruneKey = "__prune__";
+  terminalOutputs[pruneKey] = [];
+  operationPanelStack.value = pruneKey;
+  operationPanelStatus.value = "running";
+  operationPanelMessage.value = t("stack.confirm.running", { action: t("workspace.pruneDocker") });
+  operationPanelAction.value = "prune";
+  operationPanelVisible.value = true;
+
+  let completed = false;
+
+  try {
+    const url = `/api/hosts/${props.hostId}/prune`;
+    await streamSse({
+      url,
+      method: "POST",
+      timeoutMs: 300000,
+      onTimeout: () => {
+        if (completed) return;
+        completed = true;
+        operationPanelStatus.value = "error";
+        operationPanelMessage.value = t("stack.confirm.timeout");
+      },
+      onEvent: (ev) => {
+        if (ev.event === "chunk") {
+          if (!terminalOutputs[pruneKey]) terminalOutputs[pruneKey] = [];
+          terminalOutputs[pruneKey].push(ev.data?.raw ?? ev.rawData);
+        } else if (ev.event === "complete") {
+          completed = true;
+          const data = ev.data || {};
+          operationPanelStatus.value = data.status === "success" ? "success" : "error";
+          operationPanelMessage.value = data.message || "";
+          emit("refresh");
+          scheduleOperationAutoClose(pruneKey, 4000);
+        } else if (ev.event === "error") {
+          completed = true;
+          operationPanelStatus.value = "error";
+          operationPanelMessage.value = ev.data?.message || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
+        }
+      },
+    });
+
+    if (!completed) {
+      completed = true;
+      operationPanelStatus.value = "success";
+      operationPanelMessage.value = t("stack.confirm.success", { action: t("workspace.pruneDocker") });
+      emit("refresh");
+      scheduleOperationAutoClose(pruneKey, 3000);
+    }
+  } catch (e: any) {
+    if (completed) return;
+    completed = true;
+    operationPanelStatus.value = "error";
+    operationPanelMessage.value = e.message || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
+  } finally {
+    pruneLoading.value = false;
+  }
+}
+
 function onComposeSaved() {
   emit("refresh");
 }
@@ -1241,11 +1340,11 @@ function logLevel(text: string): StackLogLine["level"] {
   return "info";
 }
 
-function onTerminalLine(stackName: string, payload: TerminalLineEvent) {
+function onTerminalChunk(stackName: string, payload: TerminalChunkEvent) {
   if (!terminalOutputs[stackName]) {
     terminalOutputs[stackName] = [];
   }
-  terminalOutputs[stackName].push(payload.line);
+  terminalOutputs[stackName].push(payload.chunk);
 
   if (!operationPanelVisible.value || operationPanelStack.value !== stackName) {
     operationPanelStack.value = stackName;
@@ -1361,6 +1460,10 @@ onUnmounted(() => {
   height: 34px;
   min-height: 34px;
   width: 34px;
+}
+
+.sidebar-prune-dock {
+  margin-bottom: 2px;
 }
 
 .sidebar-search {

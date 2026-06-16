@@ -27,7 +27,12 @@ class HostConfig(SQLModel, table=True):
 
     metrics_url: str = ""
     # Fernet-encrypted JSON: {"username": "...", "password": "..."}
+    # (Or Fernet-encrypted string directly for agent token)
     metrics_auth_encrypted: Optional[str] = None
+
+    # Fleetge Agent fields (Optional for parallel co-existence)
+    agent_url: Optional[str] = Field(default=None)
+    agent_token_encrypted: Optional[str] = Field(default=None)
 
     # Stack icon mapping — JSON string: {"stack_name": "icon_url_or_path"}
     stack_icons: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))

@@ -34,9 +34,10 @@ from app.schemas import (
     UpdateCheckResult,
 )
 from app.services.crypto import decrypt_credentials
-from app.services.dockge_client import dockge_pool, DockgeClientError
+from app.services.dockge_client import dockge_pool
 from app.services.docker_proxy import DockerProxyClient
 from app.services.metrics_client import MetricsClient
+from app.services.agent_client import AgentClient
 from app.services.update_check import run_update_check
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,7 @@ class SnapshotManager:
         # Clients — lazily created
         self._proxy_clients: dict[str, DockerProxyClient] = {}
         self._metrics_clients: dict[str, MetricsClient] = {}
+        self._agent_clients: dict[str, AgentClient] = {}
         self._host_refresh_locks: dict[str, asyncio.Lock] = {}
         self._metrics_refresh_lock = asyncio.Lock()
         self._update_check_lock = asyncio.Lock()
@@ -158,6 +160,9 @@ class SnapshotManager:
             await c.close()
         self._proxy_clients.clear()
         self._metrics_clients.clear()
+        for c in self._agent_clients.values():
+            await c.close()
+        self._agent_clients.clear()
         logger.info("SnapshotManager stopped")
 
     def get_snapshot(self, host_id: str) -> Optional[HostSnapshot]:
@@ -261,6 +266,7 @@ class SnapshotManager:
                     del self._snapshots[hid]
                     self._proxy_clients.pop(hid, None)
                     self._metrics_clients.pop(hid, None)
+                    self._agent_clients.pop(hid, None)
                     self._host_refresh_locks.pop(hid, None)
                     await dockge_pool.remove(hid)
 
@@ -314,12 +320,17 @@ class SnapshotManager:
             async def refresh_one(snap: HostSnapshot) -> None:
                 if not snap.host_config:
                     return
-                if snap.host_config.host_id not in self._metrics_clients:
-                    self._metrics_clients[snap.host_config.host_id] = MetricsClient(
-                        snap.host_config
-                    )
-                client = self._metrics_clients[snap.host_config.host_id]
-                metrics = await client.fetch()
+                cfg = snap.host_config
+                if cfg.agent_url:
+                    if cfg.host_id not in self._agent_clients:
+                        self._agent_clients[cfg.host_id] = AgentClient(cfg)
+                    agent = self._agent_clients[cfg.host_id]
+                    metrics = await agent.fetch_metrics()
+                else:
+                    if cfg.host_id not in self._metrics_clients:
+                        self._metrics_clients[cfg.host_id] = MetricsClient(cfg)
+                    client = self._metrics_clients[cfg.host_id]
+                    metrics = await client.fetch()
                 snap.metrics = metrics
                 snap.metrics_updated = time.monotonic()
 
@@ -380,9 +391,14 @@ class SnapshotManager:
         if not snap or not snap.host_config:
             return
         cfg = snap.host_config
-        if cfg.host_id not in self._proxy_clients:
-            self._proxy_clients[cfg.host_id] = DockerProxyClient(cfg)
-        proxy = self._proxy_clients[cfg.host_id]
+        if cfg.agent_url:
+            if cfg.host_id not in self._agent_clients:
+                self._agent_clients[cfg.host_id] = AgentClient(cfg)
+            proxy = self._agent_clients[cfg.host_id]
+        else:
+            if cfg.host_id not in self._proxy_clients:
+                self._proxy_clients[cfg.host_id] = DockerProxyClient(cfg)
+            proxy = self._proxy_clients[cfg.host_id]
 
         try:
             # Version / Info
@@ -402,27 +418,34 @@ class SnapshotManager:
                 name=info.get("Name"),
             )
 
-            # Disk usage
-            df = await proxy.disk_usage()
-            snap.docker_disk = DockerDiskUsage(
-                images_total=len(df.get("Images", [])),
-                images_size=sum(
-                    i.get("Size", 0) for i in df.get("Images", [])
-                ),
-                containers_total=len(df.get("Containers", [])),
-                containers_size=sum(
-                    c.get("SizeRw", 0) for c in df.get("Containers", [])
-                ),
-                volumes_total=len(df.get("Volumes", [])),
-                volumes_size=sum(
-                    v.get("UsageData", {}).get("Size", 0)
-                    for v in df.get("Volumes", [])
-                ),
-                build_cache_total=len(df.get("BuildCache", [])),
-                build_cache_size=sum(
-                    b.get("Size", 0) for b in df.get("BuildCache", [])
-                ),
-            )
+            # Disk usage (non-fatal, since /system/df can be slow/deadlocked on Windows/WSL2)
+            try:
+                df = await proxy.disk_usage()
+                snap.docker_disk = DockerDiskUsage(
+                    images_total=len(df.get("Images", [])),
+                    images_size=sum(
+                        i.get("Size", 0) for i in df.get("Images", [])
+                    ),
+                    containers_total=len(df.get("Containers", [])),
+                    containers_size=sum(
+                        c.get("SizeRw", 0) for c in df.get("Containers", [])
+                    ),
+                    volumes_total=len(df.get("Volumes", [])),
+                    volumes_size=sum(
+                        v.get("UsageData", {}).get("Size", 0)
+                        for v in df.get("Volumes", [])
+                    ),
+                    build_cache_total=len(df.get("BuildCache", [])),
+                    build_cache_size=sum(
+                        b.get("Size", 0) for b in df.get("BuildCache", [])
+                    ),
+                )
+            except Exception as df_exc:
+                logger.warning(
+                    "Failed to fetch docker disk usage for %s: %s",
+                    cfg.host_id, df_exc
+                )
+                snap.docker_disk = None
 
             # /system/df can include extra disk-accounting entries. /images/json
             # matches the visible local image list more closely.
@@ -478,7 +501,7 @@ class SnapshotManager:
                         ip=p.get("IP"),
                         type=p.get("Type", "tcp"),
                     )
-                    for p in c.get("Ports", [])
+                    for p in (c.get("Ports") or [])
                 ]
                 # Extract stack/service from compose labels
                 labels = c.get("Labels", {}) or {}
@@ -578,7 +601,7 @@ class SnapshotManager:
 
         except Exception as exc:
             logger.warning(
-                "Docker proxy poll failed for %s: %s", cfg.host_id, exc
+                "Docker proxy poll failed for %s: %s", cfg.host_id, exc, exc_info=True
             )
             snap.status = "degraded"
             snap.error_message = str(exc)
@@ -756,11 +779,17 @@ class SnapshotManager:
     async def _refresh_stacks(self, snap: HostSnapshot, cfg: HostConfig) -> None:
         """Fetch and merge Dockge stacks with container states."""
         try:
-            # Decrypt Dockge password
-            creds = decrypt_credentials(cfg.dockge_password_encrypted)
-            conn = await dockge_pool.get_or_create(cfg, creds["password"])
+            if cfg.agent_url:
+                if cfg.host_id not in self._agent_clients:
+                    self._agent_clients[cfg.host_id] = AgentClient(cfg)
+                conn = self._agent_clients[cfg.host_id]
+                raw_stacks = await conn.list_stacks()
+            else:
+                # Decrypt Dockge password
+                creds = decrypt_credentials(cfg.dockge_password_encrypted)
+                conn = await dockge_pool.get_or_create(cfg, creds["password"])
+                raw_stacks = await conn.list_stacks()
 
-            raw_stacks = await conn.list_stacks()
             stacks = self.parse_dockge_stacks(raw_stacks)
             stacks = self._apply_stack_icons(stacks, cfg)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)

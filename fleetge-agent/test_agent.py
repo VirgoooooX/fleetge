@@ -1,0 +1,237 @@
+import os
+import sys
+import subprocess
+from pathlib import Path
+import pytest
+from fastapi.testclient import TestClient
+
+# Mock settings before importing app
+os.environ["AGENT_TOKEN"] = "test-secret-token"
+os.environ["STACKS_BASE_DIR"] = "/tmp/test-stacks"
+
+from main import app
+import compose_runner
+
+client = TestClient(app)
+
+
+@pytest.fixture
+def stack_base(monkeypatch, tmp_path):
+    """Route stack storage into a temporary directory for a single test."""
+    monkeypatch.setattr(compose_runner, "STACKS_BASE_DIR", str(tmp_path))
+    return tmp_path
+
+
+def test_unauthorized():
+    """Ensure requests without valid token are blocked."""
+    response = client.get("/api/agent/metrics")
+    assert response.status_code == 401
+    assert "Unauthorized" in response.json()["detail"]
+
+
+def test_authorized_header():
+    """Ensure standard Bearer token header works."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.get("/api/agent/health", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_authorized_query_param():
+    """Ensure token in query param fallback works."""
+    response = client.get("/api/agent/health?token=test-secret-token")
+    assert response.status_code == 200
+
+
+def test_health_check_bypasses_auth():
+    """Ensure health check is accessible without a token."""
+    response = client.get("/api/agent/health")
+    assert response.status_code == 200
+
+
+def test_docker_only_get_allowed():
+    """Ensure POST/PUT methods to docker proxy are forbidden (403 or 405)."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    
+    # POST to a whitelisted path
+    response = client.post("/api/agent/docker/containers/json", headers=headers)
+    assert response.status_code in (403, 405)
+
+
+def test_docker_whitelist_only():
+    """Ensure non-whitelisted paths are rejected."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    
+    # Try to access a path not in whitelist
+    response = client.get("/api/agent/docker/containers/create", headers=headers)
+    assert response.status_code == 403
+    assert "not in the read-only whitelist" in response.json()["detail"]
+    
+    # Try to access a malicious path
+    response = client.get("/api/agent/docker/containers/123/stop", headers=headers)
+    assert response.status_code == 403
+
+
+def test_path_traversal_blocked():
+    """Ensure stack names with path traversal characters are blocked or resolved to 404."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    
+    # Path traversal stack name: server path normalization resolves this outside route matching -> 404
+    response = client.get("/api/agent/stacks/..%2Fsubfolder", headers=headers)
+    assert response.status_code in (400, 404)
+
+    # Traversal in name via raw dots resolves to 404
+    response = client.get("/api/agent/stacks/../another-dir", headers=headers)
+    assert response.status_code in (400, 404)
+
+
+def test_invalid_stack_name_rejected():
+    """Ensure stack names with invalid characters are rejected with 400."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.get("/api/agent/stacks/invalid$name", headers=headers)
+    assert response.status_code == 400
+    assert "Only alphanumeric characters" in response.json()["detail"]
+
+
+def test_safe_stack_name():
+    """Ensure a safe stack name gets processed normally (e.g. 404 if compose missing)."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.get("/api/agent/stacks/my-safe-stack", headers=headers)
+    # my-safe-stack doesn't exist, should return 404, not 400 or 403
+    assert response.status_code == 404
+    assert "compose file not found" in response.json()["detail"]
+
+
+def test_save_stack_cleans_up_old_compose_file(stack_base):
+    """Saving with a different compose file name removes the old file."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    old_file = stack_dir / "docker-compose.yml"
+    old_file.write_text("version: '3'\n")
+
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={
+            "compose_yaml": "services:\n  app:\n    image: nginx\n",
+            "compose_file_name": "compose.yaml",
+        },
+    )
+
+    assert response.status_code == 200
+    assert not old_file.exists()
+    new_file = stack_dir / "compose.yaml"
+    assert new_file.exists()
+    assert "image: nginx" in new_file.read_text()
+
+
+def test_save_stack_rejects_invalid_compose_file_name(stack_base):
+    """Only recognized compose file names are accepted."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={"compose_yaml": "x", "compose_file_name": "malicious.yml"},
+    )
+    assert response.status_code == 400
+
+
+def test_save_stack_writes_and_removes_env(stack_base):
+    """.env is written when provided and removed when omitted."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    headers = {"Authorization": "Bearer test-secret-token"}
+
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={
+            "compose_yaml": "services:\n  app:\n    image: nginx\n",
+            "compose_env": "FOO=bar\n",
+        },
+    )
+    assert response.status_code == 200
+    env_file = stack_dir / ".env"
+    assert env_file.exists()
+    assert "FOO=bar" in env_file.read_text()
+
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={"compose_yaml": "services:\n  app:\n    image: nginx\n"},
+    )
+    assert response.status_code == 200
+    assert not env_file.exists()
+
+
+def test_delete_stack_refuses_non_compose_directory(stack_base):
+    """Deleting a directory with no compose file is rejected."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.delete("/api/agent/stacks/test-stack", headers=headers)
+    assert response.status_code == 400
+    assert "does not contain a compose file" in response.json()["detail"]
+    assert stack_dir.exists()
+
+
+def test_delete_stack_removes_directory(stack_base):
+    """Deleting a stack with a compose file removes the directory."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.delete("/api/agent/stacks/test-stack", headers=headers)
+    assert response.status_code == 200
+    assert not stack_dir.exists()
+
+
+def test_websocket_invalid_action(stack_base):
+    """Execute endpoint returns an error for unsupported actions."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+
+    with client.websocket_connect(
+        "/api/agent/stacks/test-stack/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": "not-an-action"})
+        msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert "Invalid action" in msg["message"]
+
+
+def test_empty_agent_token_warns_on_stderr():
+    """Importing the app with an empty token prints a warning to stderr."""
+    env = os.environ.copy()
+    env.pop("AGENT_TOKEN", None)
+    env.pop("AGENT_REQUIRE_TOKEN", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "import main"],
+        cwd=Path(__file__).parent,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "AGENT_TOKEN is not set" in result.stderr
+
+
+def test_agent_require_token_empty_exits():
+    """AGENT_REQUIRE_TOKEN=true with an empty token exits with an error."""
+    env = os.environ.copy()
+    env.pop("AGENT_TOKEN", None)
+    env["AGENT_REQUIRE_TOKEN"] = "true"
+    result = subprocess.run(
+        [sys.executable, "-c", "import main"],
+        cwd=Path(__file__).parent,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "AGENT_REQUIRE_TOKEN=true but AGENT_TOKEN is empty" in result.stderr
+

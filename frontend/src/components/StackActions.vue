@@ -48,6 +48,19 @@
         <el-icon v-if="loading !== 'update'"><Top /></el-icon>
       </el-button>
     </el-tooltip>
+    <span class="action-separator" />
+    <el-tooltip :content="t('stack.action.delete')" placement="top">
+      <el-button
+        class="ui-icon-button ui-icon-button--small ui-icon-button--danger"
+        size="small"
+        :loading="deleting"
+        :disabled="loading !== null || deleting"
+        :aria-label="t('stack.action.deleteStack')"
+        @click="confirmAndDelete"
+      >
+        <el-icon v-if="!deleting"><Delete /></el-icon>
+      </el-button>
+    </el-tooltip>
   </div>
 </template>
 
@@ -55,8 +68,9 @@
 import { ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useI18n } from "vue-i18n";
-import { VideoPlay, VideoPause, Refresh, Top } from "@element-plus/icons-vue";
+import { VideoPlay, VideoPause, Refresh, Top, Delete } from "@element-plus/icons-vue";
 import { streamSse } from "@/api/sse";
+import { apiClient } from "@/api/client";
 
 export type OperationState = {
   action: string;
@@ -66,9 +80,9 @@ export type OperationState = {
   updatedAt: number;
 };
 
-export type TerminalLineEvent = {
+export type TerminalChunkEvent = {
   action: string;
-  line: string;
+  chunk: string;
 };
 
 const props = defineProps<{
@@ -79,11 +93,12 @@ const props = defineProps<{
 const emit = defineEmits<{
   "operation-start": [payload: OperationState];
   "operation-complete": [payload: OperationState];
-  "terminal-line": [payload: TerminalLineEvent];
+  "terminal-chunk": [payload: TerminalChunkEvent];
   refresh: [];
 }>();
 
 const loading = ref<string | null>(null);
+const deleting = ref(false);
 const { t } = useI18n();
 
 const riskKeys: Record<string, string> = {
@@ -153,8 +168,11 @@ async function confirmAndRun(action: string, label: string) {
         ElMessage.warning(timeoutState.message);
       },
       onEvent: (ev) => {
-        if (ev.event === "line") {
-          emit("terminal-line", { action, line: ev.data?.text ?? ev.rawData });
+        if (ev.event === "chunk") {
+          emit("terminal-chunk", { action, chunk: ev.data?.raw ?? ev.rawData });
+        } else if (ev.event === "line") {
+          // Backward compatibility for old SSE protocol
+          emit("terminal-chunk", { action, chunk: ev.data?.text ?? ev.rawData });
         } else if (ev.event === "complete") {
           completed = true;
 
@@ -220,6 +238,37 @@ async function confirmAndRun(action: string, label: string) {
     }
   }
 }
+
+async function confirmAndDelete() {
+  try {
+    await ElMessageBox.confirm(
+      t("stack.delete.message", { name: props.stackName }),
+      t("stack.delete.title"),
+      {
+        confirmButtonText: t("stack.delete.ok"),
+        cancelButtonText: t("stack.confirm.cancel"),
+        type: "error",
+        confirmButtonClass: "el-button--danger",
+      }
+    );
+  } catch {
+    return;
+  }
+
+  deleting.value = true;
+
+  try {
+    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(props.stackName)}`;
+    await apiClient.delete(url);
+    ElMessage.success(t("stack.delete.success", { name: props.stackName }));
+    emit("refresh");
+  } catch (e: any) {
+    const detail = e.response?.data?.detail || e.message || t("stack.confirm.unknownError");
+    ElMessage.error(t("stack.delete.failure", { name: props.stackName }) + ": " + detail);
+  } finally {
+    deleting.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -227,6 +276,15 @@ async function confirmAndRun(action: string, label: string) {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.action-separator {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--border-subtle);
+  display: inline-block;
+  align-self: center;
 }
 
 </style>

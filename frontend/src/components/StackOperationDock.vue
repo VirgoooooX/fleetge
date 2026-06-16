@@ -55,7 +55,7 @@ const terminalRef = ref<HTMLElement | null>(null);
 const copied = ref(false);
 let terminal: XtermTerminal | null = null;
 let fitAddon: FitAddon | null = null;
-let renderedSignature = "";
+let renderedChunkCount = 0;
 let resizeObserver: ResizeObserver | null = null;
 let themeObserver: MutationObserver | null = null;
 
@@ -91,6 +91,7 @@ const actionTitle = computed(() => {
     stop: "stackOp.stopping",
     restart: "stackOp.restarting",
     update: "stackOp.updating",
+    prune: "stackOp.pruning",
   };
   const key = keys[props.action];
   return key ? t(key as any) : t("stackOp.operation");
@@ -120,7 +121,7 @@ onMounted(() => {
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value);
-    flushLines(true);
+    writeChunks(0, true);
     nextTick(fitTerminal);
 
     resizeObserver = new ResizeObserver(() => fitTerminal());
@@ -147,18 +148,29 @@ onBeforeUnmount(() => {
 watch(
   () => [props.stackName, props.action],
   () => {
-    renderedSignature = "";
+    renderedChunkCount = 0;
     terminal?.clear();
-    flushLines(true);
+    terminal?.reset();
+    writeChunks(0, true);
   },
 );
 
 watch(
   () => props.lines,
   () => {
-    flushLines();
+    renderedChunkCount = 0;
+    terminal?.clear();
+    terminal?.reset();
+    writeChunks(0, true);
+  }
+);
+
+watch(
+  () => props.lines.length,
+  () => {
+    writeChunks(renderedChunkCount);
   },
-  { deep: true, flush: "post" },
+  { flush: "post" },
 );
 
 function fitTerminal() {
@@ -180,112 +192,43 @@ function applyTerminalTheme() {
   terminal.options.theme = currentTerminalTheme();
 }
 
-function flushLines(force = false) {
+function writeChunks(startIndex: number, force = false) {
   if (!terminal) return;
-  if (force && props.lines.length === 0) {
-    renderedSignature = "__waiting__";
-    terminal.clear();
-    terminal.write("\x1b[2m" + t("stackOp.waitingOutput") + "\x1b[0m\r\n");
+
+  if (props.lines.length === 0) {
+    renderedChunkCount = 0;
+    if (force) {
+      terminal.clear();
+      terminal.write("\x1b[2m" + t("stackOp.waitingOutput") + "\x1b[0m\r\n");
+    }
     return;
   }
 
-  const displayLines = formatDockgeOutput(props.lines);
-  const signature = displayLines.join("\n");
-  if (!force && signature === renderedSignature) return;
-
-  renderedSignature = signature;
-  terminal.clear();
-  terminal.reset();
-  terminal.options.theme = currentTerminalTheme();
-  for (const line of displayLines) {
-    terminal.write(normalizeTerminalLine(line));
+  if (startIndex === 0 && renderedChunkCount === 0) {
+    terminal.clear();
   }
+
+  for (let i = startIndex; i < props.lines.length; i++) {
+    terminal.write(props.lines[i]);
+  }
+  renderedChunkCount = props.lines.length;
   fitTerminal();
 }
 
-function normalizeTerminalLine(line: string): string {
-  const text = line.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return `${text.replace(/\n/g, "\r\n")}\r\n`;
-}
-
-function formatDockgeOutput(lines: string[]): string[] {
-  const output: string[] = [];
-  const pullLineIndexes = new Map<string, number>();
-  let activePullGroup = false;
-  let lastPullKey: string | null = null;
-
-  for (const rawLine of lines) {
-    const splitLines = String(rawLine || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .split("\n");
-
-    for (const splitLine of splitLines) {
-      const line = splitLine.trimEnd();
-      if (!line) continue;
-
-      const pullKey = dockgePullLineKey(line);
-      if (pullKey) {
-        const index = pullLineIndexes.get(pullKey);
-        if (index === undefined) {
-          pullLineIndexes.set(pullKey, output.length);
-          output.push(line);
-        } else {
-          output[index] = line;
-        }
-        activePullGroup = true;
-        lastPullKey = pullKey;
-        continue;
-      }
-
-      const duration = pullDuration(line);
-      if (activePullGroup && duration && lastPullKey) {
-        const index = pullLineIndexes.get(lastPullKey);
-        if (index !== undefined && !pullDuration(output[index])) {
-          output[index] = `${output[index]}        ${duration}`;
-        }
-        continue;
-      }
-
-      if (activePullGroup && isTransientPullNoise(line)) {
-        continue;
-      }
-
-      activePullGroup = false;
-      lastPullKey = null;
-      output.push(line);
-    }
+function getTerminalPlainText(): string {
+  if (!terminal) return "";
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i);
+    if (line) lines.push(line.translateToString().trimEnd());
   }
-
-  return output.slice(-120);
-}
-
-function dockgePullLineKey(line: string): string | null {
-  const clean = stripAnsi(line).trim();
-  if (/^\[\+\]\s+Pulling\b/.test(clean)) return "pull-summary";
-
-  const serviceMatch = clean.match(/^[^\w.-]*([\w.-]+)\s+.*\bPulling\b/);
-  if (serviceMatch) return `pull-service:${serviceMatch[1]}`;
-
-  return null;
-}
-
-function isTransientPullNoise(line: string): boolean {
-  const clean = stripAnsi(line).trim();
-  return clean === "Pulling";
-}
-
-function pullDuration(line: string): string | null {
-  return stripAnsi(line).trim().match(/^(\d+(?:\.\d+)?s)$/)?.[1] || null;
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+  return lines.join("\n").trimEnd();
 }
 
 async function copyOutput() {
   try {
-    await navigator.clipboard.writeText(props.lines.join("\n"));
+    await navigator.clipboard.writeText(getTerminalPlainText());
     copied.value = true;
     setTimeout(() => {
       copied.value = false;

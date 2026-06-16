@@ -34,6 +34,20 @@ def create_engine_and_tables():
     with engine.connect() as conn:
         conn.exec_driver_sql("PRAGMA journal_mode=WAL")
         conn.exec_driver_sql("PRAGMA foreign_keys=ON")
+        
+        # Proactively migrate SQLite schema for new agent fields
+        try:
+            cursor = conn.exec_driver_sql("PRAGMA table_info(host_config)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if columns:  # table exists
+                if "agent_url" not in columns:
+                    conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN agent_url TEXT")
+                if "agent_token_encrypted" not in columns:
+                    conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN agent_token_encrypted TEXT")
+        except Exception as exc:
+            # Table might not exist yet; create_all will handle it
+            pass
+            
         conn.commit()
 
     # Import models so SQLModel.metadata knows about them before create_all

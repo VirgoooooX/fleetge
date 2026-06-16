@@ -8,14 +8,7 @@
     @close="onClose"
   >
     <div class="terminal-container">
-      <div class="terminal-viewport" ref="viewportRef">
-        <div
-          v-for="(line, i) in lines"
-          :key="i"
-          class="terminal-line"
-        >{{ line }}</div>
-        <div v-if="status === 'running'" class="terminal-cursor">▊</div>
-      </div>
+      <div ref="terminalRef" class="terminal-viewport" />
 
       <div class="terminal-footer" :class="`footer-${status}`">
         <div class="footer-left">
@@ -41,10 +34,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from "vue";
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
 import { Loading, SuccessFilled, WarningFilled } from "@element-plus/icons-vue";
+import { Terminal as XtermTerminal, type ITheme } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{
   visible: boolean;
@@ -57,26 +53,185 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 
 const { t } = useI18n();
-const viewportRef = ref<HTMLElement | null>(null);
+const terminalRef = ref<HTMLElement | null>(null);
 const copied = ref(false);
+let terminal: XtermTerminal | null = null;
+let fitAddon: FitAddon | null = null;
+let renderedChunkCount = 0;
+let resizeObserver: ResizeObserver | null = null;
+let themeObserver: MutationObserver | null = null;
+
+const darkTerminalTheme: ITheme = {
+  background: "#0d1117",
+  foreground: "#e6edf3",
+  cursor: "#58a6ff",
+  black: "#0d1117",
+  blue: "#58a6ff",
+  cyan: "#22d3ee",
+  green: "#3fb950",
+  red: "#f85149",
+  yellow: "#f0883e",
+  white: "#e6edf3",
+};
+
+const lightTerminalTheme: ITheme = {
+  background: "#f8fafc",
+  foreground: "#0f172a",
+  cursor: "#2563eb",
+  black: "#0f172a",
+  blue: "#2563eb",
+  cyan: "#0891b2",
+  green: "#16a34a",
+  red: "#dc2626",
+  yellow: "#d97706",
+  white: "#f8fafc",
+};
 
 function onClose() {
   emit("close");
 }
 
+onMounted(() => {
+  terminal = new XtermTerminal({
+    convertEol: true,
+    cursorBlink: props.status === "running",
+    cursorStyle: "bar",
+    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+    fontSize: 12,
+    lineHeight: 1.55,
+    scrollback: 2000,
+    theme: currentTerminalTheme(),
+  });
+
+  fitAddon = new FitAddon();
+  terminal.loadAddon(fitAddon);
+
+  if (terminalRef.value) {
+    terminal.open(terminalRef.value);
+    writeChunks(0, true);
+    nextTick(fitTerminal);
+
+    resizeObserver = new ResizeObserver(() => fitTerminal());
+    resizeObserver.observe(terminalRef.value);
+
+    themeObserver = new MutationObserver(() => applyTerminalTheme());
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "class"],
+    });
+  }
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  themeObserver?.disconnect();
+  themeObserver = null;
+  terminal?.dispose();
+  terminal = null;
+  fitAddon = null;
+});
+
 watch(
-  () => props.lines.length,
-  async () => {
-    await nextTick();
-    if (viewportRef.value) {
-      viewportRef.value.scrollTop = viewportRef.value.scrollHeight;
+  () => props.visible,
+  (visible) => {
+    if (visible) {
+      nextTick(() => fitTerminal());
     }
   }
 );
 
+watch(
+  () => props.stackName,
+  () => {
+    renderedChunkCount = 0;
+    terminal?.clear();
+    terminal?.reset();
+    writeChunks(0, true);
+  }
+);
+
+watch(
+  () => props.lines,
+  () => {
+    renderedChunkCount = 0;
+    terminal?.clear();
+    terminal?.reset();
+    writeChunks(0, true);
+  }
+);
+
+watch(
+  () => props.lines.length,
+  () => {
+    writeChunks(renderedChunkCount);
+  }
+);
+
+watch(
+  () => props.status,
+  (status) => {
+    if (terminal) {
+      terminal.options.cursorBlink = status === "running";
+    }
+  }
+);
+
+function fitTerminal() {
+  try {
+    fitAddon?.fit();
+  } catch {
+    // xterm can throw while the element is being mounted or hidden.
+  }
+}
+
+function currentTerminalTheme(): ITheme {
+  return document.documentElement.dataset.theme === "light"
+    ? lightTerminalTheme
+    : darkTerminalTheme;
+}
+
+function applyTerminalTheme() {
+  if (!terminal) return;
+  terminal.options.theme = currentTerminalTheme();
+}
+
+function writeChunks(startIndex: number, force = false) {
+  if (!terminal) return;
+
+  if (props.lines.length === 0) {
+    renderedChunkCount = 0;
+    if (force) {
+      terminal.clear();
+    }
+    return;
+  }
+
+  if (startIndex === 0 && renderedChunkCount === 0) {
+    terminal.clear();
+  }
+
+  for (let i = startIndex; i < props.lines.length; i++) {
+    terminal.write(props.lines[i]);
+  }
+  renderedChunkCount = props.lines.length;
+  fitTerminal();
+}
+
+function getTerminalPlainText(): string {
+  if (!terminal) return "";
+  const buffer = terminal.buffer.active;
+  const lines: string[] = [];
+  for (let i = 0; i < buffer.length; i++) {
+    const line = buffer.getLine(i);
+    if (line) lines.push(line.translateToString().trimEnd());
+  }
+  return lines.join("\n").trimEnd();
+}
+
 async function copyOutput() {
   try {
-    await navigator.clipboard.writeText(props.lines.join("\n"));
+    await navigator.clipboard.writeText(getTerminalPlainText());
     copied.value = true;
     setTimeout(() => { copied.value = false; }, 2000);
   } catch {
@@ -95,35 +250,29 @@ async function copyOutput() {
 
 .terminal-viewport {
   flex: 1;
-  overflow-y: auto;
+  overflow: hidden;
   background: #0d1117;
   border: 1px solid #30363d;
   border-radius: 6px;
   padding: 12px;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-all;
+  min-height: 0;
 }
 
-.terminal-line {
-  color: #e6edf3;
-  min-height: 1.55em;
+.terminal-viewport :deep(.xterm) {
+  height: 100%;
 }
 
-.terminal-line:first-child {
-  margin-top: 0;
+.terminal-viewport :deep(.xterm-viewport) {
+  background: #0d1117 !important;
 }
 
-.terminal-cursor {
-  display: inline-block;
-  color: #58a6ff;
-  animation: blink 1s step-end infinite;
+:global([data-theme="light"] .terminal-viewport) {
+  background: #f8fafc;
+  border-color: rgba(60, 72, 88, 0.16);
 }
 
-@keyframes blink {
-  50% { opacity: 0; }
+:global([data-theme="light"] .terminal-viewport) :deep(.xterm-viewport) {
+  background: #f8fafc !important;
 }
 
 .terminal-footer {

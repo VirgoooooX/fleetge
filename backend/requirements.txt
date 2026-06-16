@@ -4,6 +4,7 @@ sqlmodel>=0.0.22,<1
 pydantic>=2,<3
 cryptography>=44,<45
 httpx>=0.28,<1
+websockets>=10,<17
 python-socketio[client]>=5,<6
 aiohttp>=3,<4
 python-multipart>=0.0.20

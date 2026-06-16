@@ -65,3 +65,17 @@ def decrypt_authorization_header(ciphertext: str) -> str:
         return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
     except InvalidToken:
         raise ValueError("Invalid or tampered auth header ciphertext")
+
+
+def encrypt_string(plain: str) -> str:
+    """Encrypt a plain string using the Fernet credentials key."""
+    return _get_fernet().encrypt(plain.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_string(ciphertext: str) -> str:
+    """Decrypt a Fernet cipher string back to plain text."""
+    try:
+        return _get_fernet().decrypt(ciphertext.encode("utf-8")).decode("utf-8")
+    except InvalidToken:
+        raise ValueError("Invalid or tampered string ciphertext")
+
