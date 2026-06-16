@@ -382,6 +382,7 @@ class DockgeConnection:
         compose_env: str,
         *,
         deploy: bool = False,
+        is_add: bool = False,
         log_queue: Optional["asyncio.Queue[str]"] = None,
     ) -> dict:
         """Save or deploy an existing stack compose file.
@@ -403,7 +404,7 @@ class DockgeConnection:
                 name,
                 compose_yaml,
                 compose_env,
-                False,
+                is_add,
                 timeout=120,
                 log_queue=log_queue,
             )
@@ -412,7 +413,7 @@ class DockgeConnection:
             name,
             compose_yaml,
             compose_env,
-            False,
+            is_add,
             timeout=60,
         )
         if isinstance(result, dict):

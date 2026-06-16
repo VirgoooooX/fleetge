@@ -10,7 +10,15 @@
       <header class="compose-editor__header">
         <div>
           <div class="compose-editor__kicker">Compose Editor</div>
-          <h2>{{ stackName }}</h2>
+          <h2 v-if="!createMode">{{ stackName }}</h2>
+          <el-input
+            v-else
+            v-model="newStackName"
+            class="stack-name-input"
+            placeholder="stack-name"
+            maxlength="64"
+            clearable
+          />
           <p>{{ composeFileName }}</p>
           <p v-if="managed" class="compose-editor__managed">Dockge 管理</p>
         </div>
@@ -20,7 +28,7 @@
           </el-button>
           <el-button
             :loading="saving === 'save'"
-            :disabled="!canEdit || loading || !!saving"
+            :disabled="!canSubmit || loading || !!saving"
             @click="save(false)"
           >
             保存草稿
@@ -28,7 +36,7 @@
           <el-button
             type="primary"
             :loading="saving === 'deploy'"
-            :disabled="!canEdit || loading || !!saving"
+            :disabled="!canSubmit || loading || !!saving"
             @click="save(true)"
           >
             保存并部署
@@ -37,7 +45,7 @@
       </header>
 
       <el-alert
-        v-if="!canEdit && !loading"
+        v-if="!canSubmit && !loading"
         :title="emptyAlert"
         type="warning"
         show-icon
@@ -59,7 +67,7 @@
           <el-input
             v-model="composeYaml"
             type="textarea"
-            :disabled="!canEdit || !!saving"
+            :disabled="!canUseEditor || !!saving"
             :autosize="{ minRows: 24, maxRows: 42 }"
             spellcheck="false"
             class="compose-textarea code"
@@ -69,7 +77,7 @@
           <el-input
             v-model="composeEnv"
             type="textarea"
-            :disabled="!canEdit || !!saving"
+            :disabled="!canUseEditor || !!saving"
             :autosize="{ minRows: 16, maxRows: 32 }"
             spellcheck="false"
             class="compose-textarea code"
@@ -112,6 +120,7 @@ const props = defineProps<{
   visible: boolean;
   hostId: string;
   stackName: string;
+  createMode?: boolean;
 }>();
 
 const emit = defineEmits<{ close: []; saved: [] }>();
@@ -122,6 +131,7 @@ const activeTab = ref("yaml");
 const composeYaml = ref("");
 const composeEnv = ref("");
 const composeFileName = ref("compose.yaml");
+const newStackName = ref("");
 const managed = ref(false);
 const operationStatus = ref<{
   status: string;
@@ -134,11 +144,33 @@ const deployLines = ref<string[]>([]);
 const deployStreamActive = ref(false);
 const deployViewportRef = ref<HTMLElement | null>(null);
 
-const canEdit = computed(() => !!composeYaml.value.trim());
+const DEFAULT_COMPOSE_YAML = `services:
+  app:
+    image: nginx:latest
+    restart: unless-stopped
+`;
+
+const createMode = computed(() => !!props.createMode);
+const targetStackName = computed(() =>
+  createMode.value ? newStackName.value.trim() : props.stackName
+);
+const hasValidStackName = computed(() =>
+  !createMode.value || /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(targetStackName.value)
+);
+const canUseEditor = computed(() => createMode.value || !!composeYaml.value.trim());
+const canSubmit = computed(() =>
+  !!composeYaml.value.trim() && !!targetStackName.value && hasValidStackName.value
+);
 const emptyAlert = computed(() =>
-  composeYaml.value.trim()
-    ? ""
-    : "Dockge 没有返回 compose.yaml，当前不能编辑。"
+  !targetStackName.value
+    ? "请输入 Stack 名称。"
+    : !hasValidStackName.value
+      ? "Stack 名称只能包含字母、数字、点、下划线和短横线，且必须以字母或数字开头。"
+      : composeYaml.value.trim()
+        ? ""
+        : createMode.value
+          ? "compose.yaml 不能为空。"
+          : "Dockge 没有返回 compose.yaml，当前不能编辑。"
 );
 
 watch(
@@ -148,7 +180,11 @@ watch(
       operationStatus.value = null;
       deployLines.value = [];
       deployStreamActive.value = false;
-      fetchCompose();
+      if (createMode.value) {
+        initializeCreateCompose();
+      } else {
+        fetchCompose();
+      }
     }
   },
   { immediate: true }
@@ -166,6 +202,16 @@ watch(
 );
 
 // ── API calls ──────────────────────────────────────────────────
+
+function initializeCreateCompose() {
+  loading.value = false;
+  activeTab.value = "yaml";
+  newStackName.value = "";
+  composeYaml.value = DEFAULT_COMPOSE_YAML;
+  composeEnv.value = "";
+  composeFileName.value = "compose.yaml";
+  managed.value = true;
+}
 
 async function fetchCompose() {
   loading.value = true;
@@ -189,19 +235,29 @@ async function fetchCompose() {
 }
 
 async function save(deploy: boolean) {
+  const stackNameForRequest = targetStackName.value;
+  if (!stackNameForRequest) {
+    ElMessage.error("Stack 名称不能为空");
+    return;
+  }
+  if (!hasValidStackName.value) {
+    ElMessage.error("Stack 名称格式不正确");
+    return;
+  }
   if (!composeYaml.value.trim()) {
     ElMessage.error("compose.yaml 不能为空");
     return;
   }
 
+  const actionPrefix = createMode.value ? "创建" : "保存";
   try {
     await ElMessageBox.confirm(
       deploy
-        ? `保存并部署 Stack「${props.stackName}」？这会重新创建相关容器。`
-        : `保存 Stack「${props.stackName}」的 compose 草稿？`,
-      deploy ? "保存并部署" : "保存草稿",
+        ? `${actionPrefix}并部署 Stack「${stackNameForRequest}」？这会创建或重新创建相关容器。`
+        : `${actionPrefix} Stack「${stackNameForRequest}」的 compose 草稿？`,
+      deploy ? `${actionPrefix}并部署` : `${actionPrefix}草稿`,
       {
-        confirmButtonText: deploy ? "保存并部署" : "保存",
+        confirmButtonText: deploy ? `${actionPrefix}并部署` : actionPrefix,
         cancelButtonText: "取消",
         type: deploy ? "warning" : "info",
       }
@@ -220,13 +276,14 @@ async function save(deploy: boolean) {
     };
 
     try {
-      const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(props.stackName)}/compose`;
+      const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackNameForRequest)}/compose`;
       const res = await apiClient.request({
         method: "put",
         url,
         data: {
           compose_yaml: composeYaml.value,
           compose_env: composeEnv.value,
+          is_add: createMode.value,
         },
         timeout: 60000,
       });
@@ -237,7 +294,7 @@ async function save(deploy: boolean) {
         logTail: res.data?.log_tail || undefined,
       };
 
-      ElMessage.success("已保存草稿");
+      ElMessage.success(createMode.value ? "已创建草稿" : "已保存草稿");
       emit("saved");
     } catch (e: any) {
       const detail = e.response?.data?.detail || e.message;
@@ -265,7 +322,7 @@ async function save(deploy: boolean) {
     message: "部署中...",
   };
 
-  const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(props.stackName)}/compose/deploy`;
+  const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackNameForRequest)}/compose/deploy`;
   let completed = false;
 
   try {
@@ -279,6 +336,7 @@ async function save(deploy: boolean) {
       body: JSON.stringify({
         compose_yaml: composeYaml.value,
         compose_env: composeEnv.value,
+        is_add: createMode.value,
       }),
       onTimeout: () => {
         completed = true;
@@ -304,7 +362,7 @@ async function save(deploy: boolean) {
           };
 
           if (success) {
-            ElMessage.success("已保存并部署");
+            ElMessage.success(createMode.value ? "已创建并部署" : "已保存并部署");
             emit("saved");
           } else {
             ElMessage.error(`部署失败: ${data.message || "未知错误"}`);
@@ -329,7 +387,7 @@ async function save(deploy: boolean) {
         status: "success",
         message: "部署完成",
       };
-      ElMessage.success("已保存并部署");
+      ElMessage.success(createMode.value ? "已创建并部署" : "已保存并部署");
       emit("saved");
     }
   } catch (e: any) {
@@ -376,6 +434,17 @@ async function save(deploy: boolean) {
   margin: 4px 0 0;
   color: var(--text-primary);
   font-size: 20px;
+}
+
+.stack-name-input {
+  width: min(360px, 62vw);
+  margin-top: 4px;
+}
+
+.stack-name-input :deep(.el-input__wrapper) {
+  background: var(--surface-base);
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--border-subtle) inset;
 }
 
 .compose-editor p {

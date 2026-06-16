@@ -2,8 +2,8 @@
   <section class="host-workspace">
     <aside class="workspace-sidebar">
       <div class="sidebar-compose-row">
-        <el-tooltip content="新增 Stack 暂未接入，当前可编辑现有 Compose" placement="top">
-          <button class="compose-add-button" type="button" disabled>
+        <el-tooltip content="新增 Stack" placement="top">
+          <button class="compose-add-button" type="button" @click="openNewCompose">
             <el-icon><Plus /></el-icon>
             Compose
           </button>
@@ -15,7 +15,7 @@
             aria-label="重新检查镜像更新"
             @click="$emit('check-updates')"
           >
-            <el-icon><Refresh /></el-icon>
+            <el-icon v-if="!updateLoading"><Refresh /></el-icon>
           </el-button>
         </el-tooltip>
       </div>
@@ -25,34 +25,39 @@
         <input v-model="stackSearch" type="search" placeholder="Search stacks" />
       </div>
 
-      <button
-        class="stack-nav-item all"
-        :class="{ active: !selectedStackName }"
-        type="button"
-        @click="showAllStacks"
-      >
-        <span>All Stacks</span>
-        <span class="nav-count">{{ filteredStacks.length }}</span>
-      </button>
-
-      <div class="stack-nav-list">
+      <template v-if="structureLoading">
+        <div class="sidebar-loading">正在加载 Docker / Dockge 结构...</div>
+      </template>
+      <template v-else>
         <button
-          v-for="stack in filteredStacks"
-          :key="stack.name"
-          class="stack-nav-item"
-          :class="{ active: selectedStackName === stack.name }"
+          class="stack-nav-item all"
+          :class="{ active: !selectedStackName }"
           type="button"
-          @click="selectStack(stack.name)"
+          @click="showAllStacks"
         >
-          <span
-            class="dot-state nav-status-dot"
-            :class="`dot-${stackStatusType(stack.status)}`"
-            :title="statusLabel(stack.status)"
-          />
-          <span class="nav-stack-name">{{ stack.name }}</span>
-          <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
+          <span>All Stacks</span>
+          <span class="nav-count">{{ filteredStacks.length }}</span>
         </button>
-      </div>
+
+        <div class="stack-nav-list">
+          <button
+            v-for="stack in filteredStacks"
+            :key="stack.name"
+            class="stack-nav-item"
+            :class="{ active: selectedStackName === stack.name }"
+            type="button"
+            @click="selectStack(stack.name)"
+          >
+            <span
+              class="dot-state nav-status-dot"
+              :class="`dot-${stackStatusType(stack.status)}`"
+              :title="statusLabel(stack.status)"
+            />
+            <span class="nav-stack-name">{{ stack.name }}</span>
+            <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
+          </button>
+        </div>
+      </template>
     </aside>
 
     <main class="workspace-main">
@@ -68,7 +73,10 @@
           </div>
         </div>
 
-        <div v-if="filteredStacks.length > 0" class="stack-card-list">
+        <div v-if="structureLoading" class="structure-loading">
+          <el-skeleton :rows="4" animated />
+        </div>
+        <div v-else-if="filteredStacks.length > 0" class="stack-card-list">
           <article
             v-for="stack in filteredStacks"
             :key="stack.name"
@@ -152,7 +160,7 @@
           </article>
         </div>
 
-        <el-empty v-else description="没有匹配的 Stack" />
+        <el-empty v-else-if="!structureLoading" description="没有匹配的 Stack" />
       </div>
 
       <div v-else class="stack-detail-view">
@@ -161,9 +169,17 @@
             <div class="detail-title-row">
               <span class="dot-state detail-status-dot" :class="`dot-${stackStatusType(selectedStack.status)}`" />
               <span class="stack-state-text detail-state-text">{{ statusLabel(selectedStack.status) }}</span>
+              <img
+                v-if="selectedStack.icon_url"
+                :src="selectedStack.icon_url"
+                class="stack-icon-img detail-stack-icon"
+                @error="onIconError"
+              />
+              <el-icon v-else class="stack-title-icon detail-stack-icon"><FolderOpened /></el-icon>
               <h2>{{ selectedStack.name }}</h2>
               <UpdateBadge
                 v-if="stackUpdateStatus(selectedStack)"
+                class="detail-update-badge"
                 :status="stackUpdateStatus(selectedStack)!"
               />
             </div>
@@ -420,8 +436,9 @@
       :visible="composeDrawerVisible"
       :host-id="hostId"
       :stack-name="currentComposeStack"
+      :create-mode="composeDrawerMode === 'create'"
       @close="composeDrawerVisible = false"
-      @saved="$emit('refresh')"
+      @saved="onComposeSaved"
     />
   </section>
 </template>
@@ -542,9 +559,10 @@ const props = defineProps<{
   containerStats: Record<string, ContainerStatsData>;
   updateStatuses: Record<string, string>;
   updateLoading?: boolean;
+  structureLoading?: boolean;
 }>();
 
-defineEmits<{
+const emit = defineEmits<{
   refresh: [];
   "check-updates": [];
 }>();
@@ -574,6 +592,7 @@ let operationAutoCloseTimer: ReturnType<typeof setTimeout> | null = null;
 
 const composeDrawerVisible = ref(false);
 const currentComposeStack = ref("");
+const composeDrawerMode = ref<"edit" | "create">("edit");
 
 const filteredStacks = computed(() => {
   const query = stackSearch.value.trim().toLowerCase();
@@ -661,7 +680,6 @@ function stackUpdateStatus(stack: StackSummary): string | null {
     .filter((status): status is string => Boolean(status));
 
   if (statuses.includes("updatable")) return "updatable";
-  if (statuses.includes("check_failed")) return "check_failed";
   return null;
 }
 
@@ -740,8 +758,19 @@ function selectServiceContainer(stackName: string, service: StackService) {
 }
 
 function openCompose(stackName: string) {
+  composeDrawerMode.value = "edit";
   currentComposeStack.value = stackName;
   composeDrawerVisible.value = true;
+}
+
+function openNewCompose() {
+  composeDrawerMode.value = "create";
+  currentComposeStack.value = "";
+  composeDrawerVisible.value = true;
+}
+
+function onComposeSaved() {
+  emit("refresh");
 }
 
 function isOperationDockVisible(stackName: string): boolean {
@@ -922,6 +951,21 @@ watch(selectedStackName, () => {
 });
 
 watch(
+  () => props.hostId,
+  () => {
+    showAllStacks();
+    composeDrawerVisible.value = false;
+    composeYaml.value = "";
+    composeError.value = "";
+    logLines.value = [];
+    closeOperationDock();
+    Object.keys(terminalOutputs).forEach((stackName) => {
+      delete terminalOutputs[stackName];
+    });
+  }
+);
+
+watch(
   () => props.stacks,
   () => {
     if (selectedStackName.value && !selectedStack.value) {
@@ -980,8 +1024,14 @@ onUnmounted(() => {
   color: #03111f;
   font-size: 13px;
   font-weight: 700;
-  cursor: not-allowed;
-  opacity: 0.7;
+  cursor: pointer;
+  transition: filter 0.16s ease, transform 0.16s ease;
+}
+
+.compose-add-button:hover,
+.compose-add-button:focus-visible {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
 }
 
 .sidebar-icon-button,
@@ -1018,6 +1068,21 @@ onUnmounted(() => {
   background: transparent;
   color: var(--text-primary);
   font-size: 13px;
+}
+
+.sidebar-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 24px 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  user-select: none;
+}
+
+.structure-loading {
+  padding: 24px 0;
 }
 
 .stack-nav-list {
@@ -1327,23 +1392,58 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  min-width: 0;
+  min-height: 32px;
 }
 
 .detail-title-row h2 {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
   margin: 0;
   color: var(--text-primary);
   font-size: 28px;
+  line-height: 28px;
+  overflow-wrap: anywhere;
+  transform: translateY(-2px);
 }
 
 .detail-status-dot {
   width: 12px;
   height: 12px;
+  flex: 0 0 12px;
 }
 
 .detail-state-text {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
   padding-right: 4px;
   font-size: 14px;
+  line-height: 14px;
+}
+
+.detail-stack-icon {
+  width: 28px;
+  height: 28px;
+  align-self: center;
+}
+
+.detail-stack-icon.stack-title-icon {
+  font-size: 28px;
+}
+
+.detail-stack-icon.stack-icon-img {
+  display: block;
+}
+
+.detail-update-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  flex-shrink: 0;
+  height: 22px;
 }
 
 .detail-compose-button {
@@ -1741,6 +1841,10 @@ onUnmounted(() => {
   .stack-card-actions,
   .detail-actions {
     justify-content: flex-start;
+  }
+
+  .detail-title-row {
+    flex-wrap: wrap;
   }
 
   .container-row {

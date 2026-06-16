@@ -88,6 +88,7 @@ class SnapshotManagerTimeoutTests(unittest.IsolatedAsyncioTestCase):
         proxy.version = AsyncMock(return_value={"Version": "1.0"})
         proxy.info = AsyncMock(return_value={"OSType": "linux"})
         proxy.disk_usage = AsyncMock(return_value={})
+        proxy.list_images = AsyncMock(return_value=[])
         proxy.list_containers = AsyncMock(return_value=[])
 
         # Mock _refresh_container_stats to sleep

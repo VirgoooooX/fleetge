@@ -30,6 +30,7 @@ async def lifespan(app: FastAPI):
 
     # Refresh snapshot manager from DB
     await snapshot_manager.refresh_hosts()
+    snapshot_manager.load_update_check_cache_from_db()
 
     # Start background polling
     await snapshot_manager.start()

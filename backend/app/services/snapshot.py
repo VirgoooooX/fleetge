@@ -6,17 +6,20 @@ only while a frontend SSE stream is connected.
 Cache tiers:
   - Metrics (exporter): frontend-driven SSE
   - Containers/Stacks (proxy + Dockge): 1h background, faster frontend-driven POST
-  - Update checks (registry): 6h
+  - Update checks (registry): 12h
 """
 
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from sqlmodel import select
 
 from app.config import get_settings
 from app.database import engine, Session
-from app.models import HostConfig
+from app.models import HostConfig, ImageUpdateCache
 from app.schemas import (
     ContainerDetail,
     ContainerStats,
@@ -38,6 +41,21 @@ from app.services.update_check import run_update_check
 
 logger = logging.getLogger(__name__)
 
+VISIBLE_UPDATE_STATUSES = {"up_to_date", "updatable"}
+FAILED_UPDATE_STATUSES = {"needs_auth", "check_failed"}
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
 
 class HostSnapshot:
     """Immutable snapshot of one host's data."""
@@ -49,6 +67,7 @@ class HostSnapshot:
         self.metrics_updated: float = 0.0
         self.docker_info: Optional[DockerInfo] = None
         self.docker_disk: Optional[DockerDiskUsage] = None
+        self.image_count: int = 0
         self.containers: list[ContainerSummary] = []
         self.containers_updated: float = 0.0
         self.stacks: list[StackSummary] = []
@@ -151,15 +170,62 @@ class SnapshotManager:
         )
 
     def get_update_check_results(self) -> list[UpdateCheckResult]:
-        """Return cached update check results without hitting registries."""
+        """Return visible cached update check results without hitting registries."""
         results: list[UpdateCheckResult] = []
         for snap in self._snapshots.values():
-            results.extend(snap.update_check_results)
+            results.extend(
+                r for r in snap.update_check_results
+                if r.status in VISIBLE_UPDATE_STATUSES
+            )
         return results
+
+    def load_update_check_cache_from_db(self) -> None:
+        """Hydrate in-memory snapshots from persistent image update cache."""
+        with Session(engine) as session:
+            rows = session.exec(select(ImageUpdateCache)).all()
+
+        rows_by_host: dict[str, list[ImageUpdateCache]] = {}
+        for row in rows:
+            rows_by_host.setdefault(row.host_id, []).append(row)
+
+        for host_id, snap in self._snapshots.items():
+            self._apply_update_cache_rows_to_snapshot(
+                snap,
+                rows_by_host.get(host_id, []),
+            )
+
+    def _apply_update_cache_rows_to_snapshot(
+        self,
+        snap: HostSnapshot,
+        rows: list[ImageUpdateCache],
+        current_images: set[str] | None = None,
+    ) -> None:
+        """Apply persisted conclusive update results to one snapshot."""
+        visible_rows = [
+            row for row in rows
+            if row.status in VISIBLE_UPDATE_STATUSES
+            and (current_images is None or row.image in current_images)
+        ]
+        snap.update_results.clear()
+        snap.update_check_results = [
+            UpdateCheckResult(
+                host_id=row.host_id,
+                image=row.image,
+                current_digest=row.current_digest,
+                registry_digest=row.registry_digest,
+                status=row.status,
+            )
+            for row in visible_rows
+        ]
+        for result in snap.update_check_results:
+            snap.update_results[result.image] = result.status
+        snap.update_count = sum(
+            1 for row in visible_rows if row.status == "updatable"
+        )
 
     async def refresh_update_checks_now(self) -> list[UpdateCheckResult]:
         """Run update checks immediately and return the refreshed cache."""
-        await self._refresh_update_checks()
+        await self._refresh_update_checks(force=True)
         return self.get_update_check_results()
 
     async def refresh_metrics_now(self) -> list[HostSummary]:
@@ -357,6 +423,11 @@ class SnapshotManager:
                     b.get("Size", 0) for b in df.get("BuildCache", [])
                 ),
             )
+
+            # /system/df can include extra disk-accounting entries. /images/json
+            # matches the visible local image list more closely.
+            raw_images = await proxy.list_images()
+            snap.image_count = len(raw_images)
             snap.containers_updated = time.monotonic()
 
             # Container list
@@ -504,17 +575,6 @@ class SnapshotManager:
                 task = asyncio.create_task(self._refresh_container_stats(snap, proxy, cfg))
                 self._stats_tasks[cfg.host_id] = task
                 task.add_done_callback(lambda _: self._stats_tasks.pop(cfg.host_id, None))
-
-            # Trigger an initial update check after the first successful
-            # docker poll that has containers.  This handles the gap where
-            # the update check loop (6h) runs before containers are ready.
-            if (
-                trigger_initial_update_check
-                and snap.containers
-                and not hasattr(snap, "_update_triggered")
-            ):
-                snap._update_triggered = True
-                asyncio.create_task(self._refresh_update_checks_single(cfg.host_id, snap))
 
         except Exception as exc:
             logger.warning(
@@ -895,10 +955,11 @@ class SnapshotManager:
 
     # ── Update checks ─────────────────────────────────────────────
 
-    async def _refresh_update_checks(self) -> None:
+    async def _refresh_update_checks(self, force: bool = False) -> None:
         """Query registry digests for all container images across all hosts.
 
-        Runs every 6 hours. Results are cached in-memory.
+        Runs every configured interval. Results are persisted in SQLite and
+        hydrated into memory for fast API responses.
         """
         async with self._update_check_lock:
             await self.refresh_hosts()
@@ -907,7 +968,7 @@ class SnapshotManager:
 
             async def refresh_one(snap: HostSnapshot) -> None:
                 async with semaphore:
-                    await self._refresh_update_checks_for_snapshot(snap)
+                    await self._refresh_update_checks_for_snapshot(snap, force=force)
 
             results = await asyncio.gather(
                 *(refresh_one(snap) for snap in list(self._snapshots.values())),
@@ -917,55 +978,147 @@ class SnapshotManager:
                 if isinstance(result, Exception):
                     logger.warning("Update check task failed: %s", result)
 
-    async def _refresh_update_checks_for_snapshot(self, snap: HostSnapshot) -> None:
+    def _is_update_cache_due(
+        self,
+        row: ImageUpdateCache | None,
+        now: datetime,
+        interval: timedelta,
+        force: bool,
+    ) -> bool:
+        if force or row is None:
+            return True
+        if row.status in FAILED_UPDATE_STATUSES:
+            return True
+        checked_at = _as_utc(row.checked_at)
+        if checked_at is None:
+            return True
+        return checked_at + interval <= now
+
+    def _persist_update_check_result(
+        self,
+        session: Session,
+        host_id: str,
+        result: UpdateCheckResult,
+        existing: ImageUpdateCache | None,
+        now: datetime,
+    ) -> ImageUpdateCache:
+        if existing is None:
+            existing = ImageUpdateCache(
+                host_id=host_id,
+                image=result.image,
+                status=result.status,
+                current_digest=result.current_digest,
+                registry_digest=result.registry_digest,
+                checked_at=now,
+            )
+            session.add(existing)
+
+        if result.status in FAILED_UPDATE_STATUSES:
+            existing.failure_count += 1
+            existing.last_failure_status = result.status
+            existing.last_failure_at = now
+            existing.updated_at = now
+
+            # Preserve the last conclusive result when we have one, so a
+            # transient registry failure does not erase useful UI state.
+            if existing.status not in VISIBLE_UPDATE_STATUSES:
+                existing.status = result.status
+                existing.current_digest = result.current_digest
+                existing.registry_digest = result.registry_digest
+                existing.checked_at = now
+            return existing
+
+        existing.status = result.status
+        existing.current_digest = result.current_digest
+        existing.registry_digest = result.registry_digest
+        existing.checked_at = now
+        existing.failure_count = 0
+        existing.last_failure_status = None
+        existing.last_failure_at = None
+        existing.updated_at = now
+        return existing
+
+    async def _refresh_update_checks_for_snapshot(
+        self, snap: HostSnapshot, force: bool = False
+    ) -> None:
         """Refresh cached update-check results for a single host snapshot."""
         if not snap.host_config:
-            return
-        if not snap.containers:
-            snap.update_results.clear()
-            snap.update_check_results = []
-            snap.update_count = 0
             return
 
         host_id = snap.host_config.host_id
         image_refs = [(c.image, c.repo_digests) for c in snap.containers]
+        current_images = {image for image, _ in image_refs}
+
+        with Session(engine) as session:
+            rows = session.exec(
+                select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+            ).all()
+
+        if not image_refs:
+            self._apply_update_cache_rows_to_snapshot(snap, rows)
+            return
+
+        rows_by_image = {row.image: row for row in rows}
+        now = _utc_now()
+        interval = timedelta(seconds=get_settings().UPDATE_CHECK_INTERVAL)
+
+        merged_refs: dict[str, list[str]] = {}
+        for image_ref, repo_digests in image_refs:
+            existing = merged_refs.setdefault(image_ref, [])
+            for digest in repo_digests or []:
+                if digest and digest not in existing:
+                    existing.append(digest)
+
+        due_refs = [
+            (image_ref, repo_digests)
+            for image_ref, repo_digests in merged_refs.items()
+            if self._is_update_cache_due(
+                rows_by_image.get(image_ref),
+                now,
+                interval,
+                force,
+            )
+        ]
+
+        if not due_refs:
+            self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
+            return
 
         try:
-            results = await run_update_check(host_id, image_refs)
-            updatable = 0
-            snap.update_results.clear()
-            snap.update_check_results = results
-            for r in results:
-                snap.update_results[r.image] = r.status
-                if r.status == "updatable":
-                    updatable += 1
-            snap.update_count = updatable
+            results = await run_update_check(host_id, due_refs)
+
+            with Session(engine) as session:
+                fresh_rows = session.exec(
+                    select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+                ).all()
+                fresh_by_image = {row.image: row for row in fresh_rows}
+
+                for result in results:
+                    row = fresh_by_image.get(result.image)
+                    persisted = self._persist_update_check_result(
+                        session,
+                        host_id,
+                        result,
+                        row,
+                        now,
+                    )
+                    fresh_by_image[result.image] = persisted
+
+                session.commit()
+                final_rows = session.exec(
+                    select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+                ).all()
+
+            self._apply_update_cache_rows_to_snapshot(
+                snap,
+                final_rows,
+                current_images,
+            )
         except Exception as exc:
             logger.warning(
                 "Update check failed for %s: %s", host_id, exc, exc_info=True
             )
-
-    async def _refresh_update_checks_single(
-        self, host_id: str, snap: HostSnapshot
-    ) -> None:
-        """Run a one-shot update check for a single host.
-
-        Called after the first successful docker poll that populates containers.
-        This avoids waiting for the 6h poll interval on initial startup.
-        """
-        if not snap.host_config or not snap.containers:
-            return
-        try:
-            async with self._update_check_lock:
-                await self._refresh_update_checks_for_snapshot(snap)
-            logger.info(
-                "Initial update check for %s: %d updatable out of %d",
-                host_id, snap.update_count, len(snap.update_check_results),
-            )
-        except Exception as exc:
-            logger.warning(
-                "Initial update check failed for %s: %s", host_id, exc
-            )
+            self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
 
     # ── Build summaries for API ────────────────────────────────────
 
@@ -996,7 +1149,7 @@ class SnapshotManager:
             container_running=sum(1 for c in containers if c.state == "running"),
             container_stopped=sum(1 for c in containers if c.state != "running"),
             container_total=len(containers),
-            image_count=disk.images_total if disk else 0,
+            image_count=snap.image_count,
             docker_disk_images=disk.images_size if disk else None,
             docker_disk_containers=disk.containers_size if disk else None,
             docker_disk_volumes=disk.volumes_size if disk else None,

@@ -89,6 +89,7 @@
       :container-stats="containerStats"
       :update-statuses="updateStatuses"
       :update-loading="updateLoading"
+      :structure-loading="structureLoading"
       @refresh="fetchDetail"
       @check-updates="runUpdateCheck"
     />
@@ -96,7 +97,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, reactive, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
 import { apiClient } from "@/api/client";
 import { useDashboardStore, type HostSummary } from "@/stores/dashboard";
@@ -171,6 +172,18 @@ const containers = ref<ContainerSummary[]>([]);
 const containerStats = ref<Record<string, ContainerStats>>({});
 const updateResults = ref<UpdateResult[]>([]);
 const updateLoading = ref(false);
+
+type HostDetailCache = {
+  host: HostSummary | null;
+  stacks: StackSummary[];
+  containers: ContainerSummary[];
+  containerStats: Record<string, ContainerStats>;
+  updateResults: UpdateResult[];
+};
+
+const structureLoading = ref(false);
+const detailRequestSeq = ref(0);
+const hostDetailsById = reactive<Record<string, HostDetailCache>>({});
 
 // Computed metrics
 const memPercent = computed(() => {
@@ -264,40 +277,78 @@ const ioActivityLevel = computed(() => {
   return activityLevel((m.diskReadRate || 0) + (m.diskWriteRate || 0));
 });
 
-function applyUpdateResults(results: UpdateResult[]) {
-  dashboardStore.applyUpdateResults(results || []);
-  updateResults.value = (results || []).filter(
-    (item) => item.host_id === hostId.value
+function activateHostDetail(targetHostId: string) {
+  const currentHost = dashboardStore.hosts.find(
+    (item) => item.host_id === targetHostId
   );
+  host.value = currentHost || null;
+
+  const cached = hostDetailsById[targetHostId];
+  if (cached) {
+    stacks.value = cached.stacks;
+    containers.value = cached.containers;
+    containerStats.value = cached.containerStats;
+    updateResults.value = cached.updateResults;
+    structureLoading.value = false;
+  } else {
+    stacks.value = [];
+    containers.value = [];
+    containerStats.value = {};
+    updateResults.value = [];
+    structureLoading.value = true;
+  }
 }
 
-async function fetchUpdateResults() {
+function applyUpdateResults(results: UpdateResult[], targetHostId = hostId.value): UpdateResult[] {
+  dashboardStore.applyUpdateResults(results || []);
+  const filteredResults = (results || []).filter(
+    (item) => item.host_id === targetHostId
+  );
+  if (targetHostId === hostId.value) {
+    updateResults.value = filteredResults;
+  }
+  return filteredResults;
+}
+
+async function fetchUpdateResults(targetHostId = hostId.value): Promise<UpdateResult[]> {
   updateLoading.value = true;
   try {
     const res = await apiClient.get("/api/update-checks");
-    applyUpdateResults(res.data || []);
+    return applyUpdateResults(res.data || [], targetHostId);
   } catch (e) {
     console.error("Failed to fetch update checks:", e);
-    updateResults.value = [];
+    if (targetHostId === hostId.value) {
+      updateResults.value = [];
+    }
+    return [];
   } finally {
-    updateLoading.value = false;
+    if (targetHostId === hostId.value) {
+      updateLoading.value = false;
+    }
   }
 }
 
 async function runUpdateCheck() {
+  const requestedHostId = hostId.value;
   updateLoading.value = true;
   try {
     const results = await dashboardStore.runUpdateCheck();
-    applyUpdateResults(results || []);
+    applyUpdateResults(results || [], requestedHostId);
+    if (requestedHostId !== hostId.value) return;
     await fetchDetail({ skipUpdates: true });
   } catch (e) {
     console.error("Failed to run update check:", e);
   } finally {
-    updateLoading.value = false;
+    if (requestedHostId === hostId.value) {
+      updateLoading.value = false;
+    }
   }
 }
 
 async function fetchDetailCached(options: { skipUpdates?: boolean; silent?: boolean } = {}) {
+  const requestId = ++detailRequestSeq.value;
+  const requestedHostId = hostId.value;
+
   if (!options.silent) {
     loading.value = true;
   }
@@ -307,6 +358,9 @@ async function fetchDetailCached(options: { skipUpdates?: boolean; silent?: bool
     const res = await apiClient.get(
       `/api/hosts/${encodeURIComponent(hostId.value)}`
     );
+
+    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
+
     host.value = res.data.host || null;
     stacks.value = res.data.stacks || [];
     containers.value = res.data.containers || [];
@@ -316,20 +370,45 @@ async function fetchDetailCached(options: { skipUpdates?: boolean; silent?: bool
       dashboardStore.upsertHost(host.value);
     }
 
-    if (!options.skipUpdates) {
-      await fetchUpdateResults();
-    }
+    // Update cache
+    const existingCache = hostDetailsById[requestedHostId];
+    hostDetailsById[requestedHostId] = {
+      host: host.value,
+      stacks: stacks.value,
+      containers: containers.value,
+      containerStats: containerStats.value,
+      updateResults: options.skipUpdates
+        ? (existingCache?.updateResults || [])
+        : updateResults.value,
+    };
 
+    if (!options.skipUpdates) {
+      const fetchedUpdateResults = await fetchUpdateResults(requestedHostId);
+      // Only update cache's updateResults if still on the same request
+      if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
+        const cache = hostDetailsById[requestedHostId];
+        if (cache) {
+          cache.updateResults = fetchedUpdateResults;
+        }
+      }
+    }
   } catch (e: any) {
+    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
     console.error("Failed to fetch host detail:", e);
   } finally {
-    if (!options.silent) {
-      loading.value = false;
+    if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
+      structureLoading.value = false;
+      if (!options.silent) {
+        loading.value = false;
+      }
     }
   }
 }
 
 async function fetchDetail(options: { skipUpdates?: boolean; silent?: boolean } = {}) {
+  const requestId = ++detailRequestSeq.value;
+  const requestedHostId = hostId.value;
+
   if (!options.silent) {
     loading.value = true;
   }
@@ -337,6 +416,9 @@ async function fetchDetail(options: { skipUpdates?: boolean; silent?: boolean } 
     const res = await apiClient.post(
       `/api/hosts/${encodeURIComponent(hostId.value)}/refresh`
     );
+
+    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
+
     host.value = res.data.host || null;
     stacks.value = res.data.stacks || [];
     containers.value = res.data.containers || [];
@@ -346,15 +428,37 @@ async function fetchDetail(options: { skipUpdates?: boolean; silent?: boolean } 
       dashboardStore.upsertHost(host.value);
     }
 
-    if (!options.skipUpdates) {
-      await fetchUpdateResults();
-    }
+    // Update cache
+    const existingCache = hostDetailsById[requestedHostId];
+    hostDetailsById[requestedHostId] = {
+      host: host.value,
+      stacks: stacks.value,
+      containers: containers.value,
+      containerStats: containerStats.value,
+      updateResults: options.skipUpdates
+        ? (existingCache?.updateResults || [])
+        : updateResults.value,
+    };
 
+    if (!options.skipUpdates) {
+      const fetchedUpdateResults = await fetchUpdateResults(requestedHostId);
+      // Only update cache's updateResults if still on the same request
+      if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
+        const cache = hostDetailsById[requestedHostId];
+        if (cache) {
+          cache.updateResults = fetchedUpdateResults;
+        }
+      }
+    }
   } catch (e: any) {
+    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
     console.error("Failed to fetch host detail:", e);
   } finally {
-    if (!options.silent) {
-      loading.value = false;
+    if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
+      structureLoading.value = false;
+      if (!options.silent) {
+        loading.value = false;
+      }
     }
   }
 }
@@ -378,11 +482,13 @@ function stopPolling() {
 }
 
 onMounted(() => {
+  activateHostDetail(hostId.value);
   fetchDetailCached();
   startPolling();
 });
 
 watch(hostId, () => {
+  activateHostDetail(hostId.value);
   fetchDetailCached();
   startPolling();
 });

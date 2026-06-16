@@ -70,10 +70,16 @@ const results = ref<UpdateResult[]>([]);
 const checking = ref(false);
 const dashboardStore = useDashboardStore();
 
+function visibleResults(items: UpdateResult[]) {
+  return (items || []).filter((item) =>
+    item.status === "updatable" || item.status === "up_to_date"
+  );
+}
+
 async function fetchResults() {
   checking.value = true;
   try {
-    results.value = await dashboardStore.fetchUpdateChecks();
+    results.value = visibleResults(await dashboardStore.fetchUpdateChecks());
   } catch (e) {
     console.error("Failed to fetch update checks:", e);
   } finally {
@@ -84,7 +90,7 @@ async function fetchResults() {
 async function runCheck() {
   checking.value = true;
   try {
-    results.value = await dashboardStore.runUpdateCheck();
+    results.value = visibleResults(await dashboardStore.runUpdateCheck());
   } catch (e) {
     console.error("Failed to run update check:", e);
   } finally {

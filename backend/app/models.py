@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, Text, UniqueConstraint
 
 
 class HostConfig(SQLModel, table=True):
@@ -57,3 +57,25 @@ class AuditLog(SQLModel, table=True):
     result: str = ""  # "success" | "error"
     detail: Optional[str] = None
     ip_address: Optional[str] = None
+
+
+class ImageUpdateCache(SQLModel, table=True):
+    __tablename__ = "image_update_cache"
+    __table_args__ = (
+        UniqueConstraint("host_id", "image", name="uq_image_update_cache_host_image"),
+    )
+
+    id: int = Field(primary_key=True, default=None)
+    host_id: str = Field(index=True)
+    image: str = Field(sa_column=Column(Text, nullable=False))
+    current_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    registry_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    status: str = Field(index=True)
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    failure_count: int = 0
+    last_failure_status: Optional[str] = None
+    last_failure_at: Optional[datetime] = None
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+    )

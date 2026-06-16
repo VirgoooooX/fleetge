@@ -194,7 +194,11 @@ async def _save_stack_compose(
         creds = decrypt_credentials(snap.host_config.dockge_password_encrypted)
         conn = await dockge_pool.get_or_create(snap.host_config, creds["password"])
         result = await conn.save_stack(
-            stack_name, payload.compose_yaml, payload.compose_env, deploy=False,
+            stack_name,
+            payload.compose_yaml,
+            payload.compose_env,
+            deploy=False,
+            is_add=payload.is_add,
         )
 
         _write_audit_log(
@@ -202,6 +206,9 @@ async def _save_stack_compose(
             host_id, stack_name, "success", str(result),
             request.client.host if request.client else None,
         )
+
+        if payload.is_add:
+            asyncio.create_task(snapshot_manager.refresh_host_docker_with_retry(host_id))
 
         return StackOperationResponse(
             success=True,
@@ -290,7 +297,9 @@ async def deploy_stack_compose(
             task = asyncio.create_task(
                 conn.save_stack(
                     stack_name, payload.compose_yaml, payload.compose_env,
-                    deploy=True, log_queue=log_queue,
+                    deploy=True,
+                    is_add=payload.is_add,
+                    log_queue=log_queue,
                 )
             )
 

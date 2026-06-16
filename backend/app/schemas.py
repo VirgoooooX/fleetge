@@ -165,6 +165,7 @@ class StackComposeDetail(BaseModel):
 class StackComposeSaveRequest(BaseModel):
     compose_yaml: str
     compose_env: str = ""
+    is_add: bool = False
 
 
 class StackOperationResponse(BaseModel):

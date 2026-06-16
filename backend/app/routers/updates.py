@@ -21,7 +21,7 @@ router = APIRouter(
 async def get_update_checks():
     """Return cached update check results for all hosts.
 
-    Results are refreshed every 6h by the background task,
+    Results are refreshed every 12h by default by the background task,
     or immediately by POST /api/update-checks/run.
     """
     return snapshot_manager.get_update_check_results()

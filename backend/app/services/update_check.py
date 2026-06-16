@@ -15,6 +15,7 @@ from typing import Optional
 
 import httpx
 
+from app.config import get_settings
 from app.schemas import UpdateCheckResult
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Simple in-memory cache: {image_key: {status, digest, timestamp}}
 _update_cache: dict[str, dict] = {}
 _cache_lock = asyncio.Lock()
-CACHE_TTL = 21600  # 6 hours
+FAILURE_STATUSES = {"needs_auth", "check_failed"}
 
 
 def _parse_image_ref(image: str) -> dict:
@@ -230,7 +231,12 @@ async def check_image(
     cache_key = f"{host_id}:{image_ref}"
     async with _cache_lock:
         cached = _update_cache.get(cache_key)
-        if cached and (time.monotonic() - cached.get("ts", 0)) < CACHE_TTL:
+        cache_ttl = get_settings().UPDATE_CHECK_INTERVAL
+        if (
+            cached
+            and cached.get("status") not in FAILURE_STATUSES
+            and (time.monotonic() - cached.get("ts", 0)) < cache_ttl
+        ):
             return UpdateCheckResult(
                 host_id=host_id,
                 image=image_ref,
@@ -262,14 +268,16 @@ async def check_image(
     else:
         status = "check_failed"
 
-    # Update cache
-    async with _cache_lock:
-        _update_cache[cache_key] = {
-            "local": effective_local,
-            "registry": registry_digest,
-            "status": status,
-            "ts": time.monotonic(),
-        }
+    # Update in-memory cache only for conclusive results. Failed checks should
+    # be retried by the caller instead of being hidden behind a long TTL.
+    if status not in FAILURE_STATUSES:
+        async with _cache_lock:
+            _update_cache[cache_key] = {
+                "local": effective_local,
+                "registry": registry_digest,
+                "status": status,
+                "ts": time.monotonic(),
+            }
 
     return UpdateCheckResult(
         host_id=host_id,
@@ -308,7 +316,15 @@ async def run_update_check(
 
     async def check_one(image_ref: str, repo_digests: list[str]) -> UpdateCheckResult:
         async with semaphore:
-            return await check_image(host_id, image_ref, repo_digests)
+            delays = [0.0, 2.0, 8.0]
+            last_result: UpdateCheckResult | None = None
+            for delay in delays:
+                if delay:
+                    await asyncio.sleep(delay)
+                last_result = await check_image(host_id, image_ref, repo_digests)
+                if last_result.status not in FAILURE_STATUSES:
+                    return last_result
+            return last_result
 
     return await asyncio.gather(
         *(check_one(image_ref, repo_digests) for image_ref, repo_digests in merged.items())

@@ -49,7 +49,7 @@ class Settings:
     BACKGROUND_STRUCTURE_REFRESH_INTERVAL: int = int(
         os.environ.get("BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "3600")
     )
-    UPDATE_CHECK_INTERVAL: int = int(os.environ.get("UPDATE_CHECK_INTERVAL", "21600"))  # 6h
+    UPDATE_CHECK_INTERVAL: int = int(os.environ.get("UPDATE_CHECK_INTERVAL", "43200"))  # 12h
 
     # ── Uvicorn ───────────────────────────────────────────────────────
     LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "info")
