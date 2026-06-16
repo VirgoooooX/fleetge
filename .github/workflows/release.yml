@@ -23,6 +23,9 @@ jobs:
           - service: metrics
             context: host-metrics-exporter
             image_suffix: host-dashboard-metrics-public
+          - service: agent
+            context: fleetge-agent
+            image_suffix: fleetge-agent
 
     steps:
       - name: Checkout
@@ -105,4 +108,5 @@ jobs:
           body: |
             Images:
             - `ghcr.io/${{ steps.owner.outputs.name }}/fleetge:${{ steps.version.outputs.version }}`
+            - `ghcr.io/${{ steps.owner.outputs.name }}/fleetge-agent:${{ steps.version.outputs.version }}`
             - `ghcr.io/${{ steps.owner.outputs.name }}/host-dashboard-metrics-public:${{ steps.version.outputs.version }}`
