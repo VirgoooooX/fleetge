@@ -32,12 +32,16 @@ const props = withDefaults(
     readonly?: boolean;
     disabled?: boolean;
     height?: string;
+    lineNumbers?: "on" | "off";
+    wordWrap?: "on" | "off";
   }>(),
   {
     language: "yaml",
     readonly: false,
     disabled: false,
     height: "480px",
+    lineNumbers: "on",
+    wordWrap: "off",
   }
 );
 
@@ -121,11 +125,13 @@ onMounted(() => {
     fontFamily:
       "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Courier New', monospace",
     fontLigatures: true,
-    lineNumbers: "on",
+    lineNumbers: props.lineNumbers,
+    lineDecorationsWidth: props.lineNumbers === "off" ? 0 : 10,
+    lineNumbersMinChars: props.lineNumbers === "off" ? 0 : 5,
     glyphMargin: false,
     folding: true,
     scrollBeyondLastLine: false,
-    wordWrap: "off",
+    wordWrap: props.wordWrap,
     automaticLayout: false,
     renderWhitespace: "boundary",
     tabSize: 2,
@@ -217,6 +223,26 @@ watch(
     if (model) {
       monaco.editor.setModelLanguage(model, lang);
     }
+  }
+);
+
+// Sync lineNumbers option
+watch(
+  () => props.lineNumbers,
+  (ln) => {
+    editor?.updateOptions({
+      lineNumbers: ln,
+      lineDecorationsWidth: ln === "off" ? 0 : 10,
+      lineNumbersMinChars: ln === "off" ? 0 : 5,
+    });
+  }
+);
+
+// Sync wordWrap option
+watch(
+  () => props.wordWrap,
+  (wrap) => {
+    editor?.updateOptions({ wordWrap: wrap });
   }
 );
 </script>

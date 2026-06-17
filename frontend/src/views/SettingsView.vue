@@ -123,16 +123,16 @@
             </div>
 
             <el-table :data="store.hosts" stripe style="width: 100%" class="host-table">
-              <el-table-column :label="t('settings.hosts.col.sort')" prop="sort_order" width="70" align="center" />
-              <el-table-column :label="t('settings.hosts.col.id')" prop="host_id" width="140" />
+              <el-table-column :label="t('settings.hosts.col.sort')" prop="sort_order" width="70" align="center" class-name="mobile-hidden" label-class-name="mobile-hidden" />
+              <el-table-column :label="t('settings.hosts.col.id')" prop="host_id" width="140" class-name="mobile-hidden" label-class-name="mobile-hidden" />
               <el-table-column :label="t('settings.hosts.col.name')" prop="display_name" width="160" />
-              <el-table-column :label="t('settings.hosts.col.url')" min-width="200" prop="agent_url" />
+              <el-table-column :label="t('settings.hosts.col.url')" min-width="200" prop="agent_url" class-name="mobile-hidden" label-class-name="mobile-hidden" />
               <el-table-column :label="t('settings.hosts.col.status')" prop="enabled" width="90" align="center">
                 <template #default="{ row }">
                   <el-switch v-slot:default v-model="row.enabled" @change="toggleHostEnabled(row)" :loading="store.saving" />
                 </template>
               </el-table-column>
-              <el-table-column :label="t('settings.hosts.col.icons')" width="130" align="center">
+              <el-table-column :label="t('settings.hosts.col.icons')" width="130" align="center" class-name="mobile-hidden" label-class-name="mobile-hidden">
                 <template #default="{ row }">
                   <div class="icons-cell">
                     <div class="icons-preview-strip" v-if="row.stack_icons && Object.keys(row.stack_icons).length > 0">
@@ -170,11 +170,12 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column :label="t('settings.hosts.col.actions')" width="280" align="center" fixed="right">
+              <el-table-column :label="t('settings.hosts.col.actions')" :width="isMobile ? 160 : 280" align="center" :fixed="isMobile ? false : 'right'">
                 <template #default="{ row }">
                   <div class="row-operations">
                     <el-button size="small" type="success" plain @click="testHostConnection(row)">
-                      {{ t('settings.hosts.action.test') }}
+                      <el-icon v-if="isMobile"><Link /></el-icon>
+                      <span v-else>{{ t('settings.hosts.action.test') }}</span>
                     </el-button>
                     <el-button size="small" type="info" plain :icon="Edit" @click="openEditHostDialog(row)" />
                     <el-button size="small" type="danger" plain :icon="Delete" @click="confirmDeleteHost(row)" />
@@ -363,12 +364,15 @@ import {
   Picture,
   Upload,
   Setting as SettingIcon,
+  Link,
 } from "@element-plus/icons-vue";
 import { useSettingsStore, type SettingItem, type HostConfigResponse, type StackIconEntry } from "@/stores/settings";
+import { useMobile } from "@/composables/useMobile";
 
 const { t } = useI18n();
 const store = useSettingsStore();
 const { confirm, alert: confirmAlert } = useConfirm();
+const { isMobile } = useMobile();
 const activeTab = ref("params");
 
 // Params Form
@@ -908,7 +912,7 @@ onMounted(() => {
   width: 22px;
   height: 22px;
   border-radius: 4px;
-  background: var(--surface-raised);
+  background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
   flex-shrink: 0;
   overflow: hidden;
@@ -925,7 +929,7 @@ onMounted(() => {
   font-size: 11px;
   font-weight: 700;
   color: var(--text-muted);
-  background: var(--surface-raised);
+  background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 1px 4px;
@@ -984,7 +988,7 @@ onMounted(() => {
 }
 
 .mode-section {
-  background: var(--surface-raised);
+  background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 16px;
@@ -1047,7 +1051,7 @@ onMounted(() => {
 }
 
 .pattern-code {
-  background: var(--surface-raised);
+  background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 2px 6px;
@@ -1064,7 +1068,7 @@ onMounted(() => {
   width: 32px;
   height: 32px;
   border-radius: 4px;
-  background: var(--surface-raised);
+  background: var(--surface-panel-raised);
   display: grid;
   place-items: center;
   padding: 2px;
@@ -1076,7 +1080,7 @@ onMounted(() => {
 }
 
 .add-icon-form {
-  background: var(--surface-raised);
+  background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 16px;
@@ -1103,5 +1107,17 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   margin-top: 12px;
+}
+
+@media (max-width: 768px) {
+  .dialog-grid,
+  .icon-form-grid,
+  .legacy-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  :deep(.mobile-hidden) {
+    display: none !important;
+  }
 }
 </style>

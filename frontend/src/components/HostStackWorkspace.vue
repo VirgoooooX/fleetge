@@ -247,6 +247,7 @@
                   >
                     {{ formatPortsPreview(container.ports) }}
                   </span>
+                  <span v-else class="container-port" />
                   <UpdateBadge
                     v-if="containerUpdateStatus(container)"
                     :status="containerUpdateStatus(container)!"
@@ -680,7 +681,16 @@
                 show-icon
                 :closable="false"
               />
-              <pre v-else><code>{{ composeYaml || t('workspace.noComposeFromAgent') }}</code></pre>
+              <div v-else-if="!composeYaml" class="panel-muted">{{ t('workspace.noComposeFromAgent') }}</div>
+              <MonacoEditor
+                v-else
+                v-model="composeYaml"
+                language="yaml"
+                readonly
+                line-numbers="off"
+                word-wrap="on"
+                height="100%"
+              />
             </div>
           </aside>
         </div>
@@ -752,7 +762,9 @@ import StackActions from "./StackActions.vue";
 import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import StackOperationDock from "./StackOperationDock.vue";
 import ComposeDrawer from "./ComposeDrawer.vue";
+import MonacoEditor from "@/components/MonacoEditor.vue";
 import UpdateBadge from "./UpdateBadge.vue";
+import { sortStacks } from "@/utils/stackSorting";
 
 export interface StackService {
   name: string;
@@ -904,8 +916,10 @@ const pruneLoading = ref(false);
 
 const filteredStacks = computed(() => {
   const query = stackSearch.value.trim().toLowerCase();
-  if (!query) return props.stacks;
-  return props.stacks.filter((stack) => stack.name.toLowerCase().includes(query));
+  const filtered = query
+    ? props.stacks.filter((stack) => stack.name.toLowerCase().includes(query))
+    : [...props.stacks];
+  return sortStacks(filtered);
 });
 
 const selectedStack = computed(() =>
@@ -2314,26 +2328,25 @@ onUnmounted(() => {
   display: flex;
   flex: 1;
   min-height: 0;
+  margin-left: -16px;
+  margin-right: -16px;
+  margin-bottom: -16px;
+  padding-left: 8px;
+  padding-right: 8px;
 }
 
-.compose-preview pre {
-  flex: 1;
-  min-height: 0;
-  max-height: none;
+.compose-preview :deep(.monaco-editor-container) {
+  border: none;
+  border-radius: 0;
+  height: 100%;
   width: 100%;
-  margin: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
-  border-radius: 8px;
-  background: var(--surface-base);
-  color: var(--text-primary);
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  padding: 14px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  background-color: transparent !important;
+}
+
+.compose-preview :deep(.monaco-editor),
+.compose-preview :deep(.monaco-editor-background),
+.compose-preview :deep(.monaco-editor .margin) {
+  background-color: transparent !important;
 }
 
 .panel-muted {
@@ -3134,12 +3147,18 @@ onUnmounted(() => {
   }
 
   .container-row {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .container-status,
   .container-port {
     grid-column: 2;
+  }
+
+  .container-row :deep(.update-badge) {
+    grid-column: 3;
+    grid-row: 1 / span 3;
+    align-self: center;
   }
 
   .stats-dashboard {

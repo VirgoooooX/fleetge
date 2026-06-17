@@ -553,7 +553,10 @@ onUnmounted(() => {
 
 @media (max-width: 900px) {
   .metrics-bar {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metrics-bar > *:last-child {
+    grid-column: span 2;
   }
 }
 </style>

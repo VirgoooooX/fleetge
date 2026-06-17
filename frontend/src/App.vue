@@ -1,9 +1,14 @@
 <template>
   <el-config-provider :locale="currentElLocale">
+    <OfflineIndicator />
+    <UpdatePrompt />
     <router-view v-if="isAuthPage" />
-    <AppShell v-else>
-      <router-view />
-    </AppShell>
+    <template v-else>
+      <AppShell>
+        <router-view />
+      </AppShell>
+      <MobileInstallPrompt />
+    </template>
   </el-config-provider>
 </template>
 
@@ -14,6 +19,9 @@ import { useI18n } from "vue-i18n";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import en from "element-plus/es/locale/lang/en";
 import AppShell from "@/components/AppShell.vue";
+import OfflineIndicator from "@/components/OfflineIndicator.vue";
+import UpdatePrompt from "@/components/UpdatePrompt.vue";
+import MobileInstallPrompt from "@/components/MobileInstallPrompt.vue";
 
 const route = useRoute();
 const { locale } = useI18n();

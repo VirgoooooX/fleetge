@@ -10,10 +10,30 @@ import App from "./App.vue";
 import router from "./router";
 import { i18n, getStoredLocale } from "./i18n";
 import type { Locale } from "./i18n";
+import { registerSW } from "virtual:pwa-register";
+import { initPwaUpdate } from "@/composables/usePwaUpdate";
 import "./styles/dashboard.css";
 import "./styles/themes.css";
 import "./styles/ui.css";
 import "./styles/confirm-dialog.css";
+
+// ── PWA: Service Worker registration ──
+const updateSW = registerSW({
+  onNeedRefresh() {
+    initPwaUpdate(async () => {
+      await updateSW?.();
+    });
+  },
+  onOfflineReady() {
+    console.log("[PWA] App ready for offline use.");
+  },
+  onRegistered(registration) {
+    console.log("[PWA] Service worker registered:", registration);
+  },
+  onRegisterError(error) {
+    console.error("[PWA] Service worker registration failed:", error);
+  },
+});
 
 const app = createApp(App);
 

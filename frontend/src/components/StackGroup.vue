@@ -1,7 +1,7 @@
 <template>
   <div class="stack-list">
     <el-card
-      v-for="stack in stacks"
+      v-for="stack in sortedStacks"
       :key="stack.name"
       class="stack-card"
       :class="{ 'is-stopped': stack.status === 'stopped' || stack.status === 'inactive' || stack.status === 'exited' }"
@@ -122,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive } from "vue";
+import { ref, reactive, computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { FolderOpened, Document, EditPen, Loading, SuccessFilled, WarningFilled, Clock } from "@element-plus/icons-vue";
 import StatusIcon from "./StatusIcon.vue";
@@ -131,6 +131,7 @@ import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import LogDrawer from "./LogDrawer.vue";
 import ComposeDrawer from "./ComposeDrawer.vue";
 import TerminalDrawer from "./TerminalDrawer.vue";
+import { sortStacks } from "@/utils/stackSorting";
 
 export interface StackService {
   name: string;
@@ -155,6 +156,8 @@ const props = defineProps<{
 }>();
 
 defineEmits<{ refresh: [] }>();
+
+const sortedStacks = computed(() => sortStacks(props.stacks));
 
 const { t } = useI18n();
 

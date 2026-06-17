@@ -674,6 +674,52 @@ class SnapshotManager:
             # Stacks from Agent
             await self._refresh_stacks(snap, cfg)
 
+            # Auto-verify / update image check statuses for pulled/changed images
+            try:
+                from app.services.update_check import _extract_local_digest
+
+                with Session(engine) as session:
+                    rows = session.exec(
+                        select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+                    ).all()
+
+                rows_by_image = {row.image: row for row in rows}
+                changed_images = []
+                for c in snap.containers:
+                    if not c.image:
+                        continue
+                    row = rows_by_image.get(c.image)
+                    if row:
+                        new_local = _extract_local_digest(c.repo_digests)
+                        if new_local and (new_local != row.current_digest or (row.status == "updatable" and new_local == row.registry_digest)):
+                            changed_images.append((c.image, c.repo_digests))
+
+                if changed_images:
+                    logger.info("Running update check verification for pulled/changed images on host %s: %s", host_id, [img for img, _ in changed_images])
+                    results = await run_update_check(host_id, changed_images)
+                    now = _utc_now()
+                    with Session(engine) as session:
+                        for result in results:
+                            row = session.exec(
+                                select(ImageUpdateCache).where(
+                                    ImageUpdateCache.host_id == host_id,
+                                    ImageUpdateCache.image == result.image
+                                )
+                            ).first()
+                            self._persist_update_check_result(session, host_id, result, row, now)
+                        session.commit()
+
+                    # Reload updated cache rows
+                    with Session(engine) as session:
+                        rows = session.exec(
+                            select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+                        ).all()
+
+                current_images = {c.image for c in snap.containers if c.image}
+                self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
+            except Exception as cache_exc:
+                logger.warning("Failed to verify/update image update cache for host %s: %s", host_id, cache_exc)
+
             snap.status = "online"
             snap.error_message = ""
 

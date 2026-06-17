@@ -283,6 +283,17 @@
   "stackGroup.terminalTitle": "Terminal 输出 — {name}",
 
   "sse.streamNotSupported": "浏览器不支持流式读取",
+
+  "mobile.openMenu": "打开菜单",
+  "mobile.closeMenu": "关闭菜单",
+  "mobile.installPrompt": "将 Fleetge 安装到您的设备",
+  "mobile.install": "安装",
+  "mobile.dismiss": "暂不",
+  "mobile.offline": "您已离线，显示缓存数据。",
+  "pwa.updateTitle": "发现新版本",
+  "pwa.updateMessage": "Fleetge 有新版本可用，是否立即更新？",
+  "pwa.updateApply": "更新",
+  "pwa.updateDismiss": "稍后",
   "settings.kicker": "控制台配置",
   "settings.title": "系统设置与节点管理",
   "settings.back": "返回首页",

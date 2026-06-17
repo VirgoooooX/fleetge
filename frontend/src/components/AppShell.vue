@@ -1,6 +1,6 @@
 <template>
   <div class="ops-shell" :style="{ gridTemplateColumns: sidebarWidth + 'px minmax(0, 1fr)' }">
-    <aside class="ops-sidebar">
+    <aside class="ops-sidebar" :class="{ 'is-mobile-open': sidebarOpen }">
       <div class="ops-brand" @click="router.push('/')">
         <div class="ops-brand-mark">
           <AppLogo />
@@ -47,6 +47,26 @@
         </button>
       </div>
 
+      <!-- Mobile sidebar footer actions -->
+      <div class="ops-sidebar-footer">
+        <button class="ops-sidebar-footer-btn" type="button" @click="switchLocale">
+          <el-icon><Position /></el-icon>
+          <span>{{ localeLabel === '中' ? '简体中文' : 'English' }}</span>
+        </button>
+        <button class="ops-sidebar-footer-btn" type="button" @click="theme.toggle()">
+          <el-icon><component :is="themeIcon" /></el-icon>
+          <span>{{ theme.current.value === 'dark' ? t('shell.switchLight') : t('shell.switchDark') }}</span>
+        </button>
+        <button class="ops-sidebar-footer-btn" type="button" :disabled="store.manualLoading" @click="store.refreshAll">
+          <el-icon><Refresh /></el-icon>
+          <span>{{ t('shell.refresh') }}</span>
+        </button>
+        <button class="ops-sidebar-footer-btn logout" type="button" @click="logout">
+          <el-icon><SwitchButton /></el-icon>
+          <span>{{ t('shell.logout') }}</span>
+        </button>
+      </div>
+
       <!-- Resize Handle -->
       <div
         class="ops-sidebar-resizer"
@@ -55,9 +75,22 @@
       />
     </aside>
 
+    <!-- Mobile backdrop overlay -->
+    <div class="ops-mobile-backdrop" :class="{ 'is-visible': sidebarOpen }" @click="sidebarOpen = false" />
+
     <div class="ops-main">
       <header class="ops-topbar">
         <div class="ops-topbar-left">
+          <button
+            class="ops-mobile-menu-btn"
+            :aria-label="sidebarOpen ? t('mobile.closeMenu') : t('mobile.openMenu')"
+            @click="sidebarOpen = !sidebarOpen"
+          >
+            <el-icon :size="22">
+              <Expand v-if="!sidebarOpen" />
+              <Fold v-if="sidebarOpen" />
+            </el-icon>
+          </button>
           <div class="ops-topbar-kicker">{{ t('shell.kicker') }}</div>
           <div class="ops-topbar-title-row">
             <h1 class="ops-topbar-title">{{ pageTitle }}</h1>
@@ -121,11 +154,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
   Collection,
+  Expand,
+  Fold,
   House,
   List,
   Moon,
@@ -134,12 +169,14 @@ import {
   SwitchButton,
   Warning,
   Setting,
+  Position,
 } from "@element-plus/icons-vue";
 import AppLogo from "@/components/AppLogo.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
 import { useAuthStore } from "@/stores/auth";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useTheme } from "@/composables/useTheme";
+import { useMobile } from "@/composables/useMobile";
 import { getOppositeLocale, setStoredLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 
@@ -148,6 +185,13 @@ const router = useRouter();
 const auth = useAuthStore();
 const store = useDashboardStore();
 const theme = useTheme();
+const { isMobile } = useMobile(899);
+const sidebarOpen = ref(false);
+
+// Close sidebar when switching back to desktop or navigating
+watch(isMobile, (val) => { if (!val) sidebarOpen.value = false; });
+watch(() => route.fullPath, () => { sidebarOpen.value = false; });
+
 const { t, locale } = useI18n();
 
 const themeIcon = computed(() => (theme.current.value === "dark" ? Sunny : Moon));
@@ -291,7 +335,7 @@ function logout() {
   gap: 18px;
   padding: 12px;
   border-right: 1px solid var(--border-subtle);
-  background: var(--sidebar-bg), var(--surface-raised);
+  background: var(--sidebar-bg), var(--surface-panel-raised);
 }
 
 .ops-brand {
@@ -536,54 +580,187 @@ function logout() {
   overflow: hidden;
 }
 
-@media (max-width: 900px) {
+/* ── Hamburger button (hidden on desktop) ── */
+.ops-mobile-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--pill-bg);
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.ops-mobile-menu-btn:hover {
+  background: var(--nav-hover-bg);
+  color: var(--text-primary);
+}
+
+/* ── Mobile backdrop ── */
+.ops-mobile-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.ops-mobile-backdrop.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ops-sidebar-footer {
+  display: none;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ops-sidebar-footer-btn {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 10px;
+  text-align: left;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.ops-sidebar-footer-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--nav-hover-bg);
+  color: var(--text-primary);
+}
+
+.ops-sidebar-footer-btn .el-icon {
+  width: 22px;
+  height: 22px;
+  margin-left: -2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+
+.ops-sidebar-footer-btn.logout:hover {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.08);
+  color: var(--danger);
+}
+
+.ops-sidebar-footer-btn.logout:hover .el-icon {
+  color: var(--danger);
+}
+
+@media (max-width: 899px) {
   .ops-shell {
     display: block;
   }
 
+  .ops-mobile-menu-btn {
+    display: inline-flex;
+  }
+
+  .ops-mobile-backdrop {
+    display: block;
+  }
+
+  /* Sidebar → fixed overlay drawer */
   .ops-sidebar {
-    position: static;
-    height: auto;
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    height: 100dvh;
+    width: 280px;
+    z-index: 100;
     padding: 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-subtle);
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    border-right: 1px solid var(--border-subtle);
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    overflow-y: auto;
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
   }
 
-  .ops-brand {
-    padding: 4px 8px;
+  .ops-sidebar.is-mobile-open {
+    transform: translateX(0);
+    box-shadow: 6px 0 30px rgba(0, 0, 0, 0.5);
   }
 
-  .ops-nav,
-  .ops-host-list {
-    flex-direction: row;
-    overflow-x: auto;
-    padding-bottom: 2px;
+  .ops-sidebar-footer {
+    display: flex;
   }
 
-  .ops-section-label {
-    display: none;
-  }
-
-  .ops-nav-item,
-  .ops-host-link {
-    width: auto;
-    flex: 0 0 auto;
+  .ops-topbar-right .el-button {
+    display: none !important;
   }
 
   .ops-main {
     height: auto;
+    min-height: 100vh;
   }
 
   .ops-topbar {
-    position: static;
-    align-items: flex-start;
-    flex-direction: column;
-    padding: 14px 16px;
+    position: sticky;
+    align-items: center;
+    flex-direction: row;
+    padding: 10px 14px;
+    gap: 12px;
+    min-height: 56px;
+  }
+
+  .ops-topbar-left {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ops-topbar-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .ops-topbar-title {
+    font-size: 17px;
+  }
+
+  .ops-host-tags {
+    gap: 4px;
+  }
+
+  .ops-host-tags :deep(.el-tag) {
+    font-size: 10px;
+    height: 20px;
+    padding: 0 4px;
   }
 
   .ops-content {
     overflow: visible;
-    padding: 16px;
+    padding: 12px;
   }
 
   .ops-sidebar-resizer {

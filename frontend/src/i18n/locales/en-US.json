@@ -283,6 +283,17 @@
   "stackGroup.terminalTitle": "Terminal output — {name}",
 
   "sse.streamNotSupported": "Browser does not support streaming",
+
+  "mobile.openMenu": "Open menu",
+  "mobile.closeMenu": "Close menu",
+  "mobile.installPrompt": "Install Fleetge on your device",
+  "mobile.install": "Install",
+  "mobile.dismiss": "Not now",
+  "mobile.offline": "You are offline. Showing cached data.",
+  "pwa.updateTitle": "New version available",
+  "pwa.updateMessage": "A new version of Fleetge is available. Update now?",
+  "pwa.updateApply": "Update",
+  "pwa.updateDismiss": "Later",
   "settings.kicker": "Console Config",
   "settings.title": "Settings & Host Management",
   "settings.back": "Back to Home",

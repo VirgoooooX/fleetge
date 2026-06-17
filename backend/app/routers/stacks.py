@@ -325,6 +325,12 @@ async def deploy_stack_compose(
                 success = bool(ok_val) if ok_val is not None else True
                 msg = result.get("msg", result.get("message", str(result)))
 
+            if success:
+                try:
+                    await snapshot_manager.refresh_host_docker(host_id)
+                except Exception as refresh_exc:
+                    logger.warning("Pre-complete refresh failed for deploy: %s", refresh_exc)
+
             yield _sse_event(
                 "complete",
                 {"status": "success" if success else "error", "message": msg},
@@ -757,6 +763,12 @@ async def stack_action(
                 ok_val = result.get("success", result.get("ok", True))
                 success = bool(ok_val) if ok_val is not None else True
                 msg = result.get("msg", result.get("message", str(result)))
+
+            if success:
+                try:
+                    await snapshot_manager.refresh_host_docker(host_id)
+                except Exception as refresh_exc:
+                    logger.warning("Pre-complete refresh failed for stack action: %s", refresh_exc)
 
             yield _sse_event(
                 "complete",
