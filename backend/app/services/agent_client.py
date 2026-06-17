@@ -14,11 +14,11 @@ logger = logging.getLogger(__name__)
 
 class AgentClient:
     """Unified HTTP/WebSocket client to communicate with the remote Fleetge Agent.
-    
-    Acts as a drop-in replacement that implements all methods of:
-      - MetricsClient
-      - DockerProxyClient
-      - DockgeConnection (except Socket.IO features)
+
+    Acts as a drop-in replacement that provides:
+      - Metrics collection
+      - Docker container/state polling
+      - Compose stack management
     """
 
     def __init__(self, config: HostConfig):
@@ -72,7 +72,7 @@ class AgentClient:
         r.raise_for_status()
         return HostMetrics(**r.json())
 
-    # ── 2. Docker Proxy API (replaces DockerProxyClient) ──────────────────
+    # ── 2. Docker Proxy API ──────────────────────────────────────────
 
     async def ping(self) -> bool:
         """GET /api/agent/docker/_ping check Docker daemon health."""
@@ -187,7 +187,7 @@ class AgentClient:
             async for chunk in response.aiter_text():
                 yield chunk
 
-    # ── 3. Compose Stack API (replaces DockgeClient) ─────────────────────
+    # ── 3. Compose Stack API ────────────────────────────────────────
 
     async def list_stacks(self) -> list[dict]:
         """GET /api/agent/stacks (returns list of stack names, mock status format)."""
@@ -204,14 +204,14 @@ class AgentClient:
             r = await self._client.get(f"/api/agent/stacks/{name}", headers=self._headers())
             r.raise_for_status()
             data = r.json()
-            # Wrap to match Dockge's return shape: {"stack": {"name": ..., "composeYAML": ..., "composeENV": ...}}
+            # Return Agent stack response shape: {"stack": {"name": ..., "composeYAML": ..., "composeENV": ...}}
             return {
                 "stack": {
                     "name": data.get("name"),
                     "composeYAML": data.get("compose_yaml"),
                     "composeENV": data.get("compose_env"),
                     "composeFileName": data.get("compose_file_name", "compose.yaml"),
-                    "isManagedByDockge": True
+                    "isManagedByAgent": True
                 }
             }
         except httpx.HTTPStatusError as exc:
@@ -238,6 +238,8 @@ class AgentClient:
         deploy: bool = False,
         is_add: bool = False,
         log_queue: Optional[asyncio.Queue] = None,
+        cols: int = 160,
+        rows: int = 24,
     ) -> dict:
         """Save compose stack configuration. If deploy=True, stream control output."""
         # Save first
@@ -252,7 +254,7 @@ class AgentClient:
 
         if deploy:
             # Run deploy stream command
-            return await self.stack_action(name, "up", log_queue=log_queue)
+            return await self.stack_action(name, "up", log_queue=log_queue, cols=cols, rows=rows)
             
         return r.json()
 
@@ -264,7 +266,12 @@ class AgentClient:
         return []
 
     async def stack_action(
-        self, name: str, action: str, log_queue: Optional[asyncio.Queue] = None
+        self,
+        name: str,
+        action: str,
+        log_queue: Optional[asyncio.Queue] = None,
+        cols: int = 160,
+        rows: int = 24,
     ) -> dict:
         """Execute docker compose command on the agent and stream control output via WebSocket."""
         # Convert start/stop/down/restart/update actions to Agent supported compose commands
@@ -286,8 +293,8 @@ class AgentClient:
         # Run process via WebSocket connection
         try:
             async with self._connect_websocket(ws_uri) as ws:
-                # Send action payload
-                await ws.send(f'{{"action": "{agent_action}"}}')
+                # Send action payload with dimensions
+                await ws.send(f'{{"action": "{agent_action}", "cols": {cols}, "rows": {rows}}}')
                 
                 exit_code = 0
                 error_msg = ""

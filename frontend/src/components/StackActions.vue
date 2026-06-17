@@ -119,7 +119,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onBeforeUnmount } from "vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
 import {
@@ -143,6 +143,7 @@ export type OperationState = {
   message: string;
   logTail?: string;
   updatedAt: number;
+  abort?: () => void;
 };
 
 export type TerminalChunkEvent = {
@@ -166,9 +167,9 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{
-  "operation-start": [payload: OperationState];
-  "operation-complete": [payload: OperationState];
-  "terminal-chunk": [payload: TerminalChunkEvent];
+  "operation-start": [stackName: string, payload: OperationState];
+  "operation-complete": [stackName: string, payload: OperationState];
+  "terminal-chunk": [stackName: string, payload: TerminalChunkEvent];
   refresh: [];
   compose: [];
   logs: [];
@@ -179,6 +180,15 @@ const loading = ref<string | null>(null);
 const deleting = ref(false);
 const { t } = useI18n();
 const { confirm } = useConfirm();
+
+let sseAbortController: AbortController | null = null;
+
+onBeforeUnmount(() => {
+  if (sseAbortController) {
+    sseAbortController.abort();
+    sseAbortController = null;
+  }
+});
 
 const riskKeys: Record<string, string> = {
   start: "stack.risk.start",
@@ -216,27 +226,36 @@ async function confirmAndRun(action: string, label: string) {
     return;
   }
 
+  const currentStackName = props.stackName;
   const startedAt = Date.now();
+  const controller = new AbortController();
+  sseAbortController = controller;
 
   const runningState: OperationState = {
     action,
     status: "running",
     message: t("stack.confirm.running", { action: label }),
     updatedAt: startedAt,
+    abort: () => {
+      controller.abort();
+    }
   };
-  emit("operation-start", runningState);
+  emit("operation-start", currentStackName, runningState);
   loading.value = action;
 
   let completed = false;
   const timeoutMs = actionTimeouts[action] || 120000;
 
   try {
-    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(props.stackName)}/${action}`;
+    const cols = props.showDetail ? 55 : 110;
+    const rows = props.showDetail ? 15 : 24;
+    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(currentStackName)}/${action}?cols=${cols}&rows=${rows}`;
 
     await streamSse({
       url,
       method: "POST",
       timeoutMs,
+      signal: controller.signal,
       onTimeout: () => {
         if (completed) return;
         completed = true;
@@ -246,14 +265,14 @@ async function confirmAndRun(action: string, label: string) {
           message: t("stack.confirm.timeout"),
           updatedAt: Date.now(),
         };
-        emit("operation-complete", timeoutState);
+        emit("operation-complete", currentStackName, timeoutState);
         ElMessage.warning(timeoutState.message);
       },
       onEvent: (ev) => {
         if (ev.event === "chunk") {
-          emit("terminal-chunk", { action, chunk: ev.data?.raw ?? ev.rawData });
+          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.raw ?? ev.rawData });
         } else if (ev.event === "line") {
-          emit("terminal-chunk", { action, chunk: ev.data?.text ?? ev.rawData });
+          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.text ?? ev.rawData });
         } else if (ev.event === "complete") {
           completed = true;
 
@@ -265,7 +284,7 @@ async function confirmAndRun(action: string, label: string) {
             message: data.message || t(finalStatus === "success" ? "stack.confirm.success" : "stack.confirm.failure", { action: label }),
             updatedAt: Date.now(),
           };
-          emit("operation-complete", completeState);
+          emit("operation-complete", currentStackName, completeState);
           if (finalStatus === "success") {
             ElMessage.success(completeState.message);
             emit("refresh");
@@ -282,7 +301,7 @@ async function confirmAndRun(action: string, label: string) {
             message: data.message || t("stack.confirm.failure", { action: label }),
             updatedAt: Date.now(),
           };
-          emit("operation-complete", errorState);
+          emit("operation-complete", currentStackName, errorState);
           ElMessage.error(errorState.message);
         }
       },
@@ -290,19 +309,40 @@ async function confirmAndRun(action: string, label: string) {
 
     if (!completed) {
       completed = true;
+      if (controller.signal.aborted) {
+        const cancelState: OperationState = {
+          action,
+          status: "error",
+          message: t("stack.confirm.cancelled"),
+          updatedAt: Date.now(),
+        };
+        emit("operation-complete", currentStackName, cancelState);
+        return;
+      }
       const successState: OperationState = {
         action,
         status: "success",
         message: t("stack.confirm.success", { action: label }),
         updatedAt: Date.now(),
       };
-      emit("operation-complete", successState);
+      emit("operation-complete", currentStackName, successState);
       ElMessage.success(successState.message);
       emit("refresh");
     }
   } catch (e: any) {
     if (completed) return;
     completed = true;
+
+    if (controller.signal.aborted) {
+      const cancelState: OperationState = {
+        action,
+        status: "error",
+        message: t("stack.confirm.cancelled"),
+        updatedAt: Date.now(),
+      };
+      emit("operation-complete", currentStackName, cancelState);
+      return;
+    }
 
     const errorDetail = e.message || t("stack.confirm.unknownError");
     const errorState: OperationState = {
@@ -311,11 +351,14 @@ async function confirmAndRun(action: string, label: string) {
       message: t("stack.confirm.failure", { action: label }) + ": " + errorDetail,
       updatedAt: Date.now(),
     };
-    emit("operation-complete", errorState);
+    emit("operation-complete", currentStackName, errorState);
     ElMessage.error(errorState.message);
   } finally {
     if (loading.value === action) {
       loading.value = null;
+    }
+    if (sseAbortController === controller) {
+      sseAbortController = null;
     }
   }
 }

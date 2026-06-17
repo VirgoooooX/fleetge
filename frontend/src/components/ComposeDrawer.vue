@@ -270,7 +270,7 @@ async function fetchCompose() {
     composeYaml.value = res.data.compose_yaml || "";
     composeEnv.value = res.data.compose_env || "";
     composeFileName.value = res.data.compose_file_name || "compose.yaml";
-    managed.value = !!res.data.is_managed_by_dockge;
+    managed.value = !!res.data.is_managed_by_agent;
   } catch (e: any) {
     managed.value = false;
     composeYaml.value = "";

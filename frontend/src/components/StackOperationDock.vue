@@ -13,6 +13,9 @@
           <el-icon v-else-if="status === 'error'"><WarningFilled /></el-icon>
           {{ statusLabel }}
         </span>
+        <el-button v-if="status === 'running'" type="danger" link size="small" @click.stop="$emit('cancel')">
+          {{ t("stack.confirm.cancel") }}
+        </el-button>
         <el-button v-if="lines.length > 0" class="ui-button ui-button--compact" size="small" text @click.stop="copyOutput">
           {{ copied ? t("stackOp.copied") : t("stackOp.copy") }}
         </el-button>
@@ -47,7 +50,7 @@ const props = withDefaults(defineProps<{
   compact: false,
 });
 
-defineEmits<{ close: [] }>();
+defineEmits<{ close: [], cancel: [] }>();
 
 const { t } = useI18n();
 

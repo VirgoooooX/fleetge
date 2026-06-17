@@ -1,5 +1,5 @@
 <template>
-  <div class="ops-shell">
+  <div class="ops-shell" :style="{ gridTemplateColumns: sidebarWidth + 'px minmax(0, 1fr)' }">
     <aside class="ops-sidebar">
       <div class="ops-brand" @click="router.push('/')">
         <div class="ops-brand-mark">
@@ -46,6 +46,13 @@
           </span>
         </button>
       </div>
+
+      <!-- Resize Handle -->
+      <div
+        class="ops-sidebar-resizer"
+        :class="{ 'is-dragging': isDragging }"
+        @mousedown="startResize"
+      />
     </aside>
 
     <div class="ops-main">
@@ -114,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
@@ -205,12 +212,55 @@ const pageTitle = computed(() => {
   return t("nav.dashboard");
 });
 
+const isDragging = ref(false);
+
+const getInitialWidth = () => {
+  if (typeof window !== "undefined") {
+    const stored = localStorage.getItem("fleetge_sidebar_width");
+    if (stored) {
+      const w = parseInt(stored, 10);
+      if (!isNaN(w) && w >= 180 && w <= 450) {
+        return w;
+      }
+    }
+  }
+  return 260;
+};
+
+const sidebarWidth = ref(getInitialWidth());
+
+function handleMouseMove(e: MouseEvent) {
+  if (!isDragging.value) return;
+  const newWidth = Math.max(180, Math.min(450, e.clientX));
+  sidebarWidth.value = newWidth;
+}
+
+function handleMouseUp() {
+  if (!isDragging.value) return;
+  isDragging.value = false;
+  document.removeEventListener("mousemove", handleMouseMove);
+  document.removeEventListener("mouseup", handleMouseUp);
+  document.body.classList.remove("is-resizing-sidebar");
+  localStorage.setItem("fleetge_sidebar_width", sidebarWidth.value.toString());
+}
+
+function startResize(e: MouseEvent) {
+  e.preventDefault();
+  isDragging.value = true;
+  document.addEventListener("mousemove", handleMouseMove);
+  document.addEventListener("mouseup", handleMouseUp);
+  document.body.classList.add("is-resizing-sidebar");
+}
+
 onMounted(() => {
   store.startPolling(15000);
 });
 
 onUnmounted(() => {
   store.stopPolling();
+  document.removeEventListener("mousemove", handleMouseMove);
+  document.removeEventListener("mouseup", handleMouseUp);
+  document.body.classList.remove("is-resizing-sidebar");
 });
 
 function isActive(id: string, path: string) {
@@ -228,7 +278,6 @@ function logout() {
 .ops-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
   background: var(--surface-base);
   color: var(--text-primary);
 }
@@ -536,5 +585,46 @@ function logout() {
     overflow: visible;
     padding: 16px;
   }
+
+  .ops-sidebar-resizer {
+    display: none !important;
+  }
+}
+
+.ops-sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 50;
+}
+
+.ops-sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ops-sidebar-resizer:hover::after,
+.ops-sidebar-resizer.is-dragging::after {
+  background: var(--accent-blue);
+  box-shadow: 0 0 8px var(--accent-blue);
+}
+
+:global(body.is-resizing-sidebar) {
+  user-select: none !important;
+  cursor: col-resize !important;
+}
+
+:global(body.is-resizing-sidebar *) {
+  user-select: none !important;
+  cursor: col-resize !important;
 }
 </style>

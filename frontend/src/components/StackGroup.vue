@@ -29,9 +29,9 @@
             show-compose
             show-logs
             @refresh="$emit('refresh')"
-            @operation-start="onOperationStart(stack.name, $event)"
-            @terminal-chunk="onTerminalChunk(stack.name, $event)"
-            @operation-complete="onOperationComplete(stack.name, $event)"
+            @operation-start="onOperationStart"
+            @terminal-chunk="onTerminalChunk"
+            @operation-complete="onOperationComplete"
             @compose="openCompose(stack.name)"
             @logs="openLogs(stack.name)"
           />

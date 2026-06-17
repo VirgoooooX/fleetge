@@ -29,7 +29,7 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
-# Whitelisted actions — these map to Dockge Socket.IO events
+# Whitelisted actions — these map to Agent stack events
 ALLOWED_ACTIONS: dict[str, str] = {
     "start": "startStack",
     "stop": "stopStack",
@@ -103,7 +103,7 @@ def _write_audit_log_standalone(
 
 @router.get("/hosts/{host_id}/stacks", response_model=list[StackSummary])
 async def list_stacks(host_id: str):
-    """Return all Dockge stacks for a host, merged with container states."""
+    """Return all stacks for a host, merged with container states."""
     snap = snapshot_manager.get_snapshot(host_id)
     if snap is None:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
@@ -111,11 +111,9 @@ async def list_stacks(host_id: str):
 
 
 def _normalize_stack_detail(stack_name: str, result: Any) -> StackComposeDetail:
-    """Normalize Dockge getStack ack into API shape.
+    """Normalize Agent getStack response into API shape.
 
-    The error-first callback [err, data] pattern is already unwrapped
-    by ``_agent_call()``, so ``result`` is the data dict directly (or
-    a dict with a ``stack`` key).
+    ``result`` is the data dict directly (or a dict with a ``stack`` key).
     """
     raw = result
     if isinstance(raw, dict):
@@ -131,7 +129,7 @@ def _normalize_stack_detail(stack_name: str, result: Any) -> StackComposeDetail:
         compose_yaml=stack.get("composeYAML") or stack.get("compose_yaml") or "",
         compose_env=stack.get("composeENV") or stack.get("compose_env") or "",
         compose_file_name=stack.get("composeFileName") or "compose.yaml",
-        is_managed_by_dockge=bool(stack.get("isManagedByDockge")),
+        is_managed_by_agent=True,
     )
 
 
@@ -143,9 +141,9 @@ async def get_stack_compose(host_id: str, stack_name: str):
     """Return compose.yaml and .env for a stack.
 
     Unlike earlier versions, this endpoint does NOT return 409 purely based on
-    ``isManagedByDockge``. If Dockge's ``getStack`` succeeds and returns
-    compose content, the result is returned regardless of the managed flag.
-    A 409/404 is only returned when Dockge did not return a compose file.
+    the managed flag. If the Agent returns compose content, the result is
+    returned regardless of the managed flag.
+    A 409/404 is only returned when no compose file was returned.
     """
     snap = snapshot_manager.get_snapshot(host_id)
     if snap is None or snap.host_config is None:
@@ -260,6 +258,8 @@ async def deploy_stack_compose(
     stack_name: str,
     payload: StackComposeSaveRequest,
     request: Request,
+    cols: int = 160,
+    rows: int = 24,
     session: Session = Depends(get_session),
     username: str = Depends(get_current_user),
 ):
@@ -304,6 +304,8 @@ async def deploy_stack_compose(
                     deploy=True,
                     is_add=payload.is_add,
                     log_queue=log_queue,
+                    cols=cols,
+                    rows=rows,
                 )
             )
 
@@ -368,8 +370,7 @@ async def delete_stack(
     """Delete a stack directory permanently.
 
     This removes the compose file, .env, and any other contents of the
-    stack directory. For the Agent path this calls :http:delete:`/api/agent/stacks/{name}`;
-    for the Legacy Dockge path it emits the ``deleteStack`` Socket.IO event.
+    stack directory via the Agent API.
     """
     snap = snapshot_manager.get_snapshot(host_id)
     if snap is None or snap.host_config is None:
@@ -506,9 +507,8 @@ async def get_stack_logs(
 ):
     """Fetch logs for all containers belonging to a stack.
 
-    Uses docker-socket-proxy ``/containers/{id}/logs`` for each container
-    associated with the stack, then aggregates them in reverse-chronological
-    order.
+    Uses the Agent API for each container associated with the stack,
+    then aggregates them in reverse-chronological order.
 
     Args:
         tail: Number of recent lines per container (default 200, max 5000).
@@ -689,6 +689,8 @@ async def stack_action(
     stack_name: str,
     action: str,
     request: Request,
+    cols: int = 160,
+    rows: int = 24,
     session: Session = Depends(get_session),
     username: str = Depends(get_current_user),
 ):
@@ -735,7 +737,9 @@ async def stack_action(
         conn = AgentClient(snap.host_config)
         try:
             task = asyncio.create_task(
-                conn.stack_action(stack_name, socket_event, log_queue=log_queue)
+                conn.stack_action(
+                    stack_name, socket_event, log_queue=log_queue, cols=cols, rows=rows
+                )
             )
 
             while True:

@@ -278,6 +278,8 @@ async def _stream_docker_command(
     websocket: WebSocket,
     stack_path: str,
     args: list[str],
+    cols: int = 160,
+    rows: int = 24,
 ) -> int:
     """Spawn a docker command in a PTY and stream raw chunks to the WebSocket.
 
@@ -297,7 +299,7 @@ async def _stream_docker_command(
         proc = ptyprocess.PtyProcessUnicode.spawn(
             ["docker", *args],
             cwd=stack_path,
-            dimensions=(24, 160),
+            dimensions=(rows, cols),
         )
     except Exception:
         return await _stream_with_subprocess(websocket, stack_path, args)
@@ -424,6 +426,8 @@ async def execute_stack_command(websocket: WebSocket, name: str):
         # Receive execution options (e.g. {"action": "up"})
         data = await websocket.receive_json()
         action = data.get("action")
+        cols = data.get("cols", 160)
+        rows = data.get("rows", 24)
         if action not in ACTION_ARGS and action != "update":
             await websocket.send_json({
                 "type": "error",
@@ -454,16 +458,16 @@ async def execute_stack_command(websocket: WebSocket, name: str):
 
             if action == "update":
                 # 1) Pull latest images
-                exit_code = await _stream_docker_command(websocket, stack_path, ["compose", "pull"])
+                exit_code = await _stream_docker_command(websocket, stack_path, ["compose", "pull"], cols=cols, rows=rows)
                 if exit_code == 0 and await _has_running_services(stack_path):
                     # 2) Recreate running services with new images
                     exit_code = await _stream_docker_command(
-                        websocket, stack_path, ["compose", "up", "-d", "--remove-orphans"]
+                        websocket, stack_path, ["compose", "up", "-d", "--remove-orphans"], cols=cols, rows=rows
                     )
                 await websocket.send_json({"type": "exit", "code": exit_code})
             else:
                 args = ACTION_ARGS[action]
-                exit_code = await _stream_docker_command(websocket, stack_path, args)
+                exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
                 await websocket.send_json({"type": "exit", "code": exit_code})
 
     except WebSocketDisconnect:

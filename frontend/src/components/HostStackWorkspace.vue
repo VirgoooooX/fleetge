@@ -125,9 +125,9 @@
                   show-compose
                   show-detail
                   @refresh="$emit('refresh')"
-                  @operation-start="onOperationStart(stack.name, $event)"
-                  @terminal-chunk="onTerminalChunk(stack.name, $event)"
-                  @operation-complete="onOperationComplete(stack.name, $event)"
+                  @operation-start="onOperationStart"
+                  @terminal-chunk="onTerminalChunk"
+                  @operation-complete="onOperationComplete"
                   @compose="openCompose(stack.name)"
                   @detail="selectStack(stack.name)"
                 />
@@ -143,7 +143,8 @@
               :status="operationPanelStatus"
               :message="operationPanelMessage"
               compact
-              @close="closeOperationDock"
+              @close="handleDockClose(stack.name)"
+              @cancel="cancelOperation(stack.name)"
               @click.stop
             />
 
@@ -197,9 +198,9 @@
               :stack-name="selectedStack.name"
               show-compose
               @refresh="$emit('refresh')"
-              @operation-start="onOperationStart(selectedStack.name, $event)"
-              @terminal-chunk="onTerminalChunk(selectedStack.name, $event)"
-              @operation-complete="onOperationComplete(selectedStack.name, $event)"
+              @operation-start="onOperationStart"
+              @terminal-chunk="onTerminalChunk"
+              @operation-complete="onOperationComplete"
               @compose="openCompose(selectedStack.name)"
             />
           </div>
@@ -213,7 +214,8 @@
           :lines="terminalOutputs[selectedStack.name] || []"
           :status="operationPanelStatus"
           :message="operationPanelMessage"
-          @close="closeOperationDock"
+          @close="handleDockClose(selectedStack.name)"
+          @cancel="cancelOperation(selectedStack.name)"
         />
 
         <div class="stack-detail-grid">
@@ -712,7 +714,8 @@
         :lines="terminalOutputs['__prune__'] || []"
         :status="operationPanelStatus"
         :message="operationPanelMessage"
-        @close="closeOperationDock"
+        @close="handleDockClose('__prune__')"
+        @cancel="cancelOperation('__prune__')"
       />
     </el-dialog>
   </section>
@@ -875,6 +878,7 @@ const logViewportRef = ref<HTMLElement | null>(null);
 let logStreamController: AbortController | null = null;
 
 const terminalOutputs = reactive<Record<string, string[]>>({});
+const runningOperations = reactive<Record<string, { abort: () => void; action: string }>>({});
 const operationPanelVisible = ref(false);
 const operationPanelStack = ref("");
 const operationPanelStatus = ref<"running" | "success" | "error" | "idle">("idle");
@@ -1164,6 +1168,12 @@ async function confirmPrune() {
   operationPanelAction.value = "prune";
   operationPanelVisible.value = true;
 
+  const controller = new AbortController();
+  runningOperations[pruneKey] = {
+    abort: () => controller.abort(),
+    action: "prune"
+  };
+
   let completed = false;
 
   try {
@@ -1171,6 +1181,7 @@ async function confirmPrune() {
     await streamSse({
       url,
       method: "POST",
+      signal: controller.signal,
       timeoutMs: 300000,
       onTimeout: () => {
         if (completed) return;
@@ -1199,6 +1210,11 @@ async function confirmPrune() {
 
     if (!completed) {
       completed = true;
+      if (controller.signal.aborted) {
+        operationPanelStatus.value = "error";
+        operationPanelMessage.value = t("stack.confirm.cancelled");
+        return;
+      }
       operationPanelStatus.value = "success";
       operationPanelMessage.value = t("stack.confirm.success", { action: t("workspace.pruneDocker") });
       emit("refresh");
@@ -1207,9 +1223,15 @@ async function confirmPrune() {
   } catch (e: any) {
     if (completed) return;
     completed = true;
+    if (controller.signal.aborted) {
+      operationPanelStatus.value = "error";
+      operationPanelMessage.value = t("stack.confirm.cancelled");
+      return;
+    }
     operationPanelStatus.value = "error";
     operationPanelMessage.value = e.message || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
   } finally {
+    delete runningOperations[pruneKey];
     pruneLoading.value = false;
   }
 }
@@ -1225,6 +1247,25 @@ function isOperationDockVisible(stackName: string): boolean {
 function closeOperationDock() {
   clearOperationAutoClose();
   operationPanelVisible.value = false;
+}
+
+function cancelOperation(stackName: string) {
+  const op = runningOperations[stackName];
+  if (op) {
+    op.abort();
+    delete runningOperations[stackName];
+  }
+  if (operationPanelStack.value === stackName) {
+    operationPanelStatus.value = "error";
+    operationPanelMessage.value = t("stack.confirm.cancelled");
+  }
+}
+
+function handleDockClose(stackName: string) {
+  if (runningOperations[stackName]) {
+    cancelOperation(stackName);
+  }
+  closeOperationDock();
 }
 
 function clearOperationAutoClose() {
@@ -1370,6 +1411,12 @@ function onOperationStart(stackName: string, state: OperationState) {
   operationPanelMessage.value = state.message;
   operationPanelAction.value = state.action;
   operationPanelVisible.value = true;
+  if (state.abort) {
+    runningOperations[stackName] = {
+      abort: state.abort,
+      action: state.action
+    };
+  }
 }
 
 function onOperationComplete(stackName: string, state: OperationState) {
@@ -1381,6 +1428,7 @@ function onOperationComplete(stackName: string, state: OperationState) {
   operationPanelMessage.value = state.message;
   operationPanelAction.value = state.action;
   scheduleOperationAutoClose(stackName, state.status === "success" ? 2400 : 6500);
+  delete runningOperations[stackName];
 }
 
 watch(selectedStackName, () => {
@@ -1403,6 +1451,9 @@ watch(
     composeYaml.value = "";
     composeError.value = "";
     logLines.value = [];
+    Object.keys(runningOperations).forEach((stackName) => {
+      cancelOperation(stackName);
+    });
     closeOperationDock();
     Object.keys(terminalOutputs).forEach((stackName) => {
       delete terminalOutputs[stackName];

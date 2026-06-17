@@ -159,7 +159,7 @@ class StackComposeDetail(BaseModel):
     compose_yaml: str = ""
     compose_env: str = ""
     compose_file_name: str = "compose.yaml"
-    is_managed_by_dockge: bool = False
+    is_managed_by_agent: bool = True
 
 
 class StackComposeSaveRequest(BaseModel):

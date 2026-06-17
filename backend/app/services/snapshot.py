@@ -1,11 +1,11 @@
 """Snapshot aggregation and caching — the central data fusion layer.
 
-Polls host structure at a low background cadence and refreshes host-metrics
+Polls host structure at a low background cadence and refreshes metrics
 only while a frontend SSE stream is connected.
 
 Cache tiers:
-  - Metrics (exporter): frontend-driven SSE
-  - Containers/Stacks (proxy + Dockge): 1h background, faster frontend-driven POST
+  - Metrics: frontend-driven SSE
+  - Containers/Stacks: 1h background, faster frontend-driven POST
   - Update checks (registry): 12h
 """
 
@@ -326,13 +326,13 @@ class SnapshotManager:
         return [self.build_host_summary(s) for s in self.list_snapshots()]
 
     async def refresh_all_structure_now(self) -> list[HostSummary]:
-        """Refresh Docker/Dockge structure for all hosts and return summaries."""
+        """Refresh Docker/Agent structure for all hosts and return summaries."""
         await self.refresh_hosts()
         await self._refresh_docker()
         return [self.build_host_summary(s) for s in self.list_snapshots()]
 
     async def refresh_host_structure_now(self, host_id: str) -> Optional[HostSnapshot]:
-        """Refresh Docker/Dockge structure for one host and return its snapshot."""
+        """Refresh Docker/Agent structure for one host and return its snapshot."""
         await self.refresh_hosts()
         await self.refresh_host_docker(host_id)
         return self.get_snapshot(host_id)
@@ -399,7 +399,7 @@ class SnapshotManager:
                     break
 
     async def _refresh_metrics(self) -> None:
-        """Poll all host-metrics exporters."""
+        """Poll all hosts for current metrics via the Agent."""
         async with self._metrics_refresh_lock:
             async def refresh_one(snap: HostSnapshot) -> None:
                 if not snap.host_config:
@@ -437,7 +437,7 @@ class SnapshotManager:
         lock_timeout: float = 10.0,
         execution_timeout: float = 15.0,
     ) -> None:
-        """Poll docker-socket-proxy and Dockge for a specific host immediately."""
+        """Poll the Agent for a specific host immediately."""
         if self._should_skip(host_id):
             return
         lock = self._host_refresh_locks.setdefault(host_id, asyncio.Lock())
@@ -595,7 +595,6 @@ class SnapshotManager:
                 labels = c.get("Labels", {}) or {}
                 stack_name = (
                     labels.get("com.docker.compose.project")
-                    or labels.get("com.dockge.stack")
                 )
                 service_name = labels.get("com.docker.compose.service")
 
@@ -672,7 +671,7 @@ class SnapshotManager:
             for c in snap.containers:
                 c.repo_digests = image_digests.get(c.image, [])
 
-            # Stacks from Dockge
+            # Stacks from Agent
             await self._refresh_stacks(snap, cfg)
 
             snap.status = "online"
@@ -689,7 +688,7 @@ class SnapshotManager:
 
         except Exception as exc:
             logger.warning(
-                "Docker proxy poll failed for %s: %s", cfg.host_id, exc, exc_info=True
+                "Agent poll failed for %s: %s", cfg.host_id, exc, exc_info=True
             )
             self._record_failure(cfg.host_id)
             snap.status = "degraded"
@@ -720,7 +719,7 @@ class SnapshotManager:
     async def _refresh_docker(
         self, trigger_initial_update_check: bool = True
     ) -> None:
-        """Poll all docker-socket-proxy instances (info, containers, stats)."""
+        """Poll all Agent instances (info, containers, stats)."""
         semaphore = asyncio.Semaphore(4)
 
         async def refresh_one(snap: HostSnapshot) -> None:
@@ -740,8 +739,8 @@ class SnapshotManager:
             if isinstance(result, Exception):
                 logger.warning("Docker poll task failed: %s", result)
 
-    def parse_dockge_stacks(self, raw_stacks: list) -> list[StackSummary]:
-        """Parse raw Dockge stacks payload into StackSummary schemas."""
+    def parse_agent_stacks(self, raw_stacks: list) -> list[StackSummary]:
+        """Parse raw Agent stacks payload into StackSummary schemas."""
         stacks: list[StackSummary] = []
         for s in raw_stacks:
             name = s.get("name", s.get("Name", ""))
@@ -854,13 +853,13 @@ class SnapshotManager:
         return None
 
     def update_host_stacks_realtime(self, host_id: str, raw_stacks: list) -> None:
-        """Real-time update of host stacks when Dockge pushes stackList event."""
+        """Real-time update of host stacks when Agent pushes stackList event."""
         snap = self._snapshots.get(host_id)
         if not snap:
             return
         try:
             logger.info("Real-time stack list update received for %s", host_id)
-            stacks = self.parse_dockge_stacks(raw_stacks)
+            stacks = self.parse_agent_stacks(raw_stacks)
             stacks = self._apply_stack_icons(stacks, snap.host_config)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
@@ -893,23 +892,23 @@ class SnapshotManager:
             conn = self._agent_clients[cfg.host_id]
             raw_stacks = await conn.list_stacks()
 
-            stacks = self.parse_dockge_stacks(raw_stacks)
+            stacks = self.parse_agent_stacks(raw_stacks)
             stacks = self._apply_stack_icons(stacks, cfg)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
 
         except Exception as exc:
-            logger.warning("Dockge refresh failed for %s: %s", cfg.host_id, exc)
+            logger.warning("Agent refresh failed for %s: %s", cfg.host_id, exc)
             self._build_stacks_from_container_labels(snap)
 
     def _merge_stacks_with_container_labels(
-        self, dockge_stacks: list[StackSummary], snap: HostSnapshot
+        self, agent_stacks: list[StackSummary], snap: HostSnapshot
     ) -> list[StackSummary]:
-        """Fill missing Dockge service states from Docker Compose labels.
+        """Fill missing Agent stack states from Docker Compose labels.
 
-        Some Dockge versions return only the stack names in ``stackList``.
+        Some Agent versions may return only the stack names.
         When that happens the UI would show ``unknown`` even though the
-        docker-socket-proxy already has reliable container state and compose
+        Agent already has reliable container state and compose
         labels for the same stacks.
         """
         label_stacks = self._stacks_from_container_labels(snap)
@@ -917,7 +916,7 @@ class SnapshotManager:
 
         merged: list[StackSummary] = []
         seen: set[str] = set()
-        for stack in dockge_stacks:
+        for stack in agent_stacks:
             seen.add(stack.name)
             fallback = label_by_name.get(stack.name)
             if fallback and not stack.services:
@@ -1028,9 +1027,8 @@ class SnapshotManager:
     def _build_stacks_from_container_labels(self, snap: HostSnapshot) -> None:
         """Build a read-only stack view from Docker Compose labels.
 
-        This keeps the monitoring UI useful when Dockge is offline or the
-        stored Dockge credential is invalid. Mutating stack operations still
-        require a working Dockge connection.
+        This keeps the monitoring UI useful when the Agent is offline.
+        Mutating stack operations still require a working Agent connection.
         """
         snap.stacks = self._stacks_from_container_labels(snap)
         snap.stacks = self._apply_stack_icons(snap.stacks, snap.host_config)
