@@ -14,7 +14,7 @@ from app.config import get_settings
 from app.database import engine
 from app.models import HostConfig, AuditLog
 from app.host_loader import load_hosts_from_yaml
-from app.routers import auth, hosts, stacks, containers, updates, audit, host_mgmt
+from app.routers import auth, hosts, stacks, containers, updates, audit, host_mgmt, docker_api
 from app.routers import settings as settings_router
 from app.services.snapshot import snapshot_manager
 from app.version import __version__
@@ -83,6 +83,7 @@ app.include_router(updates.router)
 app.include_router(audit.router)
 app.include_router(settings_router.router)
 app.include_router(host_mgmt.router)
+app.include_router(docker_api.router)
 
 # ── Static files: stack icons ─────────────────────────────────────────────
 
