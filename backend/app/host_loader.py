@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.config import get_settings
 from app.database import engine
@@ -63,36 +63,69 @@ def load_hosts_from_yaml() -> int:
             metrics = entry.get("metrics", {})
             agent = entry.get("agent", {})
 
-            # Encrypt Dockge credentials
-            dockge_password_encrypted = encrypt_credentials(
-                dockge.get("username", ""), dockge.get("password", "")
-            )
-
-            # Encrypt docker-proxy auth header
-            dp_auth = None
-            if docker_proxy.get("username") and docker_proxy.get("password"):
-                dp_auth = encrypt_authorization_header(
-                    docker_proxy["username"], docker_proxy["password"]
-                )
-
-            # Encrypt metrics auth header
-            m_auth = None
-            if metrics.get("username") and metrics.get("password"):
-                m_auth = encrypt_authorization_header(
-                    metrics["username"], metrics["password"]
-                )
-
-            # Encrypt agent token
-            agent_url = agent.get("url")
-            agent_token_encrypted = None
-            if agent_url and agent.get("token"):
-                agent_token_encrypted = encrypt_string(agent["token"])
-
-            # Upsert
-            existing = session.query(HostConfig).filter(
-                HostConfig.host_id == host_id
+            # 1. Fetch existing host config first
+            existing = session.exec(
+                select(HostConfig).where(HostConfig.host_id == host_id)
             ).first()
 
+            # 2. Dockge password
+            dockge_pass = dockge.get("password", "")
+            if dockge_pass == "[ENCRYPTED]":
+                if existing:
+                    dockge_password_encrypted = existing.dockge_password_encrypted
+                else:
+                    logger.warning("Ignoring [ENCRYPTED] dockge password for new host %s", host_id)
+                    dockge_password_encrypted = ""
+            else:
+                dockge_password_encrypted = encrypt_credentials(
+                    dockge.get("username", ""), dockge_pass
+                )
+
+            # 3. docker-proxy auth
+            dp_pass = docker_proxy.get("password", "")
+            if dp_pass == "[ENCRYPTED]":
+                if existing:
+                    dp_auth = existing.docker_proxy_auth_encrypted
+                else:
+                    logger.warning("Ignoring [ENCRYPTED] docker-proxy password for new host %s", host_id)
+                    dp_auth = None
+            else:
+                dp_auth = None
+                if docker_proxy.get("username") and dp_pass:
+                    dp_auth = encrypt_authorization_header(
+                        docker_proxy["username"], dp_pass
+                    )
+
+            # 4. metrics auth
+            m_pass = metrics.get("password", "")
+            if m_pass == "[ENCRYPTED]":
+                if existing:
+                    m_auth = existing.metrics_auth_encrypted
+                else:
+                    logger.warning("Ignoring [ENCRYPTED] metrics password for new host %s", host_id)
+                    m_auth = None
+            else:
+                m_auth = None
+                if metrics.get("username") and m_pass:
+                    m_auth = encrypt_authorization_header(
+                        metrics["username"], m_pass
+                    )
+
+            # 5. agent token
+            agent_url = agent.get("url")
+            agent_token = agent.get("token", "")
+            if agent_token == "[ENCRYPTED]":
+                if existing:
+                    agent_token_encrypted = existing.agent_token_encrypted
+                else:
+                    logger.warning("Ignoring [ENCRYPTED] agent token for new host %s", host_id)
+                    agent_token_encrypted = None
+            else:
+                agent_token_encrypted = None
+                if agent_url and agent_token:
+                    agent_token_encrypted = encrypt_string(agent_token)
+
+            # Upsert
             if existing:
                 existing.display_name = entry.get("display_name", host_id)
                 existing.enabled = entry.get("enabled", True)

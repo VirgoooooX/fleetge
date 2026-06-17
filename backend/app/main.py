@@ -14,7 +14,8 @@ from app.config import get_settings
 from app.database import engine
 from app.models import HostConfig, AuditLog
 from app.host_loader import load_hosts_from_yaml
-from app.routers import auth, hosts, stacks, containers, updates, audit
+from app.routers import auth, hosts, stacks, containers, updates, audit, host_mgmt
+from app.routers import settings as settings_router
 from app.services.snapshot import snapshot_manager
 from app.version import __version__
 
@@ -26,6 +27,10 @@ async def lifespan(app: FastAPI):
     """Application lifespan — startup and shutdown."""
     # ── Startup ────────────────────────────────────────────────────
     logger.info("Starting Fleetge backend")
+
+    # Seed settings table with defaults on first run
+    from app.services.settings_service import populate_defaults_if_empty
+    populate_defaults_if_empty()
 
     # Load host configs from YAML
     load_hosts_from_yaml()
@@ -76,6 +81,8 @@ app.include_router(stacks.router)
 app.include_router(containers.router)
 app.include_router(updates.router)
 app.include_router(audit.router)
+app.include_router(settings_router.router)
+app.include_router(host_mgmt.router)
 
 # ── Static files: stack icons ─────────────────────────────────────────────
 

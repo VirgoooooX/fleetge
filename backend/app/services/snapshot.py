@@ -199,6 +199,74 @@ class SnapshotManager:
         self._agent_clients.clear()
         logger.info("SnapshotManager stopped")
 
+    async def restart_poll_loops(self) -> None:
+        """Cancel and restart background pollers with updated config intervals.
+
+        IMPORTANT: Tasks are cancelled OUTSIDE the lock to avoid deadlock,
+        since _poll_loop → refresh_hosts() also acquires self._lock.
+        """
+        logger.info("Restarting poll loops...")
+
+        # Step 1: Cancel tasks outside the lock
+        self._running = False
+        tasks_to_cancel = list(self._tasks)
+        for t in tasks_to_cancel:
+            t.cancel()
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+
+        # Step 2: Acquire lock for state rebuild
+        async with self._lock:
+            self._tasks.clear()
+
+            # Clear settings cache so new intervals are read fresh
+            from app.services.settings_service import clear_cache
+            clear_cache()
+
+            settings = get_settings()
+
+            # Refresh host snapshots
+            # (inline refresh since we hold the lock — don't call refresh_hosts() which also locks)
+            with Session(engine) as session:
+                hosts = session.exec(select(HostConfig).where(HostConfig.enabled == True)).all()
+            configured_ids = {h.host_id for h in hosts}
+            for hid in list(self._snapshots.keys()):
+                if hid not in configured_ids:
+                    del self._snapshots[hid]
+                    self._proxy_clients.pop(hid, None)
+                    self._metrics_clients.pop(hid, None)
+                    self._agent_clients.pop(hid, None)
+                    self._host_refresh_locks.pop(hid, None)
+                    await dockge_pool.remove(hid)
+            for h in hosts:
+                if h.host_id not in self._snapshots:
+                    snap = HostSnapshot()
+                    snap.host_config = h
+                    self._snapshots[h.host_id] = snap
+                else:
+                    self._snapshots[h.host_id].host_config = h
+
+            # Spin up new loops
+            self._running = True
+            self._tasks = [
+                asyncio.create_task(
+                    self._poll_loop(
+                        "structure",
+                        settings.BACKGROUND_STRUCTURE_REFRESH_INTERVAL,
+                        self._refresh_docker,
+                    )
+                ),
+                asyncio.create_task(
+                    self._poll_loop(
+                        "update_checks",
+                        settings.UPDATE_CHECK_INTERVAL,
+                        self._refresh_update_checks,
+                    )
+                ),
+            ]
+        logger.info("Poll loops restarted successfully.")
+
+
     def get_snapshot(self, host_id: str) -> Optional[HostSnapshot]:
         return self._snapshots.get(host_id)
 

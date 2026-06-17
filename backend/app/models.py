@@ -84,3 +84,15 @@ class ImageUpdateCache(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
     )
+
+
+class Setting(SQLModel, table=True):
+    __tablename__ = "settings"
+
+    setting_key: str = Field(primary_key=True, max_length=255)
+    setting_value: str = Field(default="", sa_column=Column(Text, nullable=False))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+    )
+

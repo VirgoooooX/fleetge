@@ -233,3 +233,99 @@ class AuditLogEntry(BaseModel):
     result: str
     detail: Optional[str] = None
     ip_address: Optional[str] = None
+
+
+# ── Settings ────────────────────────────────────────────────────────────
+
+class SettingItem(BaseModel):
+    key: str
+    value: str
+    type: str           # "number" | "string" | "password"
+    is_writable: bool
+    description: str
+    min_value: Optional[float] = None  # for number type validation
+    max_value: Optional[float] = None
+    unit: Optional[str] = None         # "秒", "小时" etc.
+
+
+class SettingsResponse(BaseModel):
+    settings: list[SettingItem]
+
+
+class SettingsUpdateRequest(BaseModel):
+    settings: dict[str, str]  # key → new value
+
+
+# ── Host Management ─────────────────────────────────────────────────────
+
+class HostCreateRequest(BaseModel):
+    host_id: str               # unique id, pattern: [a-z0-9-]+
+    display_name: str
+    enabled: bool = True
+    sort_order: int = 0
+    # Agent connection (primary)
+    agent_url: Optional[str] = None
+    agent_token: Optional[str] = None
+    # Legacy connections (optional, for non-Agent hosts)
+    dockge_url: Optional[str] = None
+    dockge_username: Optional[str] = None
+    dockge_password: Optional[str] = None
+    docker_proxy_url: Optional[str] = None
+    docker_proxy_username: Optional[str] = None
+    docker_proxy_password: Optional[str] = None
+    metrics_url: Optional[str] = None
+    metrics_username: Optional[str] = None
+    metrics_password: Optional[str] = None
+
+
+class HostUpdateRequest(BaseModel):
+    display_name: str
+    enabled: bool = True
+    sort_order: int = 0
+    agent_url: Optional[str] = None
+    agent_token: Optional[str] = None  # None = keep existing, "" = clear
+    dockge_url: Optional[str] = None
+    dockge_username: Optional[str] = None
+    dockge_password: Optional[str] = None  # None = keep, "" = clear
+    docker_proxy_url: Optional[str] = None
+    docker_proxy_username: Optional[str] = None
+    docker_proxy_password: Optional[str] = None
+    metrics_url: Optional[str] = None
+    metrics_username: Optional[str] = None
+    metrics_password: Optional[str] = None
+
+
+class HostConfigResponse(BaseModel):
+    """Host config for management UI (secrets masked)."""
+    host_id: str
+    display_name: str
+    enabled: bool
+    sort_order: int
+    agent_url: Optional[str] = None
+    has_agent_token: bool = False     # masked: only show whether token exists
+    dockge_url: Optional[str] = None
+    dockge_username: Optional[str] = None
+    has_dockge_password: bool = False
+    docker_proxy_url: Optional[str] = None
+    has_docker_proxy_auth: bool = False
+    metrics_url: Optional[str] = None
+    has_metrics_auth: bool = False
+    stack_icons: Optional[dict[str, str]] = None  # parsed JSON mapping
+
+
+class ConnectionTestResponse(BaseModel):
+    success: bool
+    response_time_ms: int
+    message: str
+
+
+# ── Stack Icons ─────────────────────────────────────────────────────────
+
+class StackIconEntry(BaseModel):
+    stack_pattern: str    # stack name or wildcard pattern (e.g. "rsshub", "emby*")
+    icon_value: str       # URL or local filename
+
+
+class StackIconsUpdateRequest(BaseModel):
+    icons: list[StackIconEntry]  # ordered list → converted to dict for storage
+

@@ -51,7 +51,7 @@ def create_engine_and_tables():
         conn.commit()
 
     # Import models so SQLModel.metadata knows about them before create_all
-    from app.models import HostConfig, AuditLog, ImageUpdateCache  # noqa: F401
+    from app.models import HostConfig, AuditLog, ImageUpdateCache, Setting  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
     return engine

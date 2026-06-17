@@ -129,7 +129,7 @@ import {
   Sunny,
   SwitchButton,
   Warning,
-  Brush,
+  Setting,
 } from "@element-plus/icons-vue";
 import AppLogo from "@/components/AppLogo.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
@@ -182,10 +182,10 @@ const navItems = computed(() => [
   },
   { id: "audit", label: t("nav.audit"), path: "/audit", icon: List, badge: null },
   {
-    id: "playground",
-    label: "Playground",
-    path: "/playground",
-    icon: Brush,
+    id: "settings",
+    label: t("nav.settings"),
+    path: "/settings",
+    icon: Setting,
     badge: null,
   },
   {
@@ -204,7 +204,7 @@ const pageTitle = computed(() => {
   }
   if (route.name === "updates") return t("nav.updates");
   if (route.name === "audit") return t("nav.audit");
-  if (route.name === "playground") return "Design Playground";
+  if (route.name === "settings") return t("nav.settings");
   return t("nav.dashboard");
 });
 

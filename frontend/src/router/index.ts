@@ -5,7 +5,7 @@ import DashboardView from "@/views/DashboardView.vue";
 import HostDetailView from "@/views/HostDetailView.vue";
 import UpdatesView from "@/views/UpdatesView.vue";
 import AuditView from "@/views/AuditView.vue";
-import PlaygroundView from "@/views/PlaygroundView.vue";
+import SettingsView from "@/views/SettingsView.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -15,7 +15,7 @@ const router = createRouter({
     { path: "/hosts/:hostId", name: "host-detail", component: HostDetailView, meta: { requiresAuth: true } },
     { path: "/updates", name: "updates", component: UpdatesView, meta: { requiresAuth: true } },
     { path: "/audit", name: "audit", component: AuditView, meta: { requiresAuth: true } },
-    { path: "/playground", name: "playground", component: PlaygroundView },
+    { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
 });

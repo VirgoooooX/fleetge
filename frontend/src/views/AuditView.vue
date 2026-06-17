@@ -80,6 +80,12 @@ const auditActionKeys: Record<string, string> = {
   "stack.compose.save": "audit.action.stack.composeSave",
   "stack.compose.deploy": "audit.action.stack.composeDeploy",
   "update_checks.run": "audit.action.updateChecksRun",
+  "settings.update": "audit.action.settings.update",
+  "host.create": "audit.action.host.create",
+  "host.update": "audit.action.host.update",
+  "host.delete": "audit.action.host.delete",
+  "host.stack_icons.update": "audit.action.host.stack_icons.update",
+  "host.test_connection": "audit.action.host.test_connection",
 };
 
 const actionTypes: Record<string, string> = {
@@ -90,6 +96,12 @@ const actionTypes: Record<string, string> = {
   "stack.compose.save": "info",
   "stack.compose.deploy": "primary",
   "update_checks.run": "info",
+  "settings.update": "warning",
+  "host.create": "success",
+  "host.update": "primary",
+  "host.delete": "danger",
+  "host.stack_icons.update": "info",
+  "host.test_connection": "success",
 };
 
 function actionLabel(action: string): string {

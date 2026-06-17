@@ -22,10 +22,18 @@ class Settings:
     # ── Auth ──────────────────────────────────────────────────────────
     JWT_SECRET: str = os.environ.get("JWT_SECRET", "")
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_HOURS: int = int(os.environ.get("JWT_EXPIRE_HOURS", "24"))
+
+    @property
+    def JWT_EXPIRE_HOURS(self) -> int:
+        from app.services.settings_service import get_setting_value
+        return int(get_setting_value("JWT_EXPIRE_HOURS", "24"))
 
     # Admin account (created on first start if missing)
-    ADMIN_USERNAME: str = os.environ.get("ADMIN_USERNAME", "admin")
+    @property
+    def ADMIN_USERNAME(self) -> str:
+        from app.services.settings_service import get_setting_value
+        return get_setting_value("ADMIN_USERNAME", "admin")
+
     ADMIN_PASSWORD_HASH: str = os.environ.get("ADMIN_PASSWORD_HASH", "")
 
     # ── Credential encryption ─────────────────────────────────────────
@@ -43,12 +51,25 @@ class Settings:
     )
 
     # ── Poll intervals (seconds) ──────────────────────────────────────
-    METRICS_STREAM_INTERVAL: float = float(os.environ.get("METRICS_STREAM_INTERVAL", "1"))
-    DOCKER_POLL_INTERVAL: int = int(os.environ.get("DOCKER_POLL_INTERVAL", "10"))
-    BACKGROUND_STRUCTURE_REFRESH_INTERVAL: int = int(
-        os.environ.get("BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "3600")
-    )
-    UPDATE_CHECK_INTERVAL: int = int(os.environ.get("UPDATE_CHECK_INTERVAL", "43200"))  # 12h
+    @property
+    def METRICS_STREAM_INTERVAL(self) -> float:
+        from app.services.settings_service import get_setting_value
+        return float(get_setting_value("METRICS_STREAM_INTERVAL", "1"))
+
+    @property
+    def DOCKER_POLL_INTERVAL(self) -> int:
+        from app.services.settings_service import get_setting_value
+        return int(get_setting_value("DOCKER_POLL_INTERVAL", "10"))
+
+    @property
+    def BACKGROUND_STRUCTURE_REFRESH_INTERVAL(self) -> int:
+        from app.services.settings_service import get_setting_value
+        return int(get_setting_value("BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "3600"))
+
+    @property
+    def UPDATE_CHECK_INTERVAL(self) -> int:
+        from app.services.settings_service import get_setting_value
+        return int(get_setting_value("UPDATE_CHECK_INTERVAL", "43200"))
 
     # ── Uvicorn ───────────────────────────────────────────────────────
     LOG_LEVEL: str = os.environ.get("LOG_LEVEL", "info")

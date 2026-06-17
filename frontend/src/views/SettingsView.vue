@@ -1,0 +1,1262 @@
+<template>
+  <div class="settings-layout">
+    <header class="ui-page-header">
+      <div>
+        <div class="ui-section-kicker">{{ t('settings.kicker') }}</div>
+        <h2 class="ui-page-title">{{ t('settings.title') }}</h2>
+      </div>
+      <el-button class="ui-button ui-button--muted" @click="$router.push('/')">
+        <el-icon><ArrowLeft /></el-icon> {{ t('settings.back') }}
+      </el-button>
+    </header>
+
+    <div class="ui-panel settings-panel">
+      <el-tabs v-model="activeTab" type="card" class="settings-tabs">
+        <!-- Tab 1: Running parameters -->
+        <el-tab-pane name="params" :label="t('settings.tab.params')">
+          <div class="tab-pane-content" v-loading="store.loading">
+            <el-alert
+              :title="t('settings.params.alert')"
+              type="info"
+              show-icon
+              :closable="false"
+              class="tab-alert"
+            />
+            
+            <el-form :model="paramsForm" label-position="top" class="ui-form" ref="paramsFormRef" :rules="paramsRules">
+              <div class="form-grid">
+                <el-form-item :label="t('settings.params.dockerPoll')" prop="DOCKER_POLL_INTERVAL">
+                  <div class="input-with-unit">
+                    <el-input-number v-model="paramsForm.DOCKER_POLL_INTERVAL" :min="5" :max="300" :step="5" />
+                    <span class="unit-text">{{ t('settings.params.unit.seconds') }}</span>
+                  </div>
+                  <div class="form-help">{{ t('settings.params.help.dockerPoll') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.params.metricsStream')" prop="METRICS_STREAM_INTERVAL">
+                  <div class="input-with-unit">
+                    <el-input-number v-model="paramsForm.METRICS_STREAM_INTERVAL" :min="0.5" :max="10" :step="0.5" />
+                    <span class="unit-text">{{ t('settings.params.unit.seconds') }}</span>
+                  </div>
+                  <div class="form-help">{{ t('settings.params.help.metricsStream') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.params.structureRefresh')" prop="BACKGROUND_STRUCTURE_REFRESH_INTERVAL">
+                  <div class="input-with-unit">
+                    <el-input-number v-model="paramsForm.BACKGROUND_STRUCTURE_REFRESH_INTERVAL" :min="60" :max="86400" :step="60" />
+                    <span class="unit-text">{{ t('settings.params.unit.seconds') }}</span>
+                  </div>
+                  <div class="form-help">{{ t('settings.params.help.structureRefresh') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.params.updateCheck')" prop="UPDATE_CHECK_INTERVAL">
+                  <div class="input-with-unit">
+                    <el-input-number v-model="paramsForm.UPDATE_CHECK_INTERVAL" :min="3600" :max="172800" :step="3600" />
+                    <span class="unit-text">{{ t('settings.params.unit.seconds') }}</span>
+                  </div>
+                  <div class="form-help">{{ t('settings.params.help.updateCheck') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.params.adminUsername')" prop="ADMIN_USERNAME">
+                  <el-input v-model="paramsForm.ADMIN_USERNAME" placeholder="admin" minlength="3" />
+                  <div class="form-help">{{ t('settings.params.help.adminUsername') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.params.jwtExpire')" prop="JWT_EXPIRE_HOURS">
+                  <div class="input-with-unit">
+                    <el-input-number v-model="paramsForm.JWT_EXPIRE_HOURS" :min="1" :max="720" :step="1" />
+                    <span class="unit-text">{{ t('settings.params.unit.hours') }}</span>
+                  </div>
+                  <div class="form-help">{{ t('settings.params.help.jwtExpire') }}</div>
+                </el-form-item>
+              </div>
+
+              <el-form-item class="form-actions-row">
+                <el-button type="primary" class="ui-button" :loading="store.saving" @click="handleSaveParams">
+                  {{ t('settings.params.save') }}
+                </el-button>
+              </el-form-item>
+            </el-form>
+          </div>
+        </el-tab-pane>
+
+        <!-- Tab 2: Security & Credentials -->
+        <el-tab-pane name="security" :label="t('settings.tab.security')">
+          <div class="tab-pane-content" v-loading="store.loading">
+            <el-alert
+              :title="t('settings.security.alert')"
+              type="warning"
+              show-icon
+              :closable="false"
+              class="tab-alert"
+            />
+
+            <el-form label-position="top" class="ui-form">
+              <div class="form-grid">
+                <el-form-item :label="t('settings.security.jwtSecret')">
+                  <el-input v-model="readonlyForm.JWT_SECRET" disabled show-password />
+                  <div class="form-help">{{ t('settings.security.help.jwtSecret') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.security.credentialsKey')">
+                  <el-input v-model="readonlyForm.CREDENTIALS_KEY" disabled show-password />
+                  <div class="form-help">{{ t('settings.security.help.credentialsKey') }}</div>
+                </el-form-item>
+
+                <el-form-item :label="t('settings.security.passwordHash')">
+                  <el-input v-model="readonlyForm.ADMIN_PASSWORD_HASH" disabled show-password />
+                  <div class="form-help">{{ t('settings.security.help.passwordHash') }}</div>
+                </el-form-item>
+              </div>
+            </el-form>
+          </div>
+        </el-tab-pane>
+
+        <!-- Tab 3: Host Node Management -->
+        <el-tab-pane name="hosts" :label="t('settings.tab.hosts')">
+          <div class="tab-pane-content" v-loading="store.loading">
+            <div class="pane-header-actions">
+              <div class="pane-header-kicker">{{ t('settings.hosts.count', { count: store.hosts.length }) }}</div>
+              <el-button type="primary" class="ui-button ui-button--compact" :icon="Plus" @click="openCreateHostDialog">
+                {{ t('settings.hosts.add') }}
+              </el-button>
+            </div>
+
+            <el-table :data="store.hosts" stripe style="width: 100%" class="host-table">
+              <el-table-column :label="t('settings.hosts.col.sort')" prop="sort_order" width="70" align="center" />
+              <el-table-column :label="t('settings.hosts.col.id')" prop="host_id" width="140" />
+              <el-table-column :label="t('settings.hosts.col.name')" prop="display_name" width="160" />
+              <el-table-column :label="t('settings.hosts.col.mode')" width="160">
+                <template #default="{ row }">
+                  <el-tag v-if="row.agent_url" type="success" size="small">{{ t('settings.hosts.mode.agent') }}</el-tag>
+                  <el-tag v-else type="info" size="small">{{ t('settings.hosts.mode.legacy') }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('settings.hosts.col.url')" min-width="200">
+                <template #default="{ row }">
+                  <span class="url-text" v-if="row.agent_url">{{ row.agent_url }}</span>
+                  <span class="url-text text-muted" v-else>
+                    Dockge: {{ row.dockge_url || '-' }}<br />
+                    Proxy: {{ row.docker_proxy_url || '-' }}
+                  </span>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('settings.hosts.col.status')" prop="enabled" width="90" align="center">
+                <template #default="{ row }">
+                  <el-switch v-slot:default v-model="row.enabled" @change="toggleHostEnabled(row)" :loading="store.saving" />
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('settings.hosts.col.icons')" width="130" align="center">
+                <template #default="{ row }">
+                  <div class="icons-cell">
+                    <div class="icons-preview-strip" v-if="row.stack_icons && Object.keys(row.stack_icons).length > 0">
+                      <el-tooltip
+                        v-for="(val, key) in sliceIconEntries(row.stack_icons, 3)"
+                        :key="key"
+                        :content="String(key)"
+                        placement="top"
+                      >
+                        <el-image
+                          :src="getIconUrl(String(val))"
+                          class="icon-strip-thumb"
+                          fit="contain"
+                        >
+                          <template #error>
+                            <el-icon class="icon-strip-placeholder"><Picture /></el-icon>
+                          </template>
+                        </el-image>
+                      </el-tooltip>
+                      <span
+                        v-if="Object.keys(row.stack_icons).length > 3"
+                        class="icons-more-chip"
+                      >+{{ Object.keys(row.stack_icons).length - 3 }}</span>
+                    </div>
+                    <span v-else class="icons-empty">—</span>
+                    <el-tooltip :content="t('settings.hosts.col.manageIcons')" placement="top">
+                      <el-button
+                        size="small"
+                        :icon="SettingIcon"
+                        circle
+                        class="icons-manage-btn"
+                        @click="openIconsDialog(row)"
+                      />
+                    </el-tooltip>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column :label="t('settings.hosts.col.actions')" width="280" align="center" fixed="right">
+                <template #default="{ row }">
+                  <div class="row-operations">
+                    <el-button size="small" type="success" plain @click="testHostConnection(row)">
+                      {{ t('settings.hosts.action.test') }}
+                    </el-button>
+                    <el-button size="small" type="info" plain :icon="Edit" @click="openEditHostDialog(row)" />
+                    <el-button size="small" type="danger" plain :icon="Delete" @click="confirmDeleteHost(row)" />
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+
+    <!-- Host Create / Edit Dialog -->
+    <el-dialog
+      v-model="hostDialogVisible"
+      :title="hostFormMode === 'create' ? t('settings.hosts.create') : t('settings.hosts.edit')"
+      width="640px"
+      custom-class="ui-dialog"
+      :before-close="closeHostDialog"
+    >
+      <el-form :model="hostForm" label-position="top" ref="hostFormRef" :rules="hostRules" v-loading="hostFormLoading">
+        <div class="dialog-grid">
+          <el-form-item :label="t('settings.hosts.form.id')" prop="host_id">
+            <el-input
+              v-model="hostForm.host_id"
+              :placeholder="t('settings.hosts.form.idPlaceholder')"
+              :disabled="hostFormMode === 'edit'"
+            />
+          </el-form-item>
+
+          <el-form-item :label="t('settings.hosts.form.name')" prop="display_name">
+            <el-input v-model="hostForm.display_name" :placeholder="t('settings.hosts.form.namePlaceholder')" />
+          </el-form-item>
+
+          <el-form-item :label="t('settings.hosts.form.sort')" prop="sort_order">
+            <el-input-number v-model="hostForm.sort_order" :min="0" />
+          </el-form-item>
+
+          <el-form-item :label="t('settings.hosts.form.enabled')" prop="enabled">
+            <el-switch v-model="hostForm.enabled" />
+          </el-form-item>
+        </div>
+
+        <el-divider>{{ t('settings.hosts.form.connection') }}</el-divider>
+
+        <el-form-item :label="t('settings.hosts.form.mode')">
+          <el-radio-group v-model="hostForm.mode" class="mode-radios">
+            <el-radio-button label="agent">{{ t('settings.hosts.mode.agentTag') }}</el-radio-button>
+            <el-radio-button label="legacy">{{ t('settings.hosts.mode.legacyTag') }}</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+
+        <!-- Mode Agent Form -->
+        <div v-if="hostForm.mode === 'agent'" class="mode-section">
+          <el-form-item :label="t('settings.hosts.form.agentUrl')" prop="agent_url">
+            <el-input v-model="hostForm.agent_url" placeholder="http://192.168.1.100:8080" />
+            <div class="form-help">{{ t('settings.hosts.form.agentUrlHelp') }}</div>
+          </el-form-item>
+          <el-form-item :label="t('settings.hosts.form.agentToken')" prop="agent_token">
+            <el-input
+              v-model="hostForm.agent_token"
+              type="password"
+              show-password
+              :placeholder="hostFormMode === 'edit' ? t('settings.hosts.form.unchangedPlaceholder') : t('settings.hosts.form.agentTokenPlaceholder')"
+            />
+          </el-form-item>
+        </div>
+
+        <!-- Mode Legacy Form -->
+        <div v-else class="mode-section legacy-grid">
+          <div class="legacy-card">
+            <div class="legacy-card-title">{{ t('settings.hosts.form.dockgeTitle') }}</div>
+            <el-form-item :label="t('settings.hosts.form.dockgeUrl')" prop="dockge_url">
+              <el-input v-model="hostForm.dockge_url" placeholder="http://192.168.1.100:5001" />
+            </el-form-item>
+            <el-form-item :label="t('settings.hosts.form.dockgeUser')" prop="dockge_username">
+              <el-input v-model="hostForm.dockge_username" placeholder="admin" />
+            </el-form-item>
+            <el-form-item :label="t('settings.hosts.form.dockgePass')" prop="dockge_password">
+              <el-input
+                v-model="hostForm.dockge_password"
+                type="password"
+                show-password
+                :placeholder="hostFormMode === 'edit' ? t('settings.hosts.form.unchangedPlaceholder') : t('settings.hosts.form.unchangedPlaceholder')"
+              />
+            </el-form-item>
+          </div>
+
+          <div class="legacy-card">
+            <div class="legacy-card-title">{{ t('settings.hosts.form.proxyTitle') }}</div>
+            <el-form-item :label="t('settings.hosts.form.proxyUrl')" prop="docker_proxy_url">
+              <el-input v-model="hostForm.docker_proxy_url" placeholder="http://192.168.1.100:2375" />
+            </el-form-item>
+            <el-form-item :label="t('settings.hosts.form.proxyUser')" prop="docker_proxy_username">
+              <el-input v-model="hostForm.docker_proxy_username" placeholder="username" />
+            </el-form-item>
+            <el-form-item :label="t('settings.hosts.form.proxyPass')" prop="docker_proxy_password">
+              <el-input
+                v-model="hostForm.docker_proxy_password"
+                type="password"
+                show-password
+                :placeholder="hostFormMode === 'edit' ? t('settings.hosts.form.unchangedPlaceholder') : t('settings.hosts.form.unchangedPlaceholder')"
+              />
+            </el-form-item>
+          </div>
+
+          <div class="legacy-card full-width">
+            <div class="legacy-card-title">{{ t('settings.hosts.form.metricsTitle') }}</div>
+            <el-form-item :label="t('settings.hosts.form.metricsUrl')" prop="metrics_url">
+              <el-input v-model="hostForm.metrics_url" placeholder="http://192.168.1.100:9100" />
+            </el-form-item>
+            <el-form-item :label="t('settings.hosts.form.metricsUser')" prop="metrics_username">
+              <el-input v-model="hostForm.metrics_username" placeholder="username" />
+            </el-form-item>
+            <el-form-item :label="t('settings.hosts.form.metricsPass')" prop="metrics_password">
+              <el-input
+                v-model="hostForm.metrics_password"
+                type="password"
+                show-password
+                :placeholder="hostFormMode === 'edit' ? t('settings.hosts.form.unchangedPlaceholder') : t('settings.hosts.form.unchangedPlaceholder')"
+              />
+            </el-form-item>
+          </div>
+        </div>
+
+        <div class="dialog-actions-row">
+          <el-button type="success" plain @click="testFormConnection" :loading="testConnectionLoading">
+            {{ t('settings.hosts.action.test') }}
+          </el-button>
+          <div class="spacer"></div>
+          <el-button @click="closeHostDialog">{{ t('compose.cancel') }}</el-button>
+          <el-button type="primary" @click="saveHostForm">{{ t('compose.saveAction') }}</el-button>
+        </div>
+      </el-form>
+    </el-dialog>
+
+    <!-- Stack Icons Management Dialog -->
+    <el-dialog
+      v-model="iconsDialogVisible"
+      :title="t('settings.icons.title', { name: selectedHost?.display_name })"
+      width="780px"
+      custom-class="ui-dialog"
+    >
+      <div class="icons-dialog-body" v-loading="iconsLoading">
+        <div class="current-icons-section">
+          <div class="section-kicker">{{ t('settings.icons.existing') }}</div>
+          <el-table :data="iconsList" stripe size="small" class="icons-table" max-height="300px">
+            <el-table-column :label="t('settings.icons.col.pattern')" prop="stack_pattern">
+              <template #default="{ row }">
+                <code class="pattern-code">{{ row.stack_pattern }}</code>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('settings.icons.col.type')" width="120">
+              <template #default="{ row }">
+                <el-tag v-if="isHttpUrl(row.icon_value)" size="small" type="success">{{ t('settings.icons.type.remote') }}</el-tag>
+                <el-tag v-else size="small" type="info">{{ t('settings.icons.type.local') }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('settings.icons.col.value')" prop="icon_value" min-width="180">
+              <template #default="{ row }">
+                <span class="url-text font-mono">{{ row.icon_value }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('settings.icons.col.preview')" width="80" align="center">
+              <template #default="{ row }">
+                <el-image :src="getIconUrl(row.icon_value)" class="icon-preview-cell" fit="contain">
+                  <template #error>
+                    <el-icon class="icon-placeholder-cell"><Picture /></el-icon>
+                  </template>
+                </el-image>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('settings.icons.col.actions')" width="80" align="center">
+              <template #default="{ $index }">
+                <el-button size="small" type="danger" :icon="Delete" circle @click="removeIconMapping($index)" />
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+
+        <el-divider>{{ t('settings.icons.addNew') }}</el-divider>
+
+        <el-form :model="iconForm" label-position="top" class="add-icon-form" ref="iconFormRef" :rules="iconRules">
+          <div class="icon-form-grid">
+            <el-form-item :label="t('settings.icons.form.pattern')" prop="stack_pattern">
+              <el-input v-model="iconForm.stack_pattern" :placeholder="t('settings.icons.form.patternPlaceholder')" />
+              <div class="form-help" v-html="t('settings.icons.form.patternHelp')"></div>
+            </el-form-item>
+
+            <el-form-item :label="t('settings.icons.form.source')">
+              <el-radio-group v-model="iconForm.sourceType" size="small">
+                <el-radio-button label="url">{{ t('settings.icons.type.remote') }}</el-radio-button>
+                <el-radio-button label="local">{{ t('settings.icons.type.local') }}</el-radio-button>
+              </el-radio-group>
+            </el-form-item>
+
+            <!-- URL Source -->
+            <el-form-item v-if="iconForm.sourceType === 'url'" :label="t('settings.icons.form.remoteUrl')" prop="icon_url">
+              <el-input v-model="iconForm.icon_url" placeholder="https://cdn.jsdelivr.net/.../logo.svg" />
+            </el-form-item>
+
+            <!-- Local Source -->
+            <el-form-item v-else :label="t('settings.icons.form.localFile')" prop="icon_file">
+              <div class="local-file-picker">
+                <el-select v-model="iconForm.icon_file" :placeholder="t('settings.icons.form.localPlaceholder')" class="file-select">
+                  <el-option v-for="file in availableFiles" :key="file" :label="file" :value="file" />
+                </el-select>
+                
+                <el-upload
+                  action="#"
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  :on-change="handleIconFileSelected"
+                  class="upload-trigger"
+                >
+                  <el-button type="info" :icon="Upload" class="ui-button ui-button--muted">{{ t('settings.icons.form.upload') }}</el-button>
+                </el-upload>
+              </div>
+            </el-form-item>
+          </div>
+
+          <div class="icon-form-action">
+            <el-button type="primary" class="ui-button ui-button--compact" @click="addIconMapping">
+              {{ t('settings.icons.form.addBtn') }}
+            </el-button>
+          </div>
+        </el-form>
+      </div>
+
+      <template #footer>
+        <div class="dialog-actions-row">
+          <el-button @click="iconsDialogVisible = false">{{ t('compose.cancel') }}</el-button>
+          <el-button type="primary" @click="saveIconMappings" :loading="store.saving">{{ t('settings.icons.form.saveBtn') }}</el-button>
+        </div>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, reactive, onMounted, computed } from "vue";
+import { useI18n } from "vue-i18n";
+import { ElMessage, ElMessageBox } from "element-plus";
+import type { FormInstance, FormRules } from "element-plus";
+import {
+  ArrowLeft,
+  Plus,
+  Edit,
+  Delete,
+  Picture,
+  Upload,
+  Setting as SettingIcon,
+} from "@element-plus/icons-vue";
+import { useSettingsStore, type SettingItem, type HostConfigResponse, type StackIconEntry } from "@/stores/settings";
+
+const { t } = useI18n();
+const store = useSettingsStore();
+const activeTab = ref("params");
+
+// Params Form
+const paramsForm = reactive<Record<string, any>>({
+  DOCKER_POLL_INTERVAL: 10,
+  METRICS_STREAM_INTERVAL: 1,
+  BACKGROUND_STRUCTURE_REFRESH_INTERVAL: 3600,
+  UPDATE_CHECK_INTERVAL: 43200,
+  ADMIN_USERNAME: "admin",
+  JWT_EXPIRE_HOURS: 24,
+});
+
+const paramsFormRef = ref<FormInstance>();
+const paramsRules = reactive<FormRules>({
+  DOCKER_POLL_INTERVAL: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+  METRICS_STREAM_INTERVAL: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+  BACKGROUND_STRUCTURE_REFRESH_INTERVAL: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+  UPDATE_CHECK_INTERVAL: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+  ADMIN_USERNAME: [
+    { required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" },
+    { min: 3, message: t("settings.hosts.form.required.id"), trigger: "blur" }
+  ],
+  JWT_EXPIRE_HOURS: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+});
+
+// Readonly Fields
+const readonlyForm = reactive({
+  JWT_SECRET: "",
+  CREDENTIALS_KEY: "",
+  ADMIN_PASSWORD_HASH: "",
+});
+
+// Load all configuration lists
+async function loadSettings() {
+  try {
+    await store.fetchSettings();
+    // Hydrate forms
+    store.settings.forEach((item) => {
+      if (item.is_writable) {
+        if (item.type === "number") {
+          paramsForm[item.key] = Number(item.value);
+        } else {
+          paramsForm[item.key] = item.value;
+        }
+      } else {
+        if (item.key in readonlyForm) {
+          (readonlyForm as any)[item.key] = item.value;
+        }
+      }
+    });
+  } catch (err: any) {
+    ElMessage.error(store.error || t("settings.params.saveError"));
+  }
+}
+
+async function handleSaveParams() {
+  if (!paramsFormRef.value) return;
+  await paramsFormRef.value.validate(async (valid) => {
+    if (!valid) return;
+    try {
+      const updates: Record<string, string> = {};
+      Object.keys(paramsForm).forEach((key) => {
+        updates[key] = String(paramsForm[key]);
+      });
+      await store.saveSettings(updates);
+      ElMessage.success(t("settings.params.saveSuccess"));
+    } catch (err: any) {
+      ElMessage.error(store.error || t("settings.params.saveError"));
+    }
+  });
+}
+
+// Host Management Tab
+const hostDialogVisible = ref(false);
+const hostFormMode = ref<"create" | "edit">("create");
+const hostFormLoading = ref(false);
+const testConnectionLoading = ref(false);
+const hostFormRef = ref<FormInstance>();
+
+const hostForm = reactive({
+  host_id: "",
+  display_name: "",
+  enabled: true,
+  sort_order: 0,
+  mode: "agent", // "agent" | "legacy"
+  
+  // Agent Mode
+  agent_url: "",
+  agent_token: "",
+  
+  // Legacy Mode
+  dockge_url: "",
+  dockge_username: "",
+  dockge_password: "",
+  
+  docker_proxy_url: "",
+  docker_proxy_username: "",
+  docker_proxy_password: "",
+  
+  metrics_url: "",
+  metrics_username: "",
+  metrics_password: "",
+});
+
+const validateHostId = (_rule: any, value: string, callback: any) => {
+  if (!value) {
+    callback(new Error(t("settings.hosts.form.required.id")));
+  } else if (!/^[a-z0-9][a-z0-9-]*$/.test(value)) {
+    callback(new Error(t("settings.hosts.form.invalid.id")));
+  } else {
+    callback();
+  }
+};
+
+const validateHttpUrl = (_rule: any, value: string, callback: any) => {
+  if (value && !/^https?:\/\//.test(value)) {
+    callback(new Error(t("settings.hosts.form.invalid.url")));
+  } else {
+    callback();
+  }
+};
+
+const hostRules = reactive<FormRules>({
+  host_id: [{ required: true, validator: validateHostId, trigger: "blur" }],
+  display_name: [{ required: true, message: t("settings.hosts.form.required.name"), trigger: "blur" }],
+  agent_url: [
+    { required: true, message: t("settings.hosts.form.required.agentUrl"), trigger: "blur" },
+    { validator: validateHttpUrl, trigger: "blur" }
+  ],
+  dockge_url: [{ validator: validateHttpUrl, trigger: "blur" }],
+  docker_proxy_url: [{ validator: validateHttpUrl, trigger: "blur" }],
+  metrics_url: [{ validator: validateHttpUrl, trigger: "blur" }],
+});
+
+function openCreateHostDialog() {
+  hostFormMode.value = "create";
+  hostForm.host_id = "";
+  hostForm.display_name = "";
+  hostForm.enabled = true;
+  hostForm.sort_order = store.hosts.length > 0 ? Math.max(...store.hosts.map(h => h.sort_order)) + 10 : 10;
+  hostForm.mode = "agent";
+  hostForm.agent_url = "";
+  hostForm.agent_token = "";
+  hostForm.dockge_url = "";
+  hostForm.dockge_username = "";
+  hostForm.dockge_password = "";
+  hostForm.docker_proxy_url = "";
+  hostForm.docker_proxy_username = "";
+  hostForm.docker_proxy_password = "";
+  hostForm.metrics_url = "";
+  hostForm.metrics_username = "";
+  hostForm.metrics_password = "";
+  
+  hostDialogVisible.value = true;
+}
+
+function openEditHostDialog(row: HostConfigResponse) {
+  hostFormMode.value = "edit";
+  hostForm.host_id = row.host_id;
+  hostForm.display_name = row.display_name;
+  hostForm.enabled = row.enabled;
+  hostForm.sort_order = row.sort_order;
+  hostForm.mode = row.agent_url ? "agent" : "legacy";
+  
+  hostForm.agent_url = row.agent_url || "";
+  hostForm.agent_token = ""; // Password fields are masked
+  
+  hostForm.dockge_url = row.dockge_url || "";
+  hostForm.dockge_username = row.dockge_username || "";
+  hostForm.dockge_password = "";
+  
+  hostForm.docker_proxy_url = row.docker_proxy_url || "";
+  hostForm.docker_proxy_username = row.dockge_username || ""; // Shared display logic in basic auths
+  hostForm.docker_proxy_password = "";
+  
+  hostForm.metrics_url = row.metrics_url || "";
+  hostForm.metrics_username = "";
+  hostForm.metrics_password = "";
+  
+  hostDialogVisible.value = true;
+}
+
+function closeHostDialog() {
+  hostDialogVisible.value = false;
+  if (hostFormRef.value) {
+    hostFormRef.value.clearValidate();
+  }
+}
+
+// Transform form values to request payload shapes
+function prepareHostPayload() {
+  const isAgent = hostForm.mode === "agent";
+  const payload: any = {
+    display_name: hostForm.display_name,
+    enabled: hostForm.enabled,
+    sort_order: hostForm.sort_order,
+  };
+
+  if (hostFormMode.value === "create") {
+    payload.host_id = hostForm.host_id;
+  }
+
+  if (isAgent) {
+    payload.agent_url = hostForm.agent_url;
+    payload.agent_token = hostForm.agent_token || (hostFormMode.value === "edit" ? null : "");
+    
+    // Clear legacy fields
+    payload.dockge_url = "";
+    payload.dockge_username = "";
+    payload.dockge_password = "";
+    payload.docker_proxy_url = "";
+    payload.docker_proxy_username = "";
+    payload.docker_proxy_password = "";
+    payload.metrics_url = "";
+    payload.metrics_username = "";
+    payload.metrics_password = "";
+  } else {
+    payload.agent_url = null;
+    payload.agent_token = null;
+    
+    payload.dockge_url = hostForm.dockge_url;
+    payload.dockge_username = hostForm.dockge_username;
+    payload.dockge_password = hostForm.dockge_password || (hostFormMode.value === "edit" ? null : "");
+    
+    payload.docker_proxy_url = hostForm.docker_proxy_url;
+    payload.docker_proxy_username = hostForm.docker_proxy_username;
+    payload.docker_proxy_password = hostForm.docker_proxy_password || (hostFormMode.value === "edit" ? null : "");
+    
+    payload.metrics_url = hostForm.metrics_url;
+    payload.metrics_username = hostForm.metrics_username;
+    payload.metrics_password = hostForm.metrics_password || (hostFormMode.value === "edit" ? null : "");
+  }
+  
+  return payload;
+}
+
+async function saveHostForm() {
+  if (!hostFormRef.value) return;
+  await hostFormRef.value.validate(async (valid) => {
+    if (!valid) return;
+    hostFormLoading.value = true;
+    try {
+      const payload = prepareHostPayload();
+      if (hostFormMode.value === "create") {
+        await store.createHost(payload);
+        ElMessage.success(t("settings.hosts.create.success"));
+      } else {
+        await store.updateHost(hostForm.host_id, payload);
+        ElMessage.success(t("settings.hosts.update.success"));
+      }
+      closeHostDialog();
+    } catch (err: any) {
+      ElMessage.error(err || t("settings.hosts.save.error"));
+    } finally {
+      hostFormLoading.value = false;
+    }
+  });
+}
+
+async function toggleHostEnabled(row: HostConfigResponse) {
+  try {
+    const payload = {
+      display_name: row.display_name,
+      enabled: row.enabled,
+      sort_order: row.sort_order,
+      agent_url: row.agent_url,
+      agent_token: null, // Keep secrets unchanged
+      dockge_url: row.dockge_url,
+      dockge_username: row.dockge_username,
+      dockge_password: null,
+      docker_proxy_url: row.docker_proxy_url,
+      docker_proxy_username: row.dockge_username,
+      docker_proxy_password: null,
+      metrics_url: row.metrics_url,
+      metrics_username: "",
+      metrics_password: null,
+    };
+    await store.updateHost(row.host_id, payload);
+    ElMessage.success(
+      t(row.enabled ? "settings.hosts.toggle.enabledSuccess" : "settings.hosts.toggle.disabledSuccess", { name: row.display_name })
+    );
+  } catch (err: any) {
+    row.enabled = !row.enabled; // Rollback switch state
+    ElMessage.error(err || t("settings.hosts.toggle.error"));
+  }
+}
+
+async function confirmDeleteHost(row: HostConfigResponse) {
+  try {
+    await ElMessageBox.confirm(
+      t("settings.hosts.delete.confirm", { name: row.display_name }),
+      t("settings.hosts.delete.title"),
+      {
+        confirmButtonText: t("stack.action.delete"),
+        cancelButtonText: t("stack.confirm.cancel"),
+        type: "warning",
+      }
+    );
+    await store.deleteHost(row.host_id);
+    ElMessage.success(t("settings.hosts.delete.success", { name: row.display_name }));
+  } catch (err: any) {
+    if (err !== "cancel") {
+      ElMessage.error(err || t("settings.hosts.delete.error"));
+    }
+  }
+}
+
+async function testHostConnection(row: HostConfigResponse) {
+  const loadingMsg = ElMessage({
+    message: t("settings.hosts.action.testing", { name: row.display_name }),
+    duration: 0,
+    type: "info",
+  });
+  
+  const res = await store.testConnection(row.host_id);
+  loadingMsg.close();
+  
+  if (res.success) {
+    ElMessageBox.alert(
+      t("settings.hosts.test.successDetail", { time: res.response_time_ms, msg: res.message }),
+      t("settings.hosts.test.successTitle"),
+      { type: "success", confirmButtonText: t("stack.confirm.ok") }
+    );
+  } else {
+    ElMessageBox.alert(
+      t("settings.hosts.test.failedDetail", { msg: res.message }),
+      t("settings.hosts.test.failedTitle"),
+      { type: "error", confirmButtonText: t("stack.confirm.ok") }
+    );
+  }
+}
+
+async function testFormConnection() {
+  if (!hostFormRef.value) return;
+  let hasErrors = false;
+  hostFormRef.value.validateField(["agent_url", "dockge_url", "docker_proxy_url", "metrics_url"], (valid) => {
+    if (!valid) hasErrors = true;
+  });
+  if (hasErrors) return;
+
+  testConnectionLoading.value = true;
+  try {
+    const payload = prepareHostPayload();
+    if (hostFormMode.value === "create") {
+      payload.host_id = hostForm.host_id;
+    }
+    const res = await store.testNewConnection(payload);
+    if (res.success) {
+      ElMessage.success(t("settings.hosts.test.newSuccess", { time: res.response_time_ms, msg: res.message }));
+    } else {
+      ElMessage.error(t("settings.hosts.action.testFailed") + ` ${res.message}`);
+    }
+  } catch (e: any) {
+    ElMessage.error(t("settings.hosts.test.error", { msg: String(e) }));
+  } finally {
+    testConnectionLoading.value = false;
+  }
+}
+
+// Stack Icons Section
+const iconsDialogVisible = ref(false);
+const selectedHost = ref<HostConfigResponse | null>(null);
+const iconsLoading = ref(false);
+const iconsList = ref<StackIconEntry[]>([]);
+const availableFiles = ref<string[]>([]);
+
+const iconForm = reactive({
+  stack_pattern: "",
+  sourceType: "url", // "url" | "local"
+  icon_url: "",
+  icon_file: "",
+});
+
+const iconFormRef = ref<FormInstance>();
+const iconRules = reactive<FormRules>({
+  stack_pattern: [
+    { required: true, message: t("settings.icons.required.pattern"), trigger: "blur" }
+  ],
+  icon_url: [
+    { required: true, message: t("settings.icons.required.url"), trigger: "blur" },
+    { validator: validateHttpUrl, trigger: "blur" }
+  ],
+});
+
+async function openIconsDialog(row: HostConfigResponse) {
+  selectedHost.value = row;
+  iconsList.value = [];
+  availableFiles.value = [];
+  iconForm.stack_pattern = "";
+  iconForm.sourceType = "url";
+  iconForm.icon_url = "";
+  iconForm.icon_file = "";
+  iconsDialogVisible.value = true;
+  
+  iconsLoading.value = true;
+  try {
+    const res = await store.fetchStackIcons(row.host_id);
+    iconsList.value = res.icons || [];
+    availableFiles.value = res.available_files || [];
+  } catch (e: any) {
+    ElMessage.error(e || t("settings.icons.fetch.error"));
+  } finally {
+    iconsLoading.value = false;
+  }
+}
+
+function isHttpUrl(value: string) {
+  return /^https?:\/\//.test(value);
+}
+
+function getIconUrl(value: string) {
+  if (isHttpUrl(value)) return value;
+  return `/api/static/icons/${value}`;
+}
+
+function sliceIconEntries(icons: Record<string, string>, n: number): Record<string, string> {
+  const entries = Object.entries(icons).slice(0, n);
+  return Object.fromEntries(entries);
+}
+
+function removeIconMapping(index: number) {
+  iconsList.value.splice(index, 1);
+}
+
+async function handleIconFileSelected(uploadFile: any) {
+  if (!selectedHost.value) return;
+  const rawFile = uploadFile.raw;
+  if (!rawFile) return;
+
+  if (rawFile.size > 2 * 1024 * 1024) {
+    ElMessage.error(t("settings.icons.upload.tooLarge"));
+    return;
+  }
+
+  const loadingMsg = ElMessage({
+    message: t("settings.icons.upload.progress"),
+    duration: 0,
+    type: "info",
+  });
+
+  try {
+    const filename = await store.uploadIcon(selectedHost.value.host_id, rawFile);
+    loadingMsg.close();
+    ElMessage.success(t("settings.icons.upload.success", { name: filename }));
+    
+    if (!availableFiles.value.includes(filename)) {
+      availableFiles.value.push(filename);
+      availableFiles.value.sort();
+    }
+    iconForm.icon_file = filename;
+  } catch (e: any) {
+    loadingMsg.close();
+    ElMessage.error(e || t("settings.icons.upload.error"));
+  }
+}
+
+async function addIconMapping() {
+  if (!iconFormRef.value) return;
+  
+  if (!iconForm.stack_pattern.trim()) {
+    ElMessage.error(t("settings.icons.required.pattern"));
+    return;
+  }
+  
+  let val = "";
+  if (iconForm.sourceType === "url") {
+    if (!iconForm.icon_url.trim()) {
+      ElMessage.error(t("settings.icons.required.url"));
+      return;
+    }
+    if (!/^https?:\/\//.test(iconForm.icon_url.trim())) {
+      ElMessage.error(t("settings.hosts.form.invalid.url"));
+      return;
+    }
+    val = iconForm.icon_url.trim();
+  } else {
+    if (!iconForm.icon_file) {
+      ElMessage.error(t("settings.icons.required.file"));
+      return;
+    }
+    val = iconForm.icon_file;
+  }
+
+  const dupIndex = iconsList.value.findIndex(i => i.stack_pattern === iconForm.stack_pattern.trim());
+  if (dupIndex > -1) {
+    iconsList.value[dupIndex].icon_value = val;
+    ElMessage.info(t("settings.icons.mapping.updated", { pattern: iconForm.stack_pattern.trim() }));
+  } else {
+    iconsList.value.push({
+      stack_pattern: iconForm.stack_pattern.trim(),
+      icon_value: val,
+    });
+  }
+
+  iconForm.stack_pattern = "";
+  iconForm.icon_url = "";
+  iconForm.icon_file = "";
+}
+
+async function saveIconMappings() {
+  if (!selectedHost.value) return;
+  try {
+    await store.saveStackIcons(selectedHost.value.host_id, iconsList.value);
+    ElMessage.success(t("settings.icons.saveSuccess", { name: selectedHost.value.display_name }));
+    iconsDialogVisible.value = false;
+    await store.fetchHosts();
+  } catch (e: any) {
+    ElMessage.error(e || t("settings.icons.save.error"));
+  }
+}
+
+onMounted(() => {
+  void loadSettings();
+  void store.fetchHosts();
+});
+</script>
+
+<style scoped>
+.settings-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-panel {
+  padding: 24px;
+}
+
+.settings-tabs :deep(.el-tabs__header) {
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: 20px;
+}
+
+.settings-tabs :deep(.el-tabs__item) {
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.tab-pane-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-top: 10px;
+}
+
+.tab-alert {
+  border-radius: 8px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 24px;
+}
+
+.input-with-unit {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.unit-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.form-help {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
+.form-actions-row {
+  margin-top: 30px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 20px;
+}
+
+/* Tab 3 Hosts */
+.pane-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.pane-header-kicker {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.host-table {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Stack Icons cell — preview strip + manage button */
+.icons-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.icons-preview-strip {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.icon-strip-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.icon-strip-placeholder {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.icons-more-chip {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 1px 4px;
+  white-space: nowrap;
+}
+
+.icons-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.icons-manage-btn {
+  flex-shrink: 0;
+  background: transparent !important;
+  border-color: var(--el-border-color) !important;
+  color: var(--el-text-color-secondary) !important;
+}
+
+.icons-manage-btn:hover {
+  background: var(--el-fill-color-light) !important;
+  border-color: var(--el-border-color-hover) !important;
+  color: var(--el-text-color-primary) !important;
+}
+
+/* Pierce into icon element inside button */
+:deep(.icons-manage-btn .el-icon) {
+  color: inherit;
+}
+
+.url-text {
+  font-size: 13px;
+  font-family: inherit;
+  word-break: break-all;
+}
+
+.url-text.text-muted {
+  line-height: 1.4;
+}
+
+.row-operations {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* Dialog Styles */
+.dialog-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.mode-radios {
+  margin-bottom: 12px;
+}
+
+.mode-section {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.legacy-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.legacy-card {
+  background: var(--surface-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 14px;
+}
+
+.legacy-card.full-width {
+  grid-column: span 2;
+}
+
+.legacy-card-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  border-left: 3px solid var(--accent-blue);
+  padding-left: 8px;
+  line-height: 1;
+}
+
+.dialog-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.dialog-actions-row .spacer {
+  flex: 1;
+}
+
+/* Icons Management */
+.icons-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.section-kicker {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+
+.pattern-code {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--accent-blue);
+}
+
+.font-mono {
+  font-family: var(--font-mono, monospace);
+}
+
+.icon-preview-cell {
+  width: 32px;
+  height: 32px;
+  border-radius: 4px;
+  background: var(--surface-raised);
+  display: grid;
+  place-items: center;
+  padding: 2px;
+}
+
+.icon-placeholder-cell {
+  font-size: 18px;
+  color: var(--text-muted);
+}
+
+.add-icon-form {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.icon-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.local-file-picker {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.file-select {
+  flex: 1;
+}
+
+.icon-form-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+</style>
