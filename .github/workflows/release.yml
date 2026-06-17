@@ -112,6 +112,7 @@ jobs:
           else
             git log "${PREV_TAG}..${CURRENT_TAG}" --pretty=format:"- %s (%h)" --no-merges >> changelog.md
           fi
+          echo "" >> changelog.md
           
           echo "CHANGELOG<<EOF" >> $GITHUB_ENV
           cat changelog.md >> $GITHUB_ENV
