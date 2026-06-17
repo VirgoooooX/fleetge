@@ -20,9 +20,6 @@ jobs:
           - service: app
             context: .
             image_suffix: fleetge
-          - service: agent
-            context: fleetge-agent
-            image_suffix: fleetge-agent
 
     steps:
       - name: Checkout
@@ -131,4 +128,3 @@ jobs:
 
             ### Docker Images
             - `ghcr.io/${{ steps.owner.outputs.name }}/fleetge:${{ steps.version.outputs.version }}`
-            - `ghcr.io/${{ steps.owner.outputs.name }}/fleetge-agent:${{ steps.version.outputs.version }}`
