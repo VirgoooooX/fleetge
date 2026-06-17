@@ -20,9 +20,6 @@ jobs:
           - service: app
             context: .
             image_suffix: fleetge
-          # - service: metrics
-          #   context: host-metrics-exporter
-          #   image_suffix: host-dashboard-metrics-public
           - service: agent
             context: fleetge-agent
             image_suffix: fleetge-agent
@@ -83,6 +80,11 @@ jobs:
     needs: build-images
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Resolve version
         id: version
         shell: bash
@@ -99,13 +101,34 @@ jobs:
           owner="${GITHUB_REPOSITORY_OWNER}"
           echo "name=${owner,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Generate Changelog
+        id: changelog
+        shell: bash
+        run: |
+          git fetch --tags --force
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || echo "")
+          
+          echo "### Changelog" > changelog.md
+          if [ -z "$PREV_TAG" ]; then
+            git log --pretty=format:"- %s (%h)" --no-merges >> changelog.md
+          else
+            git log "${PREV_TAG}..${CURRENT_TAG}" --pretty=format:"- %s (%h)" --no-merges >> changelog.md
+          fi
+          
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          cat changelog.md >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: Fleetge ${{ steps.version.outputs.tag }}
-          generate_release_notes: true
+          generate_release_notes: false
           body: |
-            Images:
+            ${{ env.CHANGELOG }}
+
+            ### Docker Images
             - `ghcr.io/${{ steps.owner.outputs.name }}/fleetge:${{ steps.version.outputs.version }}`
             - `ghcr.io/${{ steps.owner.outputs.name }}/fleetge-agent:${{ steps.version.outputs.version }}`

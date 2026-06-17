@@ -1,16 +1,6 @@
 name: Build Fleetge images
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "backend/**"
-      - "frontend/**"
-      - ".dockerignore"
-      - "Dockerfile"
-      - "VERSION"
-      - ".github/workflows/fleetge-images.yml"
   workflow_dispatch:
 
 permissions:

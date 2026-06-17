@@ -1,12 +1,6 @@
 name: Build Fleetge Agent image
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "fleetge-agent/**"
-      - ".github/workflows/fleetge-agent-image.yml"
   workflow_dispatch:
 
 permissions:
