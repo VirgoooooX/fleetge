@@ -113,6 +113,7 @@ export interface I18nSchema {
   "stack.confirm.message": string;
   "stack.confirm.ok": string;
   "stack.confirm.cancel": string;
+  "stack.confirm.cancelled": string;
   "stack.confirm.running": string;
   "stack.confirm.timeout": string;
   "stack.confirm.success": string;
@@ -130,6 +131,10 @@ export interface I18nSchema {
   "stackOp.restarting": string;
   "stackOp.updating": string;
   "stackOp.pruning": string;
+  "stackOp.deleting": string;
+  "stackOp.serviceStarting": string;
+  "stackOp.serviceStopping": string;
+  "stackOp.serviceRestarting": string;
   "stackOp.operation": string;
   "stackOp.completed": string;
   "stackOp.failed": string;
@@ -189,6 +194,10 @@ export interface I18nSchema {
   "audit.action.stack.down": string;
   "audit.action.stack.restart": string;
   "audit.action.stack.update": string;
+  "audit.action.stack.delete": string;
+  "audit.action.stack.serviceStart": string;
+  "audit.action.stack.serviceStop": string;
+  "audit.action.stack.serviceRestart": string;
   "audit.action.stack.composeSave": string;
   "audit.action.stack.composeDeploy": string;
   "audit.action.updateChecksRun": string;
@@ -204,6 +213,10 @@ export interface I18nSchema {
   "workspace.stacksCount": string;
   "workspace.runningCount": string;
   "workspace.running": string;
+  "workspace.stackManaged": string;
+  "workspace.stackDeployed": string;
+  "workspace.stackFileOnly": string;
+  "workspace.stackUnmanaged": string;
   "workspace.editCompose": string;
   "workspace.viewDetail": string;
   "workspace.pruneDocker": string;
@@ -214,6 +227,9 @@ export interface I18nSchema {
   "workspace.updateAllMessage": string;
   "workspace.updateAllSuccess": string;
   "workspace.updateAllPartial": string;
+  "workspace.serviceStart": string;
+  "workspace.serviceStop": string;
+  "workspace.serviceRestart": string;
   "workspace.noMatchingStack": string;
   "workspace.containerGroup": string;
   "workspace.containers": string;

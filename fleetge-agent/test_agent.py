@@ -90,7 +90,10 @@ def test_invalid_stack_name_rejected():
     headers = {"Authorization": "Bearer test-secret-token"}
     response = client.get("/api/agent/stacks/invalid$name", headers=headers)
     assert response.status_code == 400
-    assert "Only alphanumeric characters" in response.json()["detail"]
+    assert "Only lowercase letters" in response.json()["detail"]
+
+    response = client.get("/api/agent/stacks/InvalidName", headers=headers)
+    assert response.status_code == 400
 
 
 def test_safe_stack_name():
@@ -137,6 +140,64 @@ def test_save_stack_rejects_invalid_compose_file_name(stack_base):
     assert response.status_code == 400
 
 
+def test_save_stack_is_add_rejects_existing_stack(stack_base):
+    """Creating a stack refuses to overwrite an existing directory."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={
+            "compose_yaml": "services:\n  app:\n    image: nginx\n",
+            "is_add": True,
+        },
+    )
+    assert response.status_code == 409
+
+
+def test_save_stack_edit_rejects_missing_stack(stack_base):
+    """Editing a missing stack returns 404 instead of creating it silently."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.put(
+        "/api/agent/stacks/missing-stack",
+        headers=headers,
+        json={"compose_yaml": "services:\n  app:\n    image: nginx\n"},
+    )
+    assert response.status_code == 404
+
+
+def test_save_stack_rejects_invalid_yaml(stack_base):
+    """Invalid compose YAML returns a clear validation error."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={"compose_yaml": "services:\n  app: [broken\n"},
+    )
+    assert response.status_code == 400
+    assert "Invalid compose YAML" in response.json()["detail"]
+
+
+def test_save_stack_rejects_single_line_env_without_equals(stack_base):
+    """.env single-line content must be KEY=value."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.put(
+        "/api/agent/stacks/test-stack",
+        headers=headers,
+        json={
+            "compose_yaml": "services:\n  app:\n    image: nginx\n",
+            "compose_env": "TOKEN_ONLY",
+        },
+    )
+    assert response.status_code == 400
+    assert "Invalid .env format" in response.json()["detail"]
+
+
 def test_save_stack_writes_and_removes_env(stack_base):
     """.env is written when provided and removed when omitted."""
     stack_dir = stack_base / "test-stack"
@@ -177,16 +238,65 @@ def test_delete_stack_refuses_non_compose_directory(stack_base):
     assert stack_dir.exists()
 
 
-def test_delete_stack_removes_directory(stack_base):
+def test_delete_stack_removes_directory(stack_base, monkeypatch):
     """Deleting a stack with a compose file removes the directory."""
     stack_dir = stack_base / "test-stack"
     stack_dir.mkdir()
     (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+    calls = []
+
+    async def fake_delete(path, args):
+        calls.append((path, args))
+        assert path == str(stack_dir)
+        assert args == ["compose", "down", "--remove-orphans"]
+        await compose_runner.asyncio.to_thread(compose_runner.shutil.rmtree, path)
+        return 0, "down ok\n"
+
+    monkeypatch.setattr(compose_runner, "_delete_stack_after_down", fake_delete)
 
     headers = {"Authorization": "Bearer test-secret-token"}
     response = client.delete("/api/agent/stacks/test-stack", headers=headers)
     assert response.status_code == 200
     assert not stack_dir.exists()
+    assert len(calls) == 1
+
+
+def test_delete_stack_down_failure_preserves_directory(stack_base, monkeypatch):
+    """Deleting a stack keeps files if compose down fails."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+
+    async def fake_delete(path, args):
+        return 1, "down failed\n"
+
+    monkeypatch.setattr(compose_runner, "_delete_stack_after_down", fake_delete)
+
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.delete("/api/agent/stacks/test-stack", headers=headers)
+    assert response.status_code == 502
+    assert "down failed" in response.json()["detail"]
+    assert stack_dir.exists()
+
+
+def test_global_env_read_write_delete(stack_base):
+    """global.env can be saved, read, and removed."""
+    headers = {"Authorization": "Bearer test-secret-token"}
+    response = client.get("/api/agent/global-env", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["content"] == ""
+
+    response = client.put("/api/agent/global-env", headers=headers, json={"content": "TZ=Asia/Shanghai\n"})
+    assert response.status_code == 200
+    assert (stack_base / "global.env").read_text() == "TZ=Asia/Shanghai\n"
+
+    response = client.get("/api/agent/global-env", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["content"] == "TZ=Asia/Shanghai\n"
+
+    response = client.put("/api/agent/global-env", headers=headers, json={"content": ""})
+    assert response.status_code == 200
+    assert not (stack_base / "global.env").exists()
 
 
 def test_compose_args_match_dockge_env_file_order(stack_base):
@@ -278,6 +388,62 @@ def test_update_skips_up_when_compose_project_is_not_running(stack_base, monkeyp
         assert exit_msg == {"type": "exit", "code": 0}
 
     assert commands == [["compose", "pull"]]
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        ("startService", ["compose", "up", "-d", "web"]),
+        ("stopService", ["compose", "stop", "web"]),
+        ("restartService", ["compose", "restart", "web"]),
+    ],
+)
+def test_service_actions_generate_compose_args(stack_base, monkeypatch, action, expected):
+    """Service-level actions route through _compose_args with the service name."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx\n")
+    commands = []
+
+    async def fake_stream(websocket, stack_path, args, cols=160, rows=24):
+        commands.append(args)
+        await websocket.send_json({"type": "stdout", "chunk": "ok\n"})
+        return 0
+
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/test-stack/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": action, "service": "web"})
+        assert ws.receive_json()["type"] == "stdout"
+        assert ws.receive_json() == {"type": "exit", "code": 0}
+
+    assert commands == [expected]
+
+
+def test_compose_logs_stream_uses_compose_project_logs(stack_base, monkeypatch):
+    """The stack log terminal follows docker compose logs, not container IDs."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx\n")
+    commands = []
+
+    async def fake_stream(websocket, stack_path, args, cols=160, rows=24):
+        commands.append(args)
+        await websocket.send_json({"type": "stdout", "chunk": "web  | boot\n"})
+        return 0
+
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/test-stack/logs?tail=42&token=test-secret-token"
+    ) as ws:
+        assert ws.receive_json() == {"type": "ready"}
+        assert ws.receive_json() == {"type": "stdout", "chunk": "web  | boot\n"}
+        assert ws.receive_json() == {"type": "exit", "code": 0}
+
+    assert commands == [["compose", "logs", "-f", "--tail", "42"]]
 
 
 def test_websocket_invalid_action(stack_base):

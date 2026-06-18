@@ -177,6 +177,9 @@
                       <el-icon v-if="isMobile"><Link /></el-icon>
                       <span v-else>{{ t('settings.hosts.action.test') }}</span>
                     </el-button>
+                    <el-tooltip :content="t('settings.globalEnv.manage')" placement="top">
+                      <el-button size="small" type="info" plain :icon="Document" @click="openGlobalEnvDialog(row)" />
+                    </el-tooltip>
                     <el-button size="small" type="info" plain :icon="Edit" @click="openEditHostDialog(row)" />
                     <el-button size="small" type="danger" plain :icon="Delete" @click="confirmDeleteHost(row)" />
                   </div>
@@ -347,6 +350,40 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- global.env Dialog -->
+    <el-dialog
+      v-model="globalEnvDialogVisible"
+      :title="t('settings.globalEnv.title', { name: selectedHost?.display_name })"
+      width="720px"
+      custom-class="ui-dialog"
+    >
+      <div class="global-env-dialog" v-loading="globalEnvLoading">
+        <el-alert
+          :title="t('settings.globalEnv.help')"
+          type="info"
+          show-icon
+          :closable="false"
+        />
+        <el-input
+          v-model="globalEnvContent"
+          type="textarea"
+          :rows="16"
+          resize="vertical"
+          spellcheck="false"
+          placeholder="TZ=Asia/Shanghai"
+          class="global-env-textarea"
+        />
+      </div>
+      <template #footer>
+        <div class="dialog-actions-row">
+          <el-button @click="globalEnvDialogVisible = false">{{ t('compose.cancel') }}</el-button>
+          <el-button type="primary" @click="saveGlobalEnv" :loading="store.saving">
+            {{ t('settings.globalEnv.save') }}
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -365,6 +402,7 @@ import {
   Upload,
   Setting as SettingIcon,
   Link,
+  Document,
 } from "@element-plus/icons-vue";
 import { useSettingsStore, type SettingItem, type HostConfigResponse, type StackIconEntry } from "@/stores/settings";
 import { useMobile } from "@/composables/useMobile";
@@ -660,6 +698,9 @@ const selectedHost = ref<HostConfigResponse | null>(null);
 const iconsLoading = ref(false);
 const iconsList = ref<StackIconEntry[]>([]);
 const availableFiles = ref<string[]>([]);
+const globalEnvDialogVisible = ref(false);
+const globalEnvLoading = ref(false);
+const globalEnvContent = ref("");
 
 const iconForm = reactive({
   stack_pattern: "",
@@ -803,6 +844,31 @@ async function saveIconMappings() {
     await store.fetchHosts();
   } catch (e: any) {
     ElMessage.error(e || t("settings.icons.save.error"));
+  }
+}
+
+async function openGlobalEnvDialog(row: HostConfigResponse) {
+  selectedHost.value = row;
+  globalEnvContent.value = "";
+  globalEnvDialogVisible.value = true;
+  globalEnvLoading.value = true;
+  try {
+    globalEnvContent.value = await store.fetchGlobalEnv(row.host_id);
+  } catch (e: any) {
+    ElMessage.error(e || t("settings.globalEnv.fetchError"));
+  } finally {
+    globalEnvLoading.value = false;
+  }
+}
+
+async function saveGlobalEnv() {
+  if (!selectedHost.value) return;
+  try {
+    await store.saveGlobalEnv(selectedHost.value.host_id, globalEnvContent.value);
+    ElMessage.success(t("settings.globalEnv.saveSuccess", { name: selectedHost.value.display_name }));
+    globalEnvDialogVisible.value = false;
+  } catch (e: any) {
+    ElMessage.error(e || t("settings.globalEnv.saveError"));
   }
 }
 
@@ -1039,6 +1105,18 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.global-env-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.global-env-textarea :deep(textarea) {
+  font-family: var(--font-mono, "Cascadia Code", Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 .section-kicker {

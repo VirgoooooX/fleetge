@@ -5,6 +5,7 @@ import logging
 # Configure Logging
 LOG_LEVEL_STR = os.environ.get("AGENT_LOG_LEVEL", os.environ.get("LOG_LEVEL", "INFO")).upper()
 LEVELS = {
+    "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
     "WARNING": logging.WARNING,
     "WARN": logging.WARNING,
@@ -19,6 +20,10 @@ if not logger.handlers:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logger.addHandler(handler)
+
+# Configure Uvicorn loggers to respect AGENT_LOG_LEVEL
+for uvicorn_logger in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(uvicorn_logger).setLevel(log_level)
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException

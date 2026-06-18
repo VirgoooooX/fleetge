@@ -66,6 +66,7 @@ export interface StackSummary {
   running_count: number;
   services: StackService[];
   icon_url?: string;
+  management_status?: string;
 }
 
 export interface ContainerPort {

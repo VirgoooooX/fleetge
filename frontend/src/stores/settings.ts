@@ -214,6 +214,26 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  async function fetchGlobalEnv(hostId: string): Promise<string> {
+    try {
+      const res = await apiClient.get(`/api/admin/hosts/${hostId}/global-env`);
+      return res.data.content || "";
+    } catch (e: any) {
+      throw e.response?.data?.detail || e.message || "Failed to fetch global.env";
+    }
+  }
+
+  async function saveGlobalEnv(hostId: string, content: string) {
+    saving.value = true;
+    try {
+      await apiClient.put(`/api/admin/hosts/${hostId}/global-env`, { content });
+    } catch (e: any) {
+      throw e.response?.data?.detail || e.message || "Failed to save global.env";
+    } finally {
+      saving.value = false;
+    }
+  }
+
   return {
     settings,
     hosts,
@@ -231,5 +251,7 @@ export const useSettingsStore = defineStore("settings", () => {
     fetchStackIcons,
     saveStackIcons,
     uploadIcon,
+    fetchGlobalEnv,
+    saveGlobalEnv,
   };
 });

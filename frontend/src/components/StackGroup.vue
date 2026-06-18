@@ -148,6 +148,7 @@ export interface StackSummary {
   running_count: number;
   services: StackService[];
   icon_url?: string;  // 自定义图标
+  management_status?: string;
 }
 
 const props = defineProps<{
@@ -262,7 +263,7 @@ function stackStatusType(status: string): string {
 
 function stackTagType(status: string): "success" | "warning" | "info" | "danger" {
   if (status === "running" || status === "active") return "success";
-  if (status === "exited") return "danger";
+  if (status === "exited") return "info";
   if (status === "stopped" || status === "inactive") return "info";
   if (status === "partially running" || status === "partial") return "warning";
   return "info";

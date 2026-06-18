@@ -86,7 +86,7 @@
         <el-tooltip v-if="showCompose" :content="t('stackGroup.editCompose')" placement="top">
           <button
             class="rect-text-btn"
-            :disabled="loading !== null || deleting"
+            :disabled="loading !== null || deleting || !canEditCompose"
             @click="emit('compose')"
           >
             <el-icon><EditPen /></el-icon>
@@ -134,7 +134,6 @@ import {
   Loading
 } from "@element-plus/icons-vue";
 import { streamSse } from "@/api/sse";
-import { apiClient } from "@/api/client";
 import { useConfirm, STACK_TONE_MAP } from "@/composables/useConfirm";
 
 export type OperationState = {
@@ -158,11 +157,13 @@ const props = withDefaults(
     showCompose?: boolean;
     showLogs?: boolean;
     showDetail?: boolean;
+    canEditCompose?: boolean;
   }>(),
   {
     showCompose: false,
     showLogs: false,
     showDetail: false,
+    canEditCompose: true,
   }
 );
 
@@ -380,17 +381,110 @@ async function confirmAndDelete() {
   }
 
   deleting.value = true;
+  const currentStackName = props.stackName;
+  const action = "delete";
+  const label = t("stack.action.delete");
+  const controller = new AbortController();
+  sseAbortController = controller;
+  let completed = false;
+
+  const runningState: OperationState = {
+    action,
+    status: "running",
+    message: t("stack.confirm.running", { action: label }),
+    updatedAt: Date.now(),
+    abort: () => controller.abort(),
+  };
+  emit("operation-start", currentStackName, runningState);
 
   try {
-    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(props.stackName)}`;
-    await apiClient.delete(url);
-    ElMessage.success(t("stack.delete.success", { name: props.stackName }));
-    emit("refresh");
+    const cols = props.showDetail ? 55 : 110;
+    const rows = props.showDetail ? 15 : 24;
+    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(currentStackName)}/delete?cols=${cols}&rows=${rows}`;
+
+    await streamSse({
+      url,
+      method: "POST",
+      timeoutMs: 180000,
+      signal: controller.signal,
+      onTimeout: () => {
+        if (completed) return;
+        completed = true;
+        const timeoutState: OperationState = {
+          action,
+          status: "timeout",
+          message: t("stack.confirm.timeout"),
+          updatedAt: Date.now(),
+        };
+        emit("operation-complete", currentStackName, timeoutState);
+        ElMessage.warning(timeoutState.message);
+      },
+      onEvent: (ev) => {
+        if (ev.event === "chunk") {
+          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.raw ?? ev.rawData });
+        } else if (ev.event === "line") {
+          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.text ?? ev.rawData });
+        } else if (ev.event === "complete") {
+          completed = true;
+          const data = ev.data || {};
+          const finalStatus = data.status === "success" ? "success" : "error";
+          const completeState: OperationState = {
+            action,
+            status: finalStatus,
+            message: data.message || (finalStatus === "success"
+              ? t("stack.delete.success", { name: currentStackName })
+              : t("stack.delete.failure", { name: currentStackName })),
+            updatedAt: Date.now(),
+          };
+          emit("operation-complete", currentStackName, completeState);
+          if (finalStatus === "success") {
+            ElMessage.success(completeState.message);
+            emit("refresh");
+          } else {
+            ElMessage.error(completeState.message);
+          }
+        } else if (ev.event === "error") {
+          completed = true;
+          const data = ev.data || {};
+          const errorState: OperationState = {
+            action,
+            status: "error",
+            message: t("stack.delete.failure", { name: currentStackName }) + ": " + (data.message || t("stack.confirm.unknownError")),
+            updatedAt: Date.now(),
+          };
+          emit("operation-complete", currentStackName, errorState);
+          ElMessage.error(errorState.message);
+        }
+      },
+    });
+
+    if (!completed && !controller.signal.aborted) {
+      const successState: OperationState = {
+        action,
+        status: "success",
+        message: t("stack.delete.success", { name: currentStackName }),
+        updatedAt: Date.now(),
+      };
+      emit("operation-complete", currentStackName, successState);
+      ElMessage.success(successState.message);
+      emit("refresh");
+    }
   } catch (e: any) {
+    if (completed) return;
     const detail = e.response?.data?.detail || e.message || t("stack.confirm.unknownError");
-    ElMessage.error(t("stack.delete.failure", { name: props.stackName }) + ": " + detail);
+    const errorState: OperationState = {
+      action,
+      status: "error",
+      message: t("stack.delete.failure", { name: currentStackName }) + ": " + detail,
+      updatedAt: Date.now(),
+    };
+    emit("operation-complete", currentStackName, errorState);
+    ElMessage.error(errorState.message);
   } finally {
     deleting.value = false;
+    if (sseAbortController === controller) {
+      sseAbortController = null;
+    }
   }
 }
 </script>

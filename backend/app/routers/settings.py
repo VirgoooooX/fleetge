@@ -2,6 +2,7 @@
 
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.auth.handler import get_current_user
@@ -15,8 +16,13 @@ from app.services.settings_service import (
     WRITABLE_KEYS,
 )
 from app.services.snapshot import snapshot_manager
+from app.services.agent_client import AgentClient
 
 logger = logging.getLogger(__name__)
+
+
+class GlobalEnvUpdateRequest(BaseModel):
+    content: str = ""
 
 router = APIRouter(
     prefix="/api/admin",
@@ -231,3 +237,51 @@ async def update_settings(
             await snapshot_manager.restart_poll_loops()
 
     return await get_settings_list()
+
+
+@router.get("/hosts/{host_id}/global-env")
+async def get_host_global_env(host_id: str):
+    """Read a host Agent's STACKS_BASE_DIR/global.env."""
+    snap = snapshot_manager.get_snapshot(host_id)
+    if snap is None or snap.host_config is None:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+    if not snap.host_config.agent_url:
+        raise HTTPException(status_code=400, detail="Host has no agent_url configured")
+
+    conn = AgentClient(snap.host_config)
+    try:
+        return {"content": await conn.get_global_env()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        await conn.close()
+
+
+@router.put("/hosts/{host_id}/global-env")
+async def save_host_global_env(
+    host_id: str,
+    payload: GlobalEnvUpdateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    username: str = Depends(get_current_user),
+):
+    """Write a host Agent's STACKS_BASE_DIR/global.env."""
+    snap = snapshot_manager.get_snapshot(host_id)
+    ip = request.client.host if request.client else None
+    if snap is None or snap.host_config is None:
+        _write_audit_log(session, username, "host.global_env.update", host_id, "error", "Host not found", ip)
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+    if not snap.host_config.agent_url:
+        _write_audit_log(session, username, "host.global_env.update", host_id, "error", "Host has no agent_url configured", ip)
+        raise HTTPException(status_code=400, detail="Host has no agent_url configured")
+
+    conn = AgentClient(snap.host_config)
+    try:
+        result = await conn.save_global_env(payload.content)
+        _write_audit_log(session, username, "host.global_env.update", host_id, "success", str(result), ip)
+        return result
+    except Exception as exc:
+        _write_audit_log(session, username, "host.global_env.update", host_id, "error", str(exc), ip)
+        raise HTTPException(status_code=502, detail=str(exc))
+    finally:
+        await conn.close()

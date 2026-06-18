@@ -841,6 +841,7 @@ class SnapshotManager:
                     service_count=len(svcs),
                     running_count=running,
                     services=svcs,
+                    management_status=s.get("management_status", s.get("managementStatus", "managed")),
                 )
             )
         return stacks
@@ -938,6 +939,36 @@ class SnapshotManager:
             conn = self._agent_clients[cfg.host_id]
             raw_stacks = await conn.list_stacks()
 
+            async def enrich_services(stack: dict) -> dict:
+                name = stack.get("name", stack.get("Name", ""))
+                if not name:
+                    return stack
+                try:
+                    rows = await conn.list_stack_services(name)
+                except Exception as exc:
+                    logger.debug("Service status fetch failed for %s/%s: %s", cfg.host_id, name, exc)
+                    return stack
+
+                services = []
+                for row in rows:
+                    service_name = row.get("Service") or row.get("Name") or row.get("service") or row.get("name")
+                    state = row.get("State") or row.get("state") or "unknown"
+                    services.append({
+                        "name": service_name,
+                        "containerId": row.get("ID") or row.get("Id") or row.get("id"),
+                        "state": state,
+                        "status": row.get("Status") or row.get("Health") or state,
+                    })
+                if services:
+                    stack = dict(stack)
+                    stack["services"] = services
+                return stack
+
+            raw_stacks = await asyncio.gather(
+                *(enrich_services(stack) for stack in raw_stacks),
+                return_exceptions=False,
+            )
+
             stacks = self.parse_agent_stacks(raw_stacks)
             stacks = self._apply_stack_icons(stacks, cfg)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
@@ -974,13 +1005,18 @@ class SnapshotManager:
                         service_count=fallback.service_count,
                         running_count=fallback.running_count,
                         services=fallback.services,
+                        icon_url=stack.icon_url,
+                        management_status="deployed",
                     )
                 )
             else:
+                if stack.management_status == "managed":
+                    stack.management_status = "deployed" if fallback else "file-only"
                 merged.append(stack)
 
         for stack in label_stacks:
             if stack.name not in seen:
+                stack.management_status = "unmanaged"
                 merged.append(stack)
 
         return self._apply_stack_icons(merged, snap.host_config)

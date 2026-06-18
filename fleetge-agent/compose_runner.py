@@ -11,8 +11,9 @@ STACKS_BASE_DIR = os.environ.get("STACKS_BASE_DIR", "/opt/stacks")
 
 router = APIRouter()
 
-# Safe regex pattern to match stack name. Only allows letters, numbers, underscores, and hyphens.
-STACK_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+# Dockge-compatible stack names. Keep this aligned with frontend/backend validation.
+STACK_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
+SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
 # Recognized docker-compose file names
 _COMPOSE_FILE_NAMES = [
@@ -39,6 +40,11 @@ class StackSaveRequest(BaseModel):
     compose_yaml: str
     compose_env: Optional[str] = ""
     compose_file_name: Optional[str] = "compose.yaml"
+    is_add: bool = False
+
+
+class GlobalEnvRequest(BaseModel):
+    content: str = ""
 
 
 def _validate_stack_name(name: str) -> None:
@@ -46,8 +52,18 @@ def _validate_stack_name(name: str) -> None:
     if not STACK_NAME_RE.match(name):
         raise HTTPException(
             status_code=400,
-            detail="Invalid stack name. Only alphanumeric characters, hyphens, and underscores are allowed."
+            detail="Invalid stack name. Only lowercase letters, numbers, hyphens, and underscores are allowed."
         )
+
+
+def _validate_service_name(name: Optional[str]) -> str:
+    service = name or ""
+    if not SERVICE_NAME_RE.match(service):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid service name. Only letters, numbers, dots, hyphens, and underscores are allowed.",
+        )
+    return service
 
 
 def _get_stack_path(name: str) -> str:
@@ -63,7 +79,7 @@ def _get_stack_path(name: str) -> str:
     stack_real = os.path.realpath(stack_path)
 
     # Ensure resolved path is strictly a child directory of the base stacks directory
-    if not stack_real.startswith(base_real) or stack_real == base_real:
+    if os.path.commonpath([base_real, stack_real]) != base_real or stack_real == base_real:
         raise HTTPException(
             status_code=403,
             detail="Forbidden. Path traversal detected."
@@ -92,6 +108,26 @@ def _validate_compose_file_name(name: Optional[str]) -> str:
     return filename
 
 
+def _validate_stack_payload(payload: StackSaveRequest) -> str:
+    """Validate compose save payload and return the compose file name."""
+    compose_filename = _validate_compose_file_name(payload.compose_file_name)
+    if not payload.compose_yaml.strip():
+        raise HTTPException(status_code=400, detail="compose_yaml cannot be empty")
+
+    try:
+        import yaml
+        yaml.safe_load(payload.compose_yaml)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid compose YAML: {exc}")
+
+    env_text = payload.compose_env or ""
+    lines = env_text.splitlines()
+    if len(lines) == 1 and lines[0].strip() and "=" not in lines[0]:
+        raise HTTPException(status_code=400, detail="Invalid .env format: single non-empty line must contain '='")
+
+    return compose_filename
+
+
 @router.get("/stacks")
 async def list_stacks():
     """List all directories containing a docker-compose file."""
@@ -109,6 +145,36 @@ async def list_stacks():
         raise HTTPException(status_code=500, detail=f"Failed to scan stacks directory: {exc}")
 
     return sorted(stacks)
+
+
+@router.get("/global-env")
+async def get_global_env():
+    """Read STACKS_BASE_DIR/global.env."""
+    os.makedirs(STACKS_BASE_DIR, exist_ok=True)
+    env_path = os.path.join(os.path.realpath(STACKS_BASE_DIR), "global.env")
+    try:
+        if not os.path.isfile(env_path):
+            return {"content": ""}
+        with open(env_path, "r", encoding="utf-8") as f:
+            return {"content": f.read()}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read global.env: {exc}")
+
+
+@router.put("/global-env")
+async def save_global_env(payload: GlobalEnvRequest):
+    """Write or remove STACKS_BASE_DIR/global.env."""
+    os.makedirs(STACKS_BASE_DIR, exist_ok=True)
+    env_path = os.path.join(os.path.realpath(STACKS_BASE_DIR), "global.env")
+    try:
+        if payload.content.strip():
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write(payload.content)
+        elif os.path.isfile(env_path):
+            os.remove(env_path)
+        return {"success": True, "message": "global.env saved successfully."}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write global.env: {exc}")
 
 
 @router.get("/stacks/{name}")
@@ -149,13 +215,19 @@ async def get_stack(name: str):
 async def save_stack(name: str, payload: StackSaveRequest):
     """Create or update a stack's configuration files."""
     stack_path = _get_stack_path(name)
-    os.makedirs(stack_path, exist_ok=True)
-
-    compose_filename = _validate_compose_file_name(payload.compose_file_name)
+    compose_filename = _validate_stack_payload(payload)
     compose_path = os.path.join(stack_path, compose_filename)
     env_path = os.path.join(stack_path, ".env")
 
     try:
+        exists = os.path.isdir(stack_path)
+        if payload.is_add and exists:
+            raise HTTPException(status_code=409, detail=f"Stack '{name}' already exists.")
+        if not payload.is_add and not exists:
+            raise HTTPException(status_code=404, detail=f"Stack '{name}' directory not found.")
+
+        os.makedirs(stack_path, exist_ok=True)
+
         # Write compose file
         with open(compose_path, "w", encoding="utf-8") as f:
             f.write(payload.compose_yaml)
@@ -203,8 +275,14 @@ async def delete_stack(name: str):
 
     async with lock:
         try:
-            await asyncio.to_thread(shutil.rmtree, stack_path)
+            exit_code, output = await _delete_stack_after_down(
+                stack_path, _compose_args(stack_path, "down", "--remove-orphans")
+            )
+            if exit_code != 0:
+                raise HTTPException(status_code=502, detail=output.strip() or "docker compose down failed")
             return {"success": True, "message": f"Stack '{name}' deleted successfully."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Failed to delete stack directory: {exc}")
 
@@ -367,6 +445,32 @@ async def _stream_docker_command(
                 pass
 
 
+async def _run_docker_command_capture(stack_path: str, args: list[str]) -> tuple[int, str]:
+    """Run a docker command without a WebSocket and return exit code plus output."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args,
+            cwd=stack_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
+        return proc.returncode if proc.returncode is not None else 0, stdout.decode("utf-8", errors="replace")
+    except Exception as exc:
+        return 1, f"Failed to run docker command: {exc}"
+
+
+async def _delete_stack_after_down(stack_path: str, args: list[str]) -> tuple[int, str]:
+    exit_code, output = await _run_docker_command_capture(stack_path, args)
+    if exit_code != 0:
+        return exit_code, output
+    try:
+        await asyncio.to_thread(shutil.rmtree, stack_path)
+        return 0, output
+    except Exception as exc:
+        return 1, output + f"\nFailed to delete stack directory: {exc}"
+
+
 async def _get_compose_project_status(stack_name: str) -> str:
     """Return stack status from docker compose ls, matching Dockge update logic."""
     try:
@@ -412,6 +516,59 @@ async def _get_compose_project_status(stack_name: str) -> str:
     return "unknown"
 
 
+async def _get_compose_services(stack_path: str) -> list[dict]:
+    """Return docker compose ps rows for a stack."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker", *_compose_args(stack_path, "ps", "--format", "json"),
+            cwd=stack_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to inspect compose services: {exc}")
+
+    if process.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip() or "docker compose ps failed"
+        raise HTTPException(status_code=502, detail=detail)
+
+    text = stdout.decode("utf-8", errors="replace").strip()
+    if not text:
+        return []
+
+    try:
+        services = json.loads(text)
+        if isinstance(services, dict):
+            services = [services]
+        if isinstance(services, list):
+            return [svc for svc in services if isinstance(svc, dict)]
+    except json.JSONDecodeError:
+        rows = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+                if isinstance(item, dict):
+                    rows.append(item)
+            except json.JSONDecodeError:
+                continue
+        return rows
+
+    return []
+
+
+@router.get("/stacks/{name}/services")
+async def list_stack_services(name: str):
+    """Return service status from docker compose ps."""
+    stack_path = _get_stack_path(name)
+    if _find_compose_file(stack_path) is None:
+        raise HTTPException(status_code=404, detail=f"Stack '{name}' compose file not found.")
+    return {"services": await _get_compose_services(stack_path)}
+
+
 @router.websocket("/host/prune")
 async def prune_system(websocket: WebSocket):
     """Run ``docker system prune -a -f`` and stream output in real-time."""
@@ -438,6 +595,60 @@ async def prune_system(websocket: WebSocket):
             pass
 
 
+@router.websocket("/stacks/{name}/logs")
+async def stream_stack_compose_logs(websocket: WebSocket, name: str, tail: int = 100):
+    """Stream combined stack logs using docker compose logs -f.
+
+    This mirrors Dockge's combined terminal behavior: the stream is tied to the
+    compose project, not to the container IDs that happen to be running when the
+    UI opens the log panel.
+    """
+    await websocket.accept()
+
+    if tail < 1:
+        tail = 100
+    if tail > 5000:
+        tail = 5000
+
+    try:
+        try:
+            stack_path = _get_stack_path(name)
+        except HTTPException as exc:
+            await websocket.send_json({"type": "error", "message": exc.detail})
+            await websocket.close()
+            return
+
+        if _find_compose_file(stack_path) is None:
+            await websocket.send_json({
+                "type": "error",
+                "message": f"No compose file found in stack '{name}'.",
+            })
+            await websocket.close()
+            return
+
+        await websocket.send_json({"type": "ready"})
+        exit_code = await _stream_docker_command(
+            websocket,
+            stack_path,
+            _compose_args(stack_path, "logs", "-f", "--tail", str(tail)),
+        )
+        await websocket.send_json({"type": "exit", "code": exit_code})
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.send_json({"type": "error", "message": f"Unexpected log stream error: {exc}"})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.websocket("/stacks/{name}/execute")
 async def execute_stack_command(websocket: WebSocket, name: str):
     """WebSocket endpoint to execute a Docker Compose command and stream output in real-time."""
@@ -455,12 +666,15 @@ async def execute_stack_command(websocket: WebSocket, name: str):
         # Receive execution options (e.g. {"action": "up"})
         data = await websocket.receive_json()
         action = data.get("action")
+        service = data.get("service")
         cols = data.get("cols", 160)
         rows = data.get("rows", 24)
-        if action not in ACTION_ARGS and action != "update":
+        service_actions = {"startService", "stopService", "restartService"}
+        special_actions = {"update", "delete"} | service_actions
+        if action not in ACTION_ARGS and action not in special_actions:
             await websocket.send_json({
                 "type": "error",
-                "message": f"Invalid action '{action}'. Supported: {list(ACTION_ARGS.keys()) + ['update']}"
+                "message": f"Invalid action '{action}'. Supported: {list(ACTION_ARGS.keys()) + sorted(special_actions)}"
             })
             await websocket.close()
             return
@@ -495,6 +709,29 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                     exit_code = await _stream_docker_command(
                         websocket, stack_path, _compose_args(stack_path, "up", "-d", "--remove-orphans"), cols=cols, rows=rows
                     )
+                await websocket.send_json({"type": "exit", "code": exit_code})
+            elif action == "delete":
+                exit_code = await _stream_docker_command(
+                    websocket, stack_path, _compose_args(stack_path, "down", "--remove-orphans"), cols=cols, rows=rows
+                )
+                if exit_code == 0:
+                    try:
+                        await asyncio.to_thread(shutil.rmtree, stack_path)
+                        await websocket.send_json({"type": "stdout", "chunk": f"\r\nStack '{name}' directory deleted.\r\n"})
+                    except Exception as exc:
+                        await websocket.send_json({"type": "error", "message": f"Failed to delete stack directory: {exc}"})
+                        await websocket.close()
+                        return
+                await websocket.send_json({"type": "exit", "code": exit_code})
+            elif action in service_actions:
+                service_name = _validate_service_name(service)
+                if action == "startService":
+                    args = _compose_args(stack_path, "up", "-d", service_name)
+                elif action == "stopService":
+                    args = _compose_args(stack_path, "stop", service_name)
+                else:
+                    args = _compose_args(stack_path, "restart", service_name)
+                exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
                 await websocket.send_json({"type": "exit", "code": exit_code})
             else:
                 args = _compose_args(stack_path, *ACTION_ARGS[action])

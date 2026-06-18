@@ -187,6 +187,34 @@ class AgentClient:
             async for chunk in response.aiter_text():
                 yield chunk
 
+    async def stream_stack_compose_logs(
+        self, name: str, tail: int = 100
+    ) -> AsyncIterator[str]:
+        """Stream combined stack logs from the agent's compose project terminal."""
+        safe_tail = min(max(tail, 1), 5000)
+        ws_uri = (
+            f"{self._ws_base_url}/api/agent/stacks/"
+            f"{urllib.parse.quote(name, safe='')}/logs?tail={safe_tail}"
+        )
+
+        async with self._connect_websocket(ws_uri) as ws:
+            import json
+            async for msg_str in ws:
+                msg = json.loads(msg_str)
+                msg_type = msg.get("type")
+                if msg_type == "ready":
+                    continue
+                if msg_type == "stdout":
+                    yield msg.get("chunk", "")
+                    continue
+                if msg_type == "exit":
+                    code = msg.get("code", 0)
+                    if code not in (0, None):
+                        raise RuntimeError(f"docker compose logs exited with code {code}")
+                    break
+                if msg_type == "error":
+                    raise RuntimeError(msg.get("message", "Unknown compose log stream error"))
+
     # ── 3. Compose Stack API ────────────────────────────────────────
 
     async def list_stacks(self) -> list[dict]:
@@ -197,6 +225,22 @@ class AgentClient:
         # Agent lists folder names. We format them as mock dicts: {"name": name}
         # snapshot_manager will merge this with compose labels to resolve service lists.
         return [{"name": name} for name in r.json()]
+
+    async def get_global_env(self) -> str:
+        """GET /api/agent/global-env."""
+        r = await self._client.get("/api/agent/global-env", headers=self._headers())
+        r.raise_for_status()
+        return r.json().get("content", "")
+
+    async def save_global_env(self, content: str) -> dict:
+        """PUT /api/agent/global-env."""
+        r = await self._client.put(
+            "/api/agent/global-env",
+            json={"content": content},
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
 
     async def get_stack(self, name: str) -> Optional[dict]:
         """GET /api/agent/stacks/{name}."""
@@ -230,11 +274,20 @@ class AgentClient:
         r.raise_for_status()
         return r.json()
 
+    async def list_stack_services(self, name: str) -> list[dict]:
+        """GET /api/agent/stacks/{name}/services."""
+        r = await self._client.get(
+            f"/api/agent/stacks/{name}/services", headers=self._headers()
+        )
+        r.raise_for_status()
+        return r.json().get("services", [])
+
     async def save_stack(
         self,
         name: str,
         compose_yaml: str,
         compose_env: str,
+        compose_file_name: str = "compose.yaml",
         deploy: bool = False,
         is_add: bool = False,
         log_queue: Optional[asyncio.Queue] = None,
@@ -245,7 +298,9 @@ class AgentClient:
         # Save first
         payload = {
             "compose_yaml": compose_yaml,
-            "compose_env": compose_env
+            "compose_env": compose_env,
+            "compose_file_name": compose_file_name,
+            "is_add": is_add,
         }
         r = await self._client.put(
             f"/api/agent/stacks/{name}", json=payload, headers=self._headers()
@@ -272,6 +327,7 @@ class AgentClient:
         log_queue: Optional[asyncio.Queue] = None,
         cols: int = 160,
         rows: int = 24,
+        service: Optional[str] = None,
     ) -> dict:
         """Execute docker compose command on the agent and stream control output via WebSocket."""
         # Convert start/stop/down/restart/update actions to Agent supported compose commands
@@ -286,6 +342,10 @@ class AgentClient:
             agent_action = "restart"
         elif action == "updateStack" or action == "update":
             agent_action = "update"
+        elif action == "deleteStack" or action == "delete":
+            agent_action = "delete"
+        elif action in ("startService", "stopService", "restartService"):
+            agent_action = action
 
         # Establish WebSocket URI — token passed via Authorization header
         ws_uri = f"{self._ws_base_url}/api/agent/stacks/{name}/execute"
@@ -294,7 +354,11 @@ class AgentClient:
         try:
             async with self._connect_websocket(ws_uri) as ws:
                 # Send action payload with dimensions
-                await ws.send(f'{{"action": "{agent_action}", "cols": {cols}, "rows": {rows}}}')
+                import json
+                payload = {"action": agent_action, "cols": cols, "rows": rows}
+                if service is not None:
+                    payload["service"] = service
+                await ws.send(json.dumps(payload))
                 
                 exit_code = 0
                 error_msg = ""
@@ -303,7 +367,6 @@ class AgentClient:
                 while True:
                     try:
                         msg_str = await ws.recv()
-                        import json
                         msg = json.loads(msg_str)
                         msg_type = msg.get("type")
                         

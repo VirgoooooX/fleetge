@@ -95,6 +95,10 @@ const actionTitle = computed(() => {
     restart: "stackOp.restarting",
     update: "stackOp.updating",
     prune: "stackOp.pruning",
+    delete: "stackOp.deleting",
+    "service-start": "stackOp.serviceStarting",
+    "service-stop": "stackOp.serviceStopping",
+    "service-restart": "stackOp.serviceRestarting",
   };
   const key = keys[props.action];
   return key ? t(key as any) : t("stackOp.operation");

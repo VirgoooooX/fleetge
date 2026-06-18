@@ -247,7 +247,7 @@ const targetStackName = computed(() =>
   createMode.value ? newStackName.value.trim() : props.stackName
 );
 const hasValidStackName = computed(() =>
-  !createMode.value || /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(targetStackName.value)
+  !createMode.value || /^[a-z0-9_-]+$/.test(targetStackName.value)
 );
 const canUseEditor = computed(() => createMode.value || !!composeYaml.value.trim());
 const canSubmit = computed(() =>
@@ -383,6 +383,7 @@ async function save(deploy: boolean) {
         data: {
           compose_yaml: composeYaml.value,
           compose_env: composeEnv.value,
+          compose_file_name: composeFileName.value,
           is_add: createMode.value,
         },
         timeout: 60000,
@@ -436,6 +437,7 @@ async function save(deploy: boolean) {
       body: JSON.stringify({
         compose_yaml: composeYaml.value,
         compose_env: composeEnv.value,
+        compose_file_name: composeFileName.value,
         is_add: createMode.value,
       }),
       onTimeout: () => {

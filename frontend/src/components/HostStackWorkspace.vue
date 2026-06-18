@@ -8,16 +8,7 @@
             Compose
           </button>
         </el-tooltip>
-        <el-tooltip :content="t('workspace.recheckUpdates')" placement="top">
-          <el-button
-            class="ui-icon-button sidebar-icon-button"
-            :loading="updateLoading"
-            :aria-label="t('workspace.recheckUpdates')"
-            @click="$emit('check-updates')"
-          >
-            <el-icon v-if="!updateLoading"><Refresh /></el-icon>
-          </el-button>
-        </el-tooltip>
+
         <el-tooltip :content="t('workspace.pruneDocker')" placement="top">
           <el-button
             class="ui-icon-button ui-icon-button--danger sidebar-icon-button"
@@ -92,6 +83,12 @@
                 <span class="nav-status-pill" :class="`status-${stackStatusType(stack.status)}`">
                   {{ statusLabel(stack.status) }}
                 </span>
+                <span
+                  v-if="stack.management_status === 'unmanaged'"
+                  class="management-pill management-unmanaged"
+                >
+                  {{ managementStatusLabel(stack.management_status) }}
+                </span>
                 <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
               </span>
             </span>
@@ -131,6 +128,12 @@
                 <span class="stack-name">{{ stack.name }}</span>
                 <span class="dot-state" :class="`dot-${stackStatusType(stack.status)}`" />
                 <span class="stack-state-text">{{ statusLabel(stack.status) }}</span>
+                <span
+                  v-if="stack.management_status === 'unmanaged'"
+                  class="management-pill management-unmanaged"
+                >
+                  {{ managementStatusLabel(stack.management_status) }}
+                </span>
                 <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
               </div>
               <div class="stack-card-actions" @click.stop>
@@ -142,6 +145,7 @@
                   :stack-name="stack.name"
                   show-compose
                   show-detail
+                  :can-edit-compose="stack.management_status !== 'unmanaged'"
                   @refresh="$emit('refresh')"
                   @operation-start="onOperationStart"
                   @terminal-chunk="onTerminalChunk"
@@ -181,6 +185,38 @@
                   v-if="serviceUpdateStatus(stack, service)"
                   :status="serviceUpdateStatus(stack, service)!"
                 />
+                <span class="service-actions" @click.stop>
+                  <el-tooltip :content="t('workspace.serviceStart')" placement="top">
+                    <el-button
+                      class="ui-icon-button ui-icon-button--small"
+                      size="small"
+                      text
+                      :icon="VideoPlay"
+                      :disabled="isServiceOperationRunning(stack.name) || service.state === 'running'"
+                      @click="runServiceAction(stack.name, service.name, 'start')"
+                    />
+                  </el-tooltip>
+                  <el-tooltip :content="t('workspace.serviceStop')" placement="top">
+                    <el-button
+                      class="ui-icon-button ui-icon-button--small"
+                      size="small"
+                      text
+                      :icon="VideoPause"
+                      :disabled="isServiceOperationRunning(stack.name) || service.state !== 'running'"
+                      @click="runServiceAction(stack.name, service.name, 'stop')"
+                    />
+                  </el-tooltip>
+                  <el-tooltip :content="t('workspace.serviceRestart')" placement="top">
+                    <el-button
+                      class="ui-icon-button ui-icon-button--small"
+                      size="small"
+                      text
+                      :icon="Refresh"
+                      :disabled="isServiceOperationRunning(stack.name)"
+                      @click="runServiceAction(stack.name, service.name, 'restart')"
+                    />
+                  </el-tooltip>
+                </span>
               </button>
             </div>
           </article>
@@ -208,6 +244,12 @@
                 class="detail-update-badge"
                 :status="stackUpdateStatus(selectedStack)!"
               />
+              <span
+                v-if="selectedStack.management_status === 'unmanaged'"
+                class="management-pill detail-management-pill management-unmanaged"
+              >
+                {{ managementStatusLabel(selectedStack.management_status) }}
+              </span>
             </div>
           </div>
           <div class="detail-actions">
@@ -215,6 +257,7 @@
               :host-id="hostId"
               :stack-name="selectedStack.name"
               show-compose
+              :can-edit-compose="selectedStack.management_status !== 'unmanaged'"
               @refresh="$emit('refresh')"
               @operation-start="onOperationStart"
               @terminal-chunk="onTerminalChunk"
@@ -258,18 +301,45 @@
                     <span class="container-meta">{{ container.image }}</span>
                   </div>
                   <span class="container-status">{{ container.status || container.state }}</span>
-                  <span
-                    v-if="formatPorts(container.ports)"
-                    class="container-port"
-                    :title="formatPorts(container.ports)"
-                  >
-                    {{ formatPortsPreview(container.ports) }}
-                  </span>
-                  <span v-else class="container-port" />
-                  <UpdateBadge
-                    v-if="containerUpdateStatus(container)"
-                    :status="containerUpdateStatus(container)!"
-                  />
+
+                  <div class="container-actions-wrap" @click.stop>
+                    <UpdateBadge
+                      v-if="containerUpdateStatus(container)"
+                      :status="containerUpdateStatus(container)!"
+                    />
+                    <span class="service-actions container-service-actions">
+                      <el-tooltip :content="t('workspace.serviceStart')" placement="top">
+                        <el-button
+                          class="ui-icon-button ui-icon-button--small"
+                          size="small"
+                          text
+                          :icon="VideoPlay"
+                          :disabled="!container.service_name || isServiceOperationRunning(selectedStack.name) || container.state === 'running'"
+                          @click="container.service_name && runServiceAction(selectedStack.name, container.service_name, 'start')"
+                        />
+                      </el-tooltip>
+                      <el-tooltip :content="t('workspace.serviceStop')" placement="top">
+                        <el-button
+                          class="ui-icon-button ui-icon-button--small"
+                          size="small"
+                          text
+                          :icon="VideoPause"
+                          :disabled="!container.service_name || isServiceOperationRunning(selectedStack.name) || container.state !== 'running'"
+                          @click="container.service_name && runServiceAction(selectedStack.name, container.service_name, 'stop')"
+                        />
+                      </el-tooltip>
+                      <el-tooltip :content="t('workspace.serviceRestart')" placement="top">
+                        <el-button
+                          class="ui-icon-button ui-icon-button--small"
+                          size="small"
+                          text
+                          :icon="Refresh"
+                          :disabled="!container.service_name || isServiceOperationRunning(selectedStack.name)"
+                          @click="container.service_name && runServiceAction(selectedStack.name, container.service_name, 'restart')"
+                        />
+                      </el-tooltip>
+                    </span>
+                  </div>
                 </button>
                 <el-empty v-if="selectedStackContainers.length === 0" :description="t('workspace.noContainers')" />
               </div>
@@ -769,6 +839,8 @@ import {
   Calendar,
   ArrowRight,
   Brush,
+  VideoPause,
+  VideoPlay,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
@@ -799,6 +871,7 @@ export interface StackSummary {
   running_count: number;
   services: StackService[];
   icon_url?: string;  // 自定义图标（网络 URL 或 /api/static/icons/...）
+  management_status?: string;
 }
 
 export interface ContainerPort {
@@ -1052,6 +1125,16 @@ function statusLabel(status: string): string {
   return status || t("stackStatus.unknown");
 }
 
+function managementStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    managed: t("workspace.stackManaged"),
+    deployed: t("workspace.stackDeployed"),
+    "file-only": t("workspace.stackFileOnly"),
+    unmanaged: t("workspace.stackUnmanaged"),
+  };
+  return labels[status] || status;
+}
+
 function stackStatusType(status: string): string {
   if (status === "running" || status === "active") return "running";
   if (status === "exited") return "exited";
@@ -1099,6 +1182,114 @@ function containerForService(stack: StackSummary, service: StackService): Contai
 function serviceUpdateStatus(stack: StackSummary, service: StackService): string | null {
   const container = containerForService(stack, service);
   return container ? containerUpdateStatus(container) : null;
+}
+
+function isServiceOperationRunning(stackName: string): boolean {
+  return Boolean(runningOperations[stackName]?.action?.startsWith("service-"));
+}
+
+async function runServiceAction(stackName: string, serviceName: string, action: "start" | "stop" | "restart") {
+  if (!serviceName || isServiceOperationRunning(stackName)) return;
+
+  const actionKey = `service-${action}`;
+  const labelMap: Record<"start" | "stop" | "restart", string> = {
+    start: t("workspace.serviceStart"),
+    stop: t("workspace.serviceStop"),
+    restart: t("workspace.serviceRestart"),
+  };
+  const label = `${labelMap[action]} ${serviceName}`;
+  const controller = new AbortController();
+  const startedAt = Date.now();
+
+  onOperationStart(stackName, {
+    action: actionKey,
+    status: "running",
+    message: t("stack.confirm.running", { action: label }),
+    updatedAt: startedAt,
+    abort: () => controller.abort(),
+  });
+
+  let completed = false;
+
+  try {
+    const url =
+      `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}` +
+      `/services/${encodeURIComponent(serviceName)}/${action}?cols=110&rows=24`;
+
+    await streamSse({
+      url,
+      method: "POST",
+      timeoutMs: 120000,
+      signal: controller.signal,
+      onTimeout: () => {
+        if (completed) return;
+        completed = true;
+        onOperationComplete(stackName, {
+          action: actionKey,
+          status: "timeout",
+          message: t("stack.confirm.timeout"),
+          updatedAt: Date.now(),
+        });
+      },
+      onEvent: (ev) => {
+        if (ev.event === "chunk") {
+          onTerminalChunk(stackName, { action: actionKey, chunk: ev.data?.raw ?? ev.rawData });
+        } else if (ev.event === "line") {
+          onTerminalChunk(stackName, { action: actionKey, chunk: ev.data?.text ?? ev.rawData });
+        } else if (ev.event === "complete") {
+          completed = true;
+          const data = ev.data || {};
+          const succeeded = data.status === "success";
+          onOperationComplete(stackName, {
+            action: actionKey,
+            status: succeeded ? "success" : "error",
+            message: data.message || t(succeeded ? "stack.confirm.success" : "stack.confirm.failure", { action: label }),
+            updatedAt: Date.now(),
+          });
+          if (succeeded) {
+            emit("refresh");
+          }
+        } else if (ev.event === "error") {
+          completed = true;
+          onOperationComplete(stackName, {
+            action: actionKey,
+            status: "error",
+            message: ev.data?.message || t("stack.confirm.failure", { action: label }),
+            updatedAt: Date.now(),
+          });
+        }
+      },
+    });
+
+    if (!completed) {
+      completed = true;
+      if (controller.signal.aborted) {
+        onOperationComplete(stackName, {
+          action: actionKey,
+          status: "error",
+          message: t("stack.confirm.cancelled"),
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+      onOperationComplete(stackName, {
+        action: actionKey,
+        status: "success",
+        message: t("stack.confirm.success", { action: label }),
+        updatedAt: Date.now(),
+      });
+      emit("refresh");
+    }
+  } catch (e: any) {
+    if (!completed) {
+      onOperationComplete(stackName, {
+        action: actionKey,
+        status: "error",
+        message: t("stack.confirm.failure", { action: label }) + ": " + (e.message || t("stack.confirm.unknownError")),
+        updatedAt: Date.now(),
+      });
+    }
+  }
 }
 
 function formatPorts(ports: ContainerPort[] = []): string {
@@ -1564,9 +1755,9 @@ function loadLogs() {
   }).finally(() => {
     if (logStreamController === controller) {
       logStreamController = null;
+      logsLoading.value = false;
+      logsActive.value = false;
     }
-    logsLoading.value = false;
-    logsActive.value = false;
   });
 }
 
@@ -1903,7 +2094,8 @@ onUnmounted(() => {
   color: var(--success);
 }
 
-.nav-status-pill.status-stopped {
+.nav-status-pill.status-stopped,
+.nav-status-pill.status-exited {
   border-color: rgba(148, 163, 184, 0.22);
   background: rgba(148, 163, 184, 0.10);
   color: var(--text-secondary);
@@ -1913,6 +2105,36 @@ onUnmounted(() => {
   border-color: rgba(245, 158, 11, 0.28);
   background: rgba(245, 158, 11, 0.10);
   color: var(--warning);
+}
+
+.management-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.management-unmanaged {
+  border-color: rgba(168, 85, 247, 0.28);
+  background: rgba(168, 85, 247, 0.10);
+  color: #c084fc;
+}
+
+[data-theme="light"] .management-unmanaged {
+  border-color: rgba(124, 58, 237, 0.22);
+  background: rgba(124, 58, 237, 0.06);
+  color: #7c3aed;
+}
+
+.detail-management-pill {
+  margin-left: 2px;
 }
 
 .nav-count {
@@ -2138,6 +2360,36 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.service-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+  opacity: 0.72;
+}
+
+.service-strip-row:hover .service-actions,
+.container-row:hover .service-actions {
+  opacity: 1;
+}
+
+.container-service-actions {
+  margin-left: auto;
+}
+
+.container-actions-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.service-actions :deep(.el-button) {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -2314,7 +2566,7 @@ onUnmounted(() => {
 
 .container-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) max-content minmax(0, min(34%, 360px)) max-content;
+  grid-template-columns: auto minmax(180px, 1fr) 180px max-content;
   padding: 8px 10px;
 }
 
@@ -3335,15 +3587,18 @@ onUnmounted(() => {
     grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
-  .container-status,
-  .container-port {
+  .container-status {
     grid-column: 2;
   }
 
-  .container-row :deep(.update-badge) {
+  .container-row .container-actions-wrap {
     grid-column: 3;
     grid-row: 1 / span 3;
     align-self: center;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
   }
 
   .stats-dashboard {

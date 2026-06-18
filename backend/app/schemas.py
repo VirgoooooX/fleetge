@@ -149,6 +149,7 @@ class StackSummary(BaseModel):
     running_count: int = 0
     services: list[StackService] = []
     icon_url: Optional[str] = None  # 自定义图标 URL（网络或本地），由后端根据 host_config.stack_icons 匹配
+    management_status: str = "managed"  # managed | deployed | file-only | unmanaged
 
     class Config:
         from_attributes = True
@@ -165,6 +166,7 @@ class StackComposeDetail(BaseModel):
 class StackComposeSaveRequest(BaseModel):
     compose_yaml: str
     compose_env: str = ""
+    compose_file_name: str = "compose.yaml"
     is_add: bool = False
 
 
@@ -302,4 +304,3 @@ class StackIconEntry(BaseModel):
 
 class StackIconsUpdateRequest(BaseModel):
     icons: list[StackIconEntry]  # ordered list → converted to dict for storage
-

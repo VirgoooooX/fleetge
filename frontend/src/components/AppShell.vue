@@ -130,15 +130,7 @@
             :aria-label="theme.current.value === 'dark' ? t('shell.switchLight') : t('shell.switchDark')"
             @click="theme.toggle()"
           />
-          <el-button
-            class="ops-control ui-button ui-button--compact"
-            size="small"
-            :loading="store.manualLoading"
-            @click="store.refreshAll"
-          >
-            <el-icon><RefreshCw /></el-icon>
-            {{ t('shell.refresh') }}
-          </el-button>
+
           <el-button class="ops-control ui-button ui-button--compact ui-button--muted" size="small" @click="logout">
             <el-icon><LogOut /></el-icon>
             {{ t('shell.logout') }}

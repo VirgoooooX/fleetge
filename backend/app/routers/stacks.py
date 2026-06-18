@@ -3,10 +3,12 @@
 import asyncio
 import json
 import logging
+import shlex
 from typing import Any, AsyncGenerator, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlmodel import Session
 
 from app.auth.handler import get_current_user
@@ -23,6 +25,10 @@ from app.services.snapshot import snapshot_manager
 
 logger = logging.getLogger(__name__)
 
+
+class DockerRunConvertRequest(BaseModel):
+    command: str
+
 router = APIRouter(
     prefix="/api",
     tags=["stacks"],
@@ -36,6 +42,13 @@ ALLOWED_ACTIONS: dict[str, str] = {
     "down": "downStack",
     "restart": "restartStack",
     "update": "updateStack",
+    "delete": "deleteStack",
+}
+
+SERVICE_ACTIONS: dict[str, str] = {
+    "start": "startService",
+    "stop": "stopService",
+    "restart": "restartService",
 }
 
 
@@ -46,6 +59,106 @@ def _sse_event(event: str, data: dict) -> str:
     sequences that would corrupt the SSE protocol framing.
     """
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _convert_docker_run_to_compose(command: str) -> str:
+    """Small v1 docker-run-to-compose converter for common flags."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid docker run command: {exc}")
+
+    if len(tokens) >= 2 and tokens[0] == "docker" and tokens[1] == "run":
+        tokens = tokens[2:]
+    elif tokens and tokens[0] == "run":
+        tokens = tokens[1:]
+    else:
+        raise HTTPException(status_code=400, detail="Command must start with 'docker run' or 'run'")
+
+    service: dict[str, Any] = {}
+    ports: list[str] = []
+    volumes: list[str] = []
+    env: list[str] = []
+    image = ""
+    cmd: list[str] = []
+
+    flag_value = {
+        "--name", "--restart", "--network", "--hostname", "--user", "--workdir",
+        "-p", "--publish", "-v", "--volume", "-e", "--env",
+    }
+    bool_flags = {"-d", "--detach", "--rm", "--privileged"}
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if image:
+            cmd.append(token)
+            i += 1
+            continue
+
+        key = token
+        value: str | None = None
+        if token.startswith("--") and "=" in token:
+            key, value = token.split("=", 1)
+        elif token in flag_value:
+            i += 1
+            if i >= len(tokens):
+                raise HTTPException(status_code=400, detail=f"Missing value for {token}")
+            value = tokens[i]
+
+        if key in ("--name",):
+            service["container_name"] = value
+        elif key in ("--restart",):
+            service["restart"] = value
+        elif key in ("--network",):
+            service["network_mode"] = value
+        elif key in ("--hostname",):
+            service["hostname"] = value
+        elif key in ("--user",):
+            service["user"] = value
+        elif key in ("--workdir",):
+            service["working_dir"] = value
+        elif key in ("-p", "--publish"):
+            ports.append(value or "")
+        elif key in ("-v", "--volume"):
+            volumes.append(value or "")
+        elif key in ("-e", "--env"):
+            env.append(value or "")
+        elif key in bool_flags:
+            if key == "--privileged":
+                service["privileged"] = True
+            # -d and --rm do not map cleanly for persistent compose stacks.
+        elif token.startswith("-"):
+            raise HTTPException(status_code=400, detail=f"Unsupported docker run flag: {token}")
+        else:
+            image = token
+        i += 1
+
+    if not image:
+        raise HTTPException(status_code=400, detail="Docker image is required")
+
+    service["image"] = image
+    if ports:
+        service["ports"] = ports
+    if volumes:
+        service["volumes"] = volumes
+    if env:
+        service["environment"] = env
+    if cmd:
+        service["command"] = cmd
+
+    service_name = service.get("container_name") or image.split("/")[-1].split(":")[0] or "app"
+    service_name = "".join(ch if ch.isalnum() or ch in "_-" else "-" for ch in service_name.lower()).strip("-") or "app"
+
+    try:
+        import yaml
+        return yaml.safe_dump(
+            {"services": {service_name: service}},
+            sort_keys=False,
+            allow_unicode=True,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to render compose YAML: {exc}")
 
 
 def _write_audit_log(
@@ -108,6 +221,12 @@ async def list_stacks(host_id: str):
     if snap is None:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
     return snap.stacks
+
+
+@router.post("/compose/convert-docker-run")
+async def convert_docker_run(payload: DockerRunConvertRequest):
+    """Convert a docker run command into a compose.yaml draft."""
+    return {"compose_yaml": _convert_docker_run_to_compose(payload.command)}
 
 
 def _normalize_stack_detail(stack_name: str, result: Any) -> StackComposeDetail:
@@ -201,6 +320,7 @@ async def _save_stack_compose(
             stack_name,
             payload.compose_yaml,
             payload.compose_env,
+            compose_file_name=payload.compose_file_name,
             deploy=False,
             is_add=payload.is_add,
         )
@@ -301,6 +421,7 @@ async def deploy_stack_compose(
             task = asyncio.create_task(
                 conn.save_stack(
                     stack_name, payload.compose_yaml, payload.compose_env,
+                    compose_file_name=payload.compose_file_name,
                     deploy=True,
                     is_add=payload.is_add,
                     log_queue=log_queue,
@@ -567,7 +688,13 @@ async def stream_stack_logs(
     stack_name: str,
     tail: int = 200,
 ):
-    """Stream live logs for all running containers in a stack."""
+    """Stream live logs for a stack.
+
+    Prefer the agent's compose-level log stream (`docker compose logs -f`) so
+    the UI follows the compose project through container recreation, matching
+    Dockge's combined terminal behavior. Container-ID streaming is kept only as
+    a compatibility fallback for older agents.
+    """
     if tail < 1:
         tail = 200
     if tail > 5000:
@@ -577,20 +704,14 @@ async def stream_stack_logs(
     if snap is None or snap.host_config is None:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
-    stack_containers = [
-        c
-        for c in snap.containers
-        if c.stack_name == stack_name and c.state == "running"
-    ]
+    def parse_compose_log_line(line: str) -> dict:
+        clean = line.rstrip("\r")
+        if " | " in clean:
+            service, text = clean.split(" | ", 1)
+            return {"text": text, "service": service.strip()}
+        return {"text": clean, "service": ""}
 
     async def _stream() -> AsyncGenerator[str, None]:
-        if not stack_containers:
-            yield _sse_event(
-                "complete",
-                {"message": "No running containers found for this stack."},
-            )
-            return
-
         if not snap.host_config.agent_url:
             yield _sse_event(
                 "complete",
@@ -599,11 +720,13 @@ async def stream_stack_logs(
             return
 
         proxy = AgentClient(snap.host_config)
-        queue: asyncio.Queue = asyncio.Queue()
-        tasks: list[asyncio.Task] = []
-        done_task: Optional[asyncio.Task] = None
+        stack_containers = [
+            c
+            for c in snap.containers
+            if c.stack_name == stack_name and c.state == "running"
+        ]
 
-        async def stream_one(container) -> None:
+        async def stream_container_fallback(container, queue: asyncio.Queue) -> None:
             service_label = container.service_name or container.name
             buffer = ""
             try:
@@ -655,11 +778,45 @@ async def stream_stack_logs(
                 "ready",
                 {
                     "message": "Log stream connected.",
-                    "containers": len(stack_containers),
+                    "mode": "compose",
                 },
             )
+
+            buffer = ""
+            try:
+                async for chunk in proxy.stream_stack_compose_logs(stack_name, tail=tail):
+                    buffer += chunk.replace("\x00", "")
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        yield _sse_event("line", parse_compose_log_line(line))
+                if buffer:
+                    yield _sse_event("line", parse_compose_log_line(buffer))
+                yield _sse_event("complete", {"message": "Log stream ended."})
+                return
+            except Exception as exc:
+                yield _sse_event(
+                    "error",
+                    {
+                        "message": (
+                            "Compose log stream unavailable; falling back to "
+                            f"container logs. {exc}"
+                        )
+                    },
+                )
+
+            if not stack_containers:
+                yield _sse_event(
+                    "complete",
+                    {"message": "No running containers found for this stack."},
+                )
+                return
+
+            queue: asyncio.Queue = asyncio.Queue()
+            tasks: list[asyncio.Task] = []
+            done_task: Optional[asyncio.Task] = None
+
             tasks = [
-                asyncio.create_task(stream_one(container))
+                asyncio.create_task(stream_container_fallback(container, queue))
                 for container in stack_containers
             ]
             done_task = asyncio.create_task(wait_for_tasks())
@@ -673,16 +830,124 @@ async def stream_stack_logs(
         except asyncio.CancelledError:
             raise
         finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if done_task and not done_task.done():
-                done_task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-            if done_task:
+            if "tasks" in locals():
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            if "done_task" in locals() and done_task:
+                if not done_task.done():
+                    done_task.cancel()
                 await asyncio.gather(done_task, return_exceptions=True)
             await proxy.close()
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@router.post(
+    "/hosts/{host_id}/stacks/{stack_name}/services/{service_name}/{action}",
+)
+async def stack_service_action(
+    host_id: str,
+    stack_name: str,
+    service_name: str,
+    action: str,
+    request: Request,
+    cols: int = 160,
+    rows: int = 24,
+    session: Session = Depends(get_session),
+    username: str = Depends(get_current_user),
+):
+    """Execute a Docker Compose service-level operation with streaming output."""
+    if action not in SERVICE_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown service action '{action}'. Allowed: {', '.join(SERVICE_ACTIONS.keys())}",
+        )
+
+    snap = snapshot_manager.get_snapshot(host_id)
+    if snap is None or snap.host_config is None:
+        _write_audit_log(
+            session, username, f"stack.service.{action}", host_id, stack_name,
+            "error", f"Host '{host_id}' not found",
+            request.client.host if request.client else None,
+        )
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    socket_event = SERVICE_ACTIONS[action]
+    ip = request.client.host if request.client else None
+
+    _write_audit_log(
+        session, username, f"stack.service.{action}", host_id, stack_name,
+        "running", f"Service operation started: {service_name}", ip,
+    )
+
+    async def _stream() -> AsyncGenerator[str, None]:
+        log_queue: asyncio.Queue = asyncio.Queue()
+        task: Optional[asyncio.Task] = None
+        if not snap.host_config.agent_url:
+            yield _sse_event("error", {"message": "Host has no agent_url configured"})
+            return
+
+        conn = AgentClient(snap.host_config)
+        try:
+            task = asyncio.create_task(
+                conn.stack_action(
+                    stack_name,
+                    socket_event,
+                    log_queue=log_queue,
+                    cols=cols,
+                    rows=rows,
+                    service=service_name,
+                )
+            )
+
+            while True:
+                chunk = await log_queue.get()
+                if chunk is None:
+                    break
+                yield _sse_event("chunk", {"raw": chunk})
+
+            result = await task
+            task = None
+
+            success = True
+            msg = str(result)
+            if isinstance(result, dict):
+                ok_val = result.get("success", result.get("ok", True))
+                success = bool(ok_val) if ok_val is not None else True
+                msg = result.get("msg", result.get("message", str(result)))
+
+            if success:
+                try:
+                    await snapshot_manager.refresh_host_docker(host_id)
+                except Exception as refresh_exc:
+                    logger.warning("Pre-complete refresh failed for service action: %s", refresh_exc)
+
+            yield _sse_event(
+                "complete",
+                {"status": "success" if success else "error", "message": msg},
+            )
+
+            asyncio.create_task(snapshot_manager.refresh_host_docker_with_retry(host_id))
+            _write_audit_log_standalone(
+                username, f"stack.service.{action}", host_id, stack_name,
+                "success" if success else "error", f"{service_name}: {msg}", ip,
+            )
+
+        except Exception as exc:
+            if task and not task.done():
+                task.cancel()
+            yield _sse_event("error", {"message": str(exc)})
+            _write_audit_log_standalone(
+                username, f"stack.service.{action}", host_id, stack_name,
+                "error", f"{service_name}: {exc}", ip,
+            )
+        finally:
+            if task is not None and not task.done():
+                task.cancel()
+            await conn.close()
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 

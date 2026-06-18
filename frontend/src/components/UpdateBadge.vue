@@ -57,7 +57,7 @@ const hint = computed(() => {
   border: 1px solid transparent;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 750;
   line-height: 18px;
   white-space: nowrap;
 }
@@ -66,6 +66,10 @@ const hint = computed(() => {
   border-color: rgba(248, 113, 113, 0.28);
   background: rgba(248, 113, 113, 0.10);
   color: #f87171;
+}
+
+[data-theme="light"] .is-update {
+  color: var(--danger);
 }
 
 .is-warning {
