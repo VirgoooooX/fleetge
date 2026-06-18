@@ -50,7 +50,7 @@
       <!-- Mobile sidebar footer actions -->
       <div class="ops-sidebar-footer">
         <button class="ops-sidebar-footer-btn" type="button" @click="switchLocale">
-          <el-icon><Position /></el-icon>
+          <el-icon><Globe /></el-icon>
           <span>{{ localeLabel === '中' ? '简体中文' : 'English' }}</span>
         </button>
         <button class="ops-sidebar-footer-btn" type="button" @click="theme.toggle()">
@@ -58,11 +58,11 @@
           <span>{{ theme.current.value === 'dark' ? t('shell.switchLight') : t('shell.switchDark') }}</span>
         </button>
         <button class="ops-sidebar-footer-btn" type="button" :disabled="store.manualLoading" @click="store.refreshAll">
-          <el-icon><Refresh /></el-icon>
+          <el-icon><RefreshCw /></el-icon>
           <span>{{ t('shell.refresh') }}</span>
         </button>
         <button class="ops-sidebar-footer-btn logout" type="button" @click="logout">
-          <el-icon><SwitchButton /></el-icon>
+          <el-icon><LogOut /></el-icon>
           <span>{{ t('shell.logout') }}</span>
         </button>
       </div>
@@ -87,8 +87,8 @@
             @click="sidebarOpen = !sidebarOpen"
           >
             <el-icon :size="22">
-              <Expand v-if="!sidebarOpen" />
-              <Fold v-if="sidebarOpen" />
+              <Menu v-if="!sidebarOpen" />
+              <X v-if="sidebarOpen" />
             </el-icon>
           </button>
           <div class="ops-topbar-kicker">{{ t('shell.kicker') }}</div>
@@ -136,11 +136,11 @@
             :loading="store.manualLoading"
             @click="store.refreshAll"
           >
-            <el-icon><Refresh /></el-icon>
+            <el-icon><RefreshCw /></el-icon>
             {{ t('shell.refresh') }}
           </el-button>
           <el-button class="ops-control ui-button ui-button--compact ui-button--muted" size="small" @click="logout">
-            <el-icon><SwitchButton /></el-icon>
+            <el-icon><LogOut /></el-icon>
             {{ t('shell.logout') }}
           </el-button>
         </div>
@@ -158,19 +158,19 @@ import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
-  Collection,
-  Expand,
-  Fold,
-  House,
+  Layers,
+  Menu,
+  X,
+  Home,
   List,
   Moon,
-  Refresh,
-  Sunny,
-  SwitchButton,
-  Warning,
-  Setting,
-  Position,
-} from "@element-plus/icons-vue";
+  RefreshCw,
+  Sun,
+  LogOut,
+  AlertTriangle,
+  Settings,
+  Globe,
+} from "@lucide/vue";
 import AppLogo from "@/components/AppLogo.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
 import { useAuthStore } from "@/stores/auth";
@@ -194,7 +194,7 @@ watch(() => route.fullPath, () => { sidebarOpen.value = false; });
 
 const { t, locale } = useI18n();
 
-const themeIcon = computed(() => (theme.current.value === "dark" ? Sunny : Moon));
+const themeIcon = computed(() => (theme.current.value === "dark" ? Sun : Moon));
 
 const localeLabel = computed(() =>
   locale.value === "zh-CN" ? "EN" : "中"
@@ -219,12 +219,12 @@ const currentHost = computed(() => {
 });
 
 const navItems = computed(() => [
-  { id: "dashboard", label: t("nav.dashboard"), path: "/", icon: House, badge: null },
+  { id: "dashboard", label: t("nav.dashboard"), path: "/", icon: Home, badge: null },
   {
     id: "updates",
     label: t("nav.updates"),
     path: "/updates",
-    icon: Warning,
+    icon: AlertTriangle,
     badge: store.updateCount,
     badgeTone: "danger",
   },
@@ -233,14 +233,14 @@ const navItems = computed(() => [
     id: "settings",
     label: t("nav.settings"),
     path: "/settings",
-    icon: Setting,
+    icon: Settings,
     badge: null,
   },
   {
     id: "hosts",
     label: t("nav.hosts"),
     path: "/",
-    icon: Collection,
+    icon: Layers,
     badge: store.hosts.length,
     badgeTone: hostBadgeTone.value,
   },

@@ -189,6 +189,97 @@ def test_delete_stack_removes_directory(stack_base):
     assert not stack_dir.exists()
 
 
+def test_compose_args_match_dockge_env_file_order(stack_base):
+    """global.env enables explicit env-file arguments in Dockge order."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / ".env").write_text("LOCAL=1\n")
+    (stack_base / "global.env").write_text("GLOBAL=1\n")
+
+    assert compose_runner._compose_args(str(stack_dir), "up", "-d", "--remove-orphans") == [
+        "compose",
+        "--env-file",
+        "../global.env",
+        "--env-file",
+        "./.env",
+        "up",
+        "-d",
+        "--remove-orphans",
+    ]
+
+
+def test_compose_status_convert_uses_dockge_precedence():
+    """Partially exited stacks are treated as exited, not running."""
+    assert compose_runner._compose_status_convert("running(2)") == "running"
+    assert compose_runner._compose_status_convert("exited(1), running(1)") == "exited"
+    assert compose_runner._compose_status_convert("created(1)") == "created"
+    assert compose_runner._compose_status_convert("") == "unknown"
+
+
+def test_update_runs_up_only_when_compose_project_is_running(stack_base, monkeypatch):
+    """Dockge update behavior: pull first, then up only for running stacks."""
+    stack_dir = stack_base / "running-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+    commands = []
+
+    async def fake_stream(websocket, stack_path, args, cols=160, rows=24):
+        commands.append(args)
+        await websocket.send_json({"type": "stdout", "chunk": "ok\n"})
+        return 0
+
+    async def fake_status(name):
+        assert name == "running-stack"
+        return "running"
+
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
+    monkeypatch.setattr(compose_runner, "_get_compose_project_status", fake_status)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/running-stack/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": "update"})
+        assert ws.receive_json()["type"] == "stdout"
+        assert ws.receive_json()["type"] == "stdout"
+        exit_msg = ws.receive_json()
+        assert exit_msg == {"type": "exit", "code": 0}
+
+    assert commands == [
+        ["compose", "pull"],
+        ["compose", "up", "-d", "--remove-orphans"],
+    ]
+
+
+def test_update_skips_up_when_compose_project_is_not_running(stack_base, monkeypatch):
+    """Dockge update behavior: stopped/exited stacks are pulled but not recreated."""
+    stack_dir = stack_base / "stopped-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+    commands = []
+
+    async def fake_stream(websocket, stack_path, args, cols=160, rows=24):
+        commands.append(args)
+        await websocket.send_json({"type": "stdout", "chunk": "ok\n"})
+        return 0
+
+    async def fake_status(name):
+        assert name == "stopped-stack"
+        return "exited"
+
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
+    monkeypatch.setattr(compose_runner, "_get_compose_project_status", fake_status)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/stopped-stack/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": "update"})
+        assert ws.receive_json()["type"] == "stdout"
+        exit_msg = ws.receive_json()
+        assert exit_msg == {"type": "exit", "code": 0}
+
+    assert commands == [["compose", "pull"]]
+
+
 def test_websocket_invalid_action(stack_base):
     """Execute endpoint returns an error for unsupported actions."""
     stack_dir = stack_base / "test-stack"
@@ -234,4 +325,3 @@ def test_agent_require_token_empty_exits():
     )
     assert result.returncode == 1
     assert "AGENT_REQUIRE_TOKEN=true but AGENT_TOKEN is empty" in result.stderr
-

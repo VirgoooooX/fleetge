@@ -65,6 +65,8 @@ export interface I18nSchema {
   "hostCard.disk": string;
   "hostCard.net": string;
   "hostCard.io": string;
+  "hostCard.read": string;
+  "hostCard.write": string;
   "hostCard.runningContainers": string;
   "hostCard.stoppedContainers": string;
   "hostCard.imageCount": string;
@@ -207,6 +209,11 @@ export interface I18nSchema {
   "workspace.pruneDocker": string;
   "workspace.pruneConfirm": string;
   "workspace.pruneMessage": string;
+  "workspace.updateAll": string;
+  "workspace.updateAllConfirm": string;
+  "workspace.updateAllMessage": string;
+  "workspace.updateAllSuccess": string;
+  "workspace.updateAllPartial": string;
   "workspace.noMatchingStack": string;
   "workspace.containerGroup": string;
   "workspace.containers": string;

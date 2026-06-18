@@ -29,6 +29,24 @@
             <el-icon v-if="!pruneLoading"><Brush /></el-icon>
           </el-button>
         </el-tooltip>
+        <el-tooltip :content="t('workspace.updateAll')" placement="top">
+          <el-badge
+            :value="updatableStacks.length"
+            :hidden="updatableStacks.length === 0"
+            class="sidebar-update-badge"
+          >
+            <el-button
+              class="ui-icon-button ui-icon-button--warning sidebar-icon-button"
+              size="small"
+              :loading="bulkUpdateLoading"
+              :disabled="updatableStacks.length === 0 || bulkUpdateLoading"
+              :aria-label="t('workspace.updateAll')"
+              @click="confirmUpdateAll"
+            >
+              <el-icon v-if="!bulkUpdateLoading"><Top /></el-icon>
+            </el-button>
+          </el-badge>
+        </el-tooltip>
       </div>
 
       <div class="sidebar-search">
@@ -913,6 +931,8 @@ const composeDrawerVisible = ref(false);
 const currentComposeStack = ref("");
 const composeDrawerMode = ref<"edit" | "create">("edit");
 const pruneLoading = ref(false);
+const bulkUpdateLoading = ref(false);
+let bulkUpdateAbortController: AbortController | null = null;
 
 const filteredStacks = computed(() => {
   const query = stackSearch.value.trim().toLowerCase();
@@ -921,6 +941,10 @@ const filteredStacks = computed(() => {
     : [...props.stacks];
   return sortStacks(filtered);
 });
+
+const updatableStacks = computed(() =>
+  sortStacks(props.stacks.filter((stack) => stackUpdateStatus(stack) === "updatable"))
+);
 
 const selectedStack = computed(() =>
   props.stacks.find((stack) => stack.name === selectedStackName.value) || null
@@ -1250,6 +1274,155 @@ async function confirmPrune() {
   }
 }
 
+async function confirmUpdateAll() {
+  const stacksToUpdate = updatableStacks.value;
+  if (stacksToUpdate.length === 0 || bulkUpdateLoading.value) return;
+
+  try {
+    await confirm(
+      t("workspace.updateAllMessage", { count: stacksToUpdate.length }),
+      t("workspace.updateAllConfirm"),
+      {
+        tone: "warning",
+        confirmButtonText: t("stack.confirm.ok"),
+        cancelButtonText: t("stack.confirm.cancel"),
+        confirmButtonClass: "pg-confirm-btn",
+      }
+    );
+  } catch {
+    return;
+  }
+
+  bulkUpdateLoading.value = true;
+  let successCount = 0;
+
+  try {
+    for (const stack of stacksToUpdate) {
+      const ok = await runStackUpdate(stack.name);
+      if (ok) successCount += 1;
+    }
+
+    if (successCount === stacksToUpdate.length) {
+      ElMessage.success(t("workspace.updateAllSuccess", { count: successCount }));
+    } else {
+      ElMessage.warning(t("workspace.updateAllPartial", {
+        success: successCount,
+        total: stacksToUpdate.length,
+      }));
+    }
+    emit("refresh");
+    emit("check-updates");
+  } finally {
+    bulkUpdateLoading.value = false;
+    bulkUpdateAbortController = null;
+  }
+}
+
+async function runStackUpdate(stackName: string): Promise<boolean> {
+  const action = "update";
+  const label = t("stack.action.update");
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  bulkUpdateAbortController = controller;
+
+  const runningState: OperationState = {
+    action,
+    status: "running",
+    message: t("stack.confirm.running", { action: label }),
+    updatedAt: startedAt,
+    abort: () => controller.abort(),
+  };
+  onOperationStart(stackName, runningState);
+
+  let completed = false;
+  let succeeded = false;
+
+  try {
+    const url =
+      `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}` +
+      `/${action}?cols=110&rows=24`;
+
+    await streamSse({
+      url,
+      method: "POST",
+      timeoutMs: 240000,
+      signal: controller.signal,
+      onTimeout: () => {
+        if (completed) return;
+        completed = true;
+        onOperationComplete(stackName, {
+          action,
+          status: "timeout",
+          message: t("stack.confirm.timeout"),
+          updatedAt: Date.now(),
+        });
+      },
+      onEvent: (ev) => {
+        if (ev.event === "chunk") {
+          onTerminalChunk(stackName, { action, chunk: ev.data?.raw ?? ev.rawData });
+        } else if (ev.event === "line") {
+          onTerminalChunk(stackName, { action, chunk: ev.data?.text ?? ev.rawData });
+        } else if (ev.event === "complete") {
+          completed = true;
+          const data = ev.data || {};
+          succeeded = data.status === "success";
+          onOperationComplete(stackName, {
+            action,
+            status: succeeded ? "success" : "error",
+            message: data.message || t(succeeded ? "stack.confirm.success" : "stack.confirm.failure", { action: label }),
+            updatedAt: Date.now(),
+          });
+        } else if (ev.event === "error") {
+          completed = true;
+          onOperationComplete(stackName, {
+            action,
+            status: "error",
+            message: ev.data?.message || t("stack.confirm.failure", { action: label }),
+            updatedAt: Date.now(),
+          });
+        }
+      },
+    });
+
+    if (!completed) {
+      completed = true;
+      if (controller.signal.aborted) {
+        onOperationComplete(stackName, {
+          action,
+          status: "error",
+          message: t("stack.confirm.cancelled"),
+          updatedAt: Date.now(),
+        });
+        return false;
+      }
+      succeeded = true;
+      onOperationComplete(stackName, {
+        action,
+        status: "success",
+        message: t("stack.confirm.success", { action: label }),
+        updatedAt: Date.now(),
+      });
+    }
+  } catch (e: any) {
+    if (!completed) {
+      onOperationComplete(stackName, {
+        action,
+        status: "error",
+        message: t("stack.confirm.failure", { action: label }) + ": " + (e.message || t("stack.confirm.unknownError")),
+        updatedAt: Date.now(),
+      });
+    }
+    succeeded = false;
+  } finally {
+    delete runningOperations[stackName];
+    if (bulkUpdateAbortController === controller) {
+      bulkUpdateAbortController = null;
+    }
+  }
+
+  return succeeded;
+}
+
 function onComposeSaved() {
   emit("refresh");
 }
@@ -1468,6 +1641,10 @@ watch(
     Object.keys(runningOperations).forEach((stackName) => {
       cancelOperation(stackName);
     });
+    if (bulkUpdateAbortController) {
+      bulkUpdateAbortController.abort();
+      bulkUpdateAbortController = null;
+    }
     closeOperationDock();
     Object.keys(terminalOutputs).forEach((stackName) => {
       delete terminalOutputs[stackName];
@@ -1485,6 +1662,10 @@ watch(
 );
 
 onUnmounted(() => {
+  if (bulkUpdateAbortController) {
+    bulkUpdateAbortController.abort();
+    bulkUpdateAbortController = null;
+  }
   clearOperationAutoClose();
   stopLogs();
 });
@@ -1533,6 +1714,10 @@ onUnmounted(() => {
   height: 34px;
   min-height: 34px;
   width: 34px;
+}
+
+.sidebar-update-badge {
+  line-height: 1;
 }
 
 .prune-dialog :deep(.el-dialog__header) {

@@ -10,13 +10,13 @@
           <el-icon><ArrowLeft /></el-icon> {{ t('updates.back') }}
         </el-button>
         <el-button class="ui-button ui-button--primary" type="primary" :loading="checking" @click="runCheck">
-          <el-icon><Refresh /></el-icon> {{ t('updates.checkNow') }}
+          <el-icon><RefreshCw /></el-icon> {{ t('updates.checkNow') }}
         </el-button>
       </div>
     </header>
 
     <div v-if="checking" class="loading-center">
-      <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+      <el-icon class="is-loading" :size="32"><Loader2 /></el-icon>
       <p>{{ t('updates.checking') }}</p>
     </div>
 
@@ -54,7 +54,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { ArrowLeft, Refresh, Loading } from "@element-plus/icons-vue";
+import { ArrowLeft, RefreshCw, Loader2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { useDashboardStore } from "@/stores/dashboard";
 import UpdateBadge from "@/components/UpdateBadge.vue";

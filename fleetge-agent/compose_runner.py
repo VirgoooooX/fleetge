@@ -209,14 +209,41 @@ async def delete_stack(name: str):
             raise HTTPException(status_code=500, detail=f"Failed to delete stack directory: {exc}")
 
 
-# Action to Docker Compose argument mapping
+# Action to Docker Compose argument mapping. These are the subcommands passed
+# through _compose_args(), which mirrors Dockge's centralized compose option
+# builder.
 ACTION_ARGS = {
-    "up": ["compose", "up", "-d", "--remove-orphans"],
-    "stop": ["compose", "stop"],
-    "down": ["compose", "down"],
-    "restart": ["compose", "restart"],
-    "pull": ["compose", "pull"],
+    "up": ["up", "-d", "--remove-orphans"],
+    "stop": ["stop"],
+    "down": ["down"],
+    "restart": ["restart"],
+    "pull": ["pull"],
 }
+
+
+def _compose_args(stack_path: str, command: str, *extra_options: str) -> list[str]:
+    """Build docker compose arguments using Dockge's env-file behavior."""
+    args = ["compose", command, *extra_options]
+    base_real = os.path.realpath(STACKS_BASE_DIR)
+    global_env_path = os.path.join(base_real, "global.env")
+
+    if os.path.isfile(global_env_path):
+        if os.path.isfile(os.path.join(stack_path, ".env")):
+            args[1:1] = ["--env-file", "./.env"]
+        args[1:1] = ["--env-file", "../global.env"]
+
+    return args
+
+
+def _compose_status_convert(status: str) -> str:
+    """Convert docker compose ls status using Dockge's status precedence."""
+    if status.startswith("created"):
+        return "created"
+    if "exited" in status:
+        return "exited"
+    if status.startswith("running"):
+        return "running"
+    return "unknown"
 
 
 async def _stream_with_subprocess(
@@ -340,47 +367,49 @@ async def _stream_docker_command(
                 pass
 
 
-async def _has_running_services(stack_path: str) -> bool:
-    """Return True if the stack has any container in the running state."""
+async def _get_compose_project_status(stack_name: str) -> str:
+    """Return stack status from docker compose ls, matching Dockge update logic."""
     try:
         process = await asyncio.create_subprocess_exec(
-            "docker", "compose", "ps", "--format", "json",
-            cwd=stack_path,
+            "docker", "compose", "ls", "--all", "--format", "json",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
     except Exception:
-        return False
+        return "unknown"
 
     if process.returncode != 0:
-        return False
+        return "unknown"
 
     text = stdout.decode("utf-8", errors="replace").strip()
     if not text:
-        return False
+        return "unknown"
 
-    # docker compose ps may emit a JSON array or one JSON object per line
+    # docker compose ls normally emits a JSON array, but tolerate one object
+    # per line to keep compatibility with Docker CLI output variations.
     try:
-        services = json.loads(text)
-        if isinstance(services, dict):
-            services = [services]
+        projects = json.loads(text)
+        if isinstance(projects, dict):
+            projects = [projects]
     except json.JSONDecodeError:
-        services = []
+        projects = []
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                services.append(json.loads(line))
+                projects.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
 
-    for service in services:
-        if isinstance(service, dict) and service.get("State") == "running":
-            return True
+    for project in projects:
+        if not isinstance(project, dict):
+            continue
+        if project.get("Name") == stack_name:
+            return _compose_status_convert(str(project.get("Status") or ""))
 
-    return False
+    return "unknown"
 
 
 @router.websocket("/host/prune")
@@ -458,15 +487,17 @@ async def execute_stack_command(websocket: WebSocket, name: str):
 
             if action == "update":
                 # 1) Pull latest images
-                exit_code = await _stream_docker_command(websocket, stack_path, ["compose", "pull"], cols=cols, rows=rows)
-                if exit_code == 0 and await _has_running_services(stack_path):
+                exit_code = await _stream_docker_command(
+                    websocket, stack_path, _compose_args(stack_path, "pull"), cols=cols, rows=rows
+                )
+                if exit_code == 0 and await _get_compose_project_status(name) == "running":
                     # 2) Recreate running services with new images
                     exit_code = await _stream_docker_command(
-                        websocket, stack_path, ["compose", "up", "-d", "--remove-orphans"], cols=cols, rows=rows
+                        websocket, stack_path, _compose_args(stack_path, "up", "-d", "--remove-orphans"), cols=cols, rows=rows
                     )
                 await websocket.send_json({"type": "exit", "code": exit_code})
             else:
-                args = ACTION_ARGS[action]
+                args = _compose_args(stack_path, *ACTION_ARGS[action])
                 exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
                 await websocket.send_json({"type": "exit", "code": exit_code})
 

@@ -11,37 +11,37 @@
         <img src="/cloud_banner.png" alt="Cloud Banner" class="command-banner" />
       </div>
       <div class="summary-grid">
-        <div class="summary-tile">
-          <span class="summary-label">
-            <el-icon><Monitor /></el-icon>
-            {{ t('dashboard.onlineHosts') }}
-          </span>
+        <div class="summary-tile" @mouseenter="setTileAnim(0)">
+          <span class="summary-label">{{ t('dashboard.onlineHosts') }}</span>
           <strong>{{ store.onlineCount }}</strong>
           <small>/ {{ store.hosts.length }}</small>
+          <div class="tile-icon" :class="tileAnims[0] ? `anim-${tileAnims[0]}` : ''">
+            <el-icon :size="60"><Monitor /></el-icon>
+          </div>
         </div>
-        <div class="summary-tile">
-          <span class="summary-label">
-            <el-icon><CircleCheckFilled /></el-icon>
-            {{ t('dashboard.runningContainers') }}
-          </span>
+        <div class="summary-tile" @mouseenter="setTileAnim(1)">
+          <span class="summary-label">{{ t('dashboard.runningContainers') }}</span>
           <strong>{{ store.runningContainers }}</strong>
           <small>{{ t('dashboard.running') }}</small>
+          <div class="tile-icon" :class="tileAnims[1] ? `anim-${tileAnims[1]}` : ''">
+            <el-icon :size="60"><CheckCircle /></el-icon>
+          </div>
         </div>
-        <div class="summary-tile">
-          <span class="summary-label">
-            <el-icon><CircleCloseFilled /></el-icon>
-            {{ t('dashboard.stoppedContainers') }}
-          </span>
+        <div class="summary-tile" @mouseenter="setTileAnim(2)">
+          <span class="summary-label">{{ t('dashboard.stoppedContainers') }}</span>
           <strong>{{ stoppedContainers }}</strong>
           <small>{{ t('dashboard.stopped') }}</small>
+          <div class="tile-icon" :class="tileAnims[2] ? `anim-${tileAnims[2]}` : ''">
+            <el-icon :size="60"><XCircle /></el-icon>
+          </div>
         </div>
-        <button class="summary-tile critical" type="button" @click="router.push('/updates')">
-          <span class="summary-label">
-            <el-icon><Download /></el-icon>
-            {{ t('dashboard.updatableImages') }}
-          </span>
+        <button class="summary-tile critical" type="button" @click="router.push('/updates')" @mouseenter="setTileAnim(3)">
+          <span class="summary-label">{{ t('dashboard.updatableImages') }}</span>
           <strong>{{ store.updateCount }}</strong>
           <small>{{ t('dashboard.updates') }}</small>
+          <div class="tile-icon" :class="tileAnims[3] ? `anim-${tileAnims[3]}` : ''">
+            <el-icon :size="60"><Download /></el-icon>
+          </div>
         </button>
       </div>
     </section>
@@ -74,17 +74,26 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, reactive } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useDashboardStore } from "@/stores/dashboard";
 import HostCard from "@/components/HostCard.vue";
 import ClusterHealthBg from "@/components/ClusterHealthBg.vue";
-import { Monitor, CircleCheckFilled, CircleCloseFilled, Download } from "@element-plus/icons-vue";
+import { Monitor, CheckCircle, XCircle, Download } from "@lucide/vue";
 
 const router = useRouter();
 const store = useDashboardStore();
 const { t } = useI18n();
+
+const ANIM_LIST = ['slide-up', 'slide-down', 'slide-right', 'rotate-cw', 'rotate-ccw', 'tilt'] as const;
+const tileAnims = reactive<string[]>(['', '', '', '']);
+
+function setTileAnim(idx: number) {
+  const prev = tileAnims[idx];
+  const pool = ANIM_LIST.filter(a => a !== prev);
+  tileAnims[idx] = pool[Math.floor(Math.random() * pool.length)];
+}
 
 const stoppedContainers = computed(() =>
   store.hosts.reduce((sum, host) => sum + host.container_stopped, 0)
@@ -194,6 +203,7 @@ function goToHost(hostId: string) {
   color: var(--text-primary);
   padding: 16px 14px;
   text-align: left;
+  position: relative;
 }
 
 button.summary-tile {
@@ -211,7 +221,7 @@ button.summary-tile {
 }
 
 .summary-tile strong {
-  font-size: 31px;
+  font-size: 37px;
   line-height: 1;
   font-weight: 700;
   color: var(--text-primary);
@@ -220,17 +230,54 @@ button.summary-tile {
 .summary-label {
   color: var(--text-secondary);
   font-size: 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
-.summary-label .el-icon {
-  font-size: 16px;
-  display: inline-flex;
+/* ── Tile icon — large background element at center-right ──── */
+.tile-icon {
+  position: absolute;
+  right: 4px;
+  top: 44%;
+  display: flex;
   align-items: center;
   justify-content: center;
-  vertical-align: middle;
+  color: var(--text-muted);
+  opacity: 1;
+  pointer-events: none;
+  transition:
+    transform 0.45s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.3s ease;
+}
+
+/* Default hover — no random class yet */
+.summary-tile:hover .tile-icon:not([class*="anim-"]) {
+  opacity: 1;
+}
+
+/* ── Random animation variants ────────────────────────────── */
+
+.summary-tile:hover .anim-slide-up {
+  transform: translateY(-8px);
+  opacity: 1;
+}
+.summary-tile:hover .anim-slide-down {
+  transform: translateY(8px);
+  opacity: 1;
+}
+.summary-tile:hover .anim-slide-right {
+  transform: translateX(10px);
+  opacity: 1;
+}
+.summary-tile:hover .anim-rotate-cw {
+  transform: rotate(12deg) scale(1.06);
+  opacity: 1;
+}
+.summary-tile:hover .anim-rotate-ccw {
+  transform: rotate(-14deg) scale(1.06);
+  opacity: 1;
+}
+.summary-tile:hover .anim-tilt {
+  transform: rotate(3deg);
+  opacity: 1;
 }
 
 .summary-tile small {
@@ -250,8 +297,8 @@ button.summary-tile {
 
 .host-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+  gap: 16px;
 }
 
 @media (max-width: 1100px) {

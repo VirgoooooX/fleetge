@@ -1,69 +1,172 @@
 <template>
   <el-card class="host-card" shadow="never" @click="$emit('click')">
     <!-- Header: hostname / OS / update badge -->
-    <div class="card-header">
+    <div class="card-header-row">
       <div class="card-header-left">
         <StatusIcon :status="host.status" />
         <div class="card-header-text">
-          <span class="host-name">{{ host.display_name }}</span>
-          <span class="host-meta">{{ host.os_info || host.metrics?.hostname || host.host_id }}</span>
+          <span class="host-name font-bold">{{ host.display_name }}</span>
+          <span v-if="displayUpdateCount > 0" class="m-badge-danger" @click.stop="$emit('updates')">
+            {{ t('hostCard.updates', { count: displayUpdateCount }) }}
+          </span>
         </div>
       </div>
       <div class="card-header-right">
+        <!-- Error Tooltip -->
         <el-tooltip
           v-if="hasError"
           :content="host.error_message"
           placement="top"
           effect="dark"
         >
-          <span class="ui-icon-button ui-icon-button--small ui-icon-button--danger error-badge">
-            <el-icon :size="14"><Warning /></el-icon>
+          <span class="error-badge">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
           </span>
         </el-tooltip>
-        <button
-          v-if="displayUpdateCount > 0"
-          class="ui-button ui-button--compact ui-button--danger update-action"
-          type="button"
-          @click.stop="$emit('updates')"
-        >
-          {{ t('hostCard.updates', { count: displayUpdateCount }) }}
-        </button>
+
+        <!-- Status Tag -->
+        <span v-if="host.status === 'online'" class="m-badge-success-pill">
+          {{ t('status.online', '在线') }}
+        </span>
+        <span v-else class="m-badge-offline-pill">
+          {{ t('status.offline', '离线') }}
+        </span>
       </div>
     </div>
+    <div class="host-subtitle">{{ host.os_info || host.metrics?.hostname || host.host_id }}</div>
 
-    <!-- Capacity: CPU / memory / disk with progress bars -->
-    <div v-if="host.metrics" class="capacity-grid">
-      <div
-        v-for="metric in capacityMetrics"
-        :key="metric.label"
-        class="capacity-metric"
-        :style="{ '--metric-color': metric.color }"
-      >
-        <div class="metric-topline">
-          <span class="metric-label">{{ metric.label }}</span>
-          <span class="metric-value">{{ metric.value }}</span>
+    <!-- Capacity: CPU / memory / disk with progress bars and Sparkline -->
+    <div v-if="host.metrics" class="m-capacity-grid">
+      <!-- CPU Sub-card -->
+      <div class="m-sub-card">
+        <div class="m-sub-card-header">
+          <div class="icon-wrapper cpu-color" v-html="vibrantIcons.cpu"></div>
+          <span class="sub-label">{{ t('hostCard.cpu') }}</span>
         </div>
-        <div class="metric-track">
-          <span class="metric-fill" :style="{ width: `${metric.percent}%` }" />
+        <div class="sub-value font-bold">
+          <span class="val-amount">{{ host.metrics.cpuPercent.toFixed(1) }}</span>
+          <span class="val-unit">%</span>
+        </div>
+        
+        <!-- SVG Sparkline for CPU -->
+        <div class="sub-chart">
+          <svg width="100%" height="24" viewBox="0 0 100 24" preserveAspectRatio="none">
+            <defs>
+              <linearGradient :id="`cpuGrad-${host.host_id}`" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="var(--accent-blue)" stop-opacity="0.18"/>
+                <stop offset="100%" stop-color="var(--accent-blue)" stop-opacity="0.0"/>
+              </linearGradient>
+            </defs>
+            <path v-if="cpuPaths.fill" :d="cpuPaths.fill" :fill="`url(#cpuGrad-${host.host_id})`"/>
+            <path v-if="cpuPaths.stroke" :d="cpuPaths.stroke" fill="none" stroke="var(--accent-blue)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
         </div>
       </div>
-    </div>
 
-    <!-- Telemetry: NET / I/O as text rates -->
-    <div v-if="host.metrics" class="telemetry-grid">
-      <div v-for="item in telemetry" :key="item.label" class="telemetry-item">
-        <div class="telemetry-label-row">
-          <span class="activity-dot" :class="item.level" />
-          <span class="telemetry-label">{{ item.label }}</span>
+      <!-- Memory Sub-card -->
+      <div class="m-sub-card">
+        <div class="m-sub-card-header">
+          <div class="icon-wrapper mem-color" v-html="vibrantIcons.mem"></div>
+          <span class="sub-label">{{ t('hostCard.memory') }}</span>
         </div>
-        <div class="telemetry-lines">
-          <div v-for="line in item.lines" :key="line.label" class="telemetry-line">
-            <span class="tl-label">{{ line.label }}</span>
-            <span class="tl-value">
-              <span class="tl-amount">{{ line.amount }}</span>
-              <span class="tl-unit">{{ line.unit }}</span>
-            </span>
+        <div class="sub-value font-bold">
+          {{ formatBytes(host.metrics.memoryUsed) }}
+          <small>/ {{ formatBytes(host.metrics.memoryTotal) }}</small>
+        </div>
+        
+        <!-- Progress Row -->
+        <div class="m-progress-row">
+          <div class="m-progress-track">
+            <div class="m-progress-fill" :style="{ width: `${memPercent}%`, background: metricColor(memPercent) }"></div>
           </div>
+          <span class="m-percent-label">{{ memPercent }}%</span>
+        </div>
+      </div>
+
+      <!-- Disk Sub-card -->
+      <div class="m-sub-card">
+        <div class="m-sub-card-header">
+          <div class="icon-wrapper disk-color" v-html="vibrantIcons.disk"></div>
+          <span class="sub-label">{{ t('hostCard.disk') }}</span>
+        </div>
+        <div class="sub-value font-bold">
+          {{ formatBytes(host.metrics.diskUsed) }}
+          <small>/ {{ formatBytes(host.metrics.diskTotal) }}</small>
+        </div>
+        
+        <!-- Progress Row -->
+        <div class="m-progress-row">
+          <div class="m-progress-track">
+            <div class="m-progress-fill" :style="{ width: `${diskPercent}%`, background: metricColor(diskPercent) }"></div>
+          </div>
+          <span class="m-percent-label">{{ diskPercent }}%</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Telemetry: NET / I/O as split row -->
+    <div v-if="host.metrics" class="m-telemetry-box">
+      <!-- Left: Network -->
+      <div class="m-tel-col net-part">
+        <div class="m-tel-header">
+          <div class="icon-wrapper-inline net-color" v-html="vibrantIcons.net"></div>
+          <span>{{ t('hostCard.net') }}</span>
+        </div>
+
+        <!-- Middle: values — fixed arrows & units, only the number changes -->
+        <div class="m-net-values">
+          <div class="m-net-rate-item">
+            <span class="net-arrow up">↑</span>
+            <strong class="net-amount">{{ formatRateParts(host.metrics.networkTxRate).amount }}</strong>
+            <small class="net-unit">{{ formatRateParts(host.metrics.networkTxRate).unit }}</small>
+          </div>
+          <div class="m-net-rate-item">
+            <span class="net-arrow down">↓</span>
+            <strong class="net-amount">{{ formatRateParts(host.metrics.networkRxRate).amount }}</strong>
+            <small class="net-unit">{{ formatRateParts(host.metrics.networkRxRate).unit }}</small>
+          </div>
+        </div>
+
+        <!-- Bottom: mini sparkline -->
+        <div class="m-net-chart">
+          <svg width="100%" height="20" viewBox="0 0 100 20" preserveAspectRatio="none">
+            <defs>
+              <linearGradient :id="`netGrad-${host.host_id}`" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.15"/>
+                <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.0"/>
+              </linearGradient>
+            </defs>
+            <path v-if="netPaths.fill" :d="netPaths.fill" :fill="`url(#netGrad-${host.host_id})`"/>
+            <path v-if="netPaths.stroke" :d="netPaths.stroke" fill="none" stroke="#06b6d4" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Middle: I/O Read -->
+      <div class="m-tel-col border-lr io-part">
+        <div class="m-tel-header">
+          <div class="icon-wrapper-inline io-color" v-html="vibrantIcons.io"></div>
+          <span>{{ t('hostCard.io') }} {{ t('hostCard.read', '读取') }}</span>
+        </div>
+        <div class="m-io-value">
+          <strong class="io-amount">{{ formatRateParts(host.metrics.diskReadRate).amount }}</strong>
+          <small class="io-unit">{{ formatRateParts(host.metrics.diskReadRate).unit }}</small>
+        </div>
+      </div>
+
+      <!-- Right: I/O Write -->
+      <div class="m-tel-col io-part">
+        <div class="m-tel-header">
+          <div class="icon-wrapper-inline io-color" v-html="vibrantIcons.io"></div>
+          <span>{{ t('hostCard.io') }} {{ t('hostCard.write', '写入') }}</span>
+        </div>
+        <div class="m-io-value">
+          <strong class="io-amount">{{ formatRateParts(host.metrics.diskWriteRate).amount }}</strong>
+          <small class="io-unit">{{ formatRateParts(host.metrics.diskWriteRate).unit }}</small>
         </div>
       </div>
     </div>
@@ -71,43 +174,32 @@
     <div v-else class="metrics-missing">{{ t('hostCard.metricsUnavailable') }}</div>
 
     <!-- Footer: container counts / images / version -->
-    <div class="card-footer">
-      <div class="docker-stat strong" :title="t('hostCard.runningContainers')">
-        <span class="stat-label" :aria-label="t('hostCard.runningContainers')">
-          <span class="stat-icon running-dot" />
-        </span>
-        <strong class="stat-value">{{ host.container_running }}</strong>
+    <div class="m-footer">
+      <div class="m-foot-item flex-center" :title="t('hostCard.runningContainers')">
+        <span class="foot-dot green"></span>
+        <strong class="font-mono">{{ host.container_running }}</strong>
       </div>
-      <div class="docker-stat stopped" :title="t('hostCard.stoppedContainers')">
-        <span class="stat-label" :aria-label="t('hostCard.stoppedContainers')">
-          <span class="stat-icon stopped-dot" />
-        </span>
-        <strong class="stat-value">{{ host.container_stopped }}</strong>
+      <div class="m-foot-item flex-center" :title="t('hostCard.stoppedContainers')">
+        <span class="foot-dot red"></span>
+        <strong class="font-mono">{{ host.container_stopped }}</strong>
       </div>
-      <div class="docker-stat images" :title="t('hostCard.imageCount')">
-        <span class="stat-label" :aria-label="t('hostCard.imageCount')">
-          <el-icon :size="13"><Monitor /></el-icon>
-        </span>
-        <strong class="stat-value">{{ host.image_count }}</strong>
+      <div class="m-foot-item flex-center m-foot-item--images" :title="t('hostCard.imageCount')">
+        <span class="footer-icon-wrap" v-html="vibrantIcons.images"></span>
+        <strong class="font-mono">{{ host.image_count }}</strong>
       </div>
-      <div class="docker-stat version" :title="`Docker ${host.docker_version || '-'}`">
-        <span class="stat-label docker-mark" :aria-label="t('hostCard.dockerVersion')">
-          <svg viewBox="0 0 24 18" aria-hidden="true" focusable="false">
-            <path
-              d="M7.2 6.2h2.1V4.1H7.2v2.1Zm2.7 0H12V4.1H9.9v2.1Zm2.8 0h2.1V4.1h-2.1v2.1ZM9.9 3.5H12V1.4H9.9v2.1Zm-5.5 5h15.7c.9 0 1.7.3 2.4.9-.4 2.2-1.5 4-3.2 5.2-1.6 1.1-3.7 1.7-6.2 1.7H9.2c-3 0-5.2-1.1-6.5-3.2-.7-1.1-1-2.3-.9-3.7.8-.1 1.6-.4 2.6-.9Zm.1-.6h2.1V5.8H4.5v2.1Zm2.7 0h2.1V5.8H7.2v2.1Zm2.7 0H12V5.8H9.9v2.1Zm2.8 0h2.1V5.8h-2.1v2.1Zm2.7 0h2.1V5.8h-2.1v2.1Z"
-            />
-          </svg>
+      <div class="m-foot-item flex-center m-foot-item--version font-mono" :title="`Docker ${host.docker_version || '-'}`">
+        <span class="footer-icon-wrap docker-icon" v-html="vibrantIcons.docker"></span>
+        <span class="m-version-text">
+          {{ host.docker_version ? `v${host.docker_version}` : '-' }}
         </span>
-        <strong class="stat-value">{{ host.docker_version ? `v${host.docker_version}` : "-" }}</strong>
       </div>
     </div>
   </el-card>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Monitor, Warning } from "@element-plus/icons-vue";
 import StatusIcon from "./StatusIcon.vue";
 import type { HostSummary } from "@/stores/dashboard";
 
@@ -117,12 +209,69 @@ defineEmits<{ click: []; updates: [] }>();
 const { t } = useI18n();
 
 const displayUpdateCount = computed(() => props.updateCount ?? props.host.update_count);
-
 const hasError = computed(() => !!props.host.error_message);
-const isTimeout = computed(() => {
-  const msg = props.host.error_message;
-  return msg ? /(timeout|network|econnaborted)/i.test(msg) : false;
-});
+
+// Sparkline History Queues
+const cpuHistory = ref<number[]>([]);
+const netHistory = ref<number[]>([]);
+
+watch(
+  () => props.host.metrics,
+  (m) => {
+    if (m) {
+      // Push CPU
+      cpuHistory.value.push(m.cpuPercent);
+      if (cpuHistory.value.length > 50) cpuHistory.value.shift();
+
+      // Push Network total rate
+      const netRate = (m.networkRxRate || 0) + (m.networkTxRate || 0);
+      netHistory.value.push(netRate);
+      if (netHistory.value.length > 50) netHistory.value.shift();
+    }
+  },
+  { immediate: true, deep: true }
+);
+
+// Cardinal spline smoothing — produces flowing, natural curves
+// (similar to D3's curveCardinal) instead of the stiff stepped bezier look
+function generateSparkline(data: number[], width = 100, height = 24) {
+  if (data.length < 2) return { stroke: "", fill: "" };
+  const max = Math.max(...data, 10);
+  const min = 0;
+  const padX = 2; // horizontal padding so the curve doesn't hit the edge
+  const padY = 3; // vertical breathing room
+
+  const points = data.map((val, idx) => {
+    const x = padX + (idx / (data.length - 1)) * (width - padX * 2);
+    const y = padY + (height - padY * 2) * (1 - (val - min) / (max - min || 1));
+    return { x, y };
+  });
+
+  // Cardinal spline tension — 0.5 gives a nice balance of smoothness without overshoot
+  const tension = 0.5;
+  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+
+    const cp1x = p1.x + (p2.x - p0.x) * tension / 3;
+    const cp1y = p1.y + (p2.y - p0.y) * tension / 3;
+    const cp2x = p2.x - (p3.x - p1.x) * tension / 3;
+    const cp2y = p2.y - (p3.y - p1.y) * tension / 3;
+
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+
+  const stroke = d;
+  const fill = `${d} L ${width} ${height} L 0 ${height} Z`;
+  return { stroke, fill };
+}
+
+const cpuPaths = computed(() => generateSparkline(cpuHistory.value, 100, 24));
+const netPaths = computed(() => generateSparkline(netHistory.value, 100, 20));
 
 const memPercent = computed(() => {
   const m = props.host.metrics;
@@ -136,71 +285,10 @@ const diskPercent = computed(() => {
   return m.diskTotal > 0 ? Math.round((m.diskUsed / m.diskTotal) * 100) : 0;
 });
 
-const capacityMetrics = computed(() => {
-  const m = props.host.metrics;
-  if (!m) return [];
-
-  const cpu = Math.round(m.cpuPercent);
-  return [
-    {
-      label: t("hostCard.cpu"),
-      percent: cpu,
-      value: `${m.cpuPercent.toFixed(1)}%`,
-      color: metricColor(cpu),
-    },
-    {
-      label: t("hostCard.memory"),
-      percent: memPercent.value,
-      value: `${formatBytes(m.memoryUsed)} / ${formatBytes(m.memoryTotal)}`,
-      color: metricColor(memPercent.value),
-    },
-    {
-      label: t("hostCard.disk"),
-      percent: diskPercent.value,
-      value: `${formatBytes(m.diskUsed)} / ${formatBytes(m.diskTotal)}`,
-      color: metricColor(diskPercent.value),
-    },
-  ];
-});
-
-function activityLevel(totalRate: number): string {
-  if (totalRate >= 10 * 1024 * 1024) return "busy";
-  if (totalRate >= 512 * 1024) return "active";
-  if (totalRate > 0) return "low";
-  return "idle";
-}
-
-const telemetry = computed(() => {
-  const m = props.host.metrics;
-  if (!m) return [];
-
-  const netTotal = (m.networkRxRate || 0) + (m.networkTxRate || 0);
-  const ioTotal = (m.diskReadRate || 0) + (m.diskWriteRate || 0);
-
-  return [
-    {
-      label: t("hostCard.net"),
-      level: activityLevel(netTotal),
-      lines: [
-        { label: "↓", ...formatRateParts(m.networkRxRate) },
-        { label: "↑", ...formatRateParts(m.networkTxRate) },
-      ],
-    },
-    {
-      label: t("hostCard.io"),
-      level: activityLevel(ioTotal),
-      lines: [
-        { label: "R", ...formatRateParts(m.diskReadRate) },
-        { label: "W", ...formatRateParts(m.diskWriteRate) },
-      ],
-    },
-  ];
-});
-
 function metricColor(pct: number): string {
-  if (pct > 80) return "#f56c6c";
-  if (pct > 60) return "#e6a23c";
-  return "#67c23a";
+  if (pct > 80) return "var(--danger)";
+  if (pct > 60) return "var(--warning)";
+  return "var(--success)";
 }
 
 function formatBytes(bytes: number | undefined): string {
@@ -214,7 +302,7 @@ function formatBytes(bytes: number | undefined): string {
     size /= 1024;
     i++;
   }
-  return `${size.toFixed(1)}${units[i]}`;
+  return `${size.toFixed(1)} ${units[i]}`;
 }
 
 function formatRateParts(bytesPerSec: number | undefined): { amount: string; unit: string } {
@@ -228,31 +316,69 @@ function formatRateParts(bytesPerSec: number | undefined): { amount: string; uni
     size /= 1024;
     i++;
   }
-
   return { amount: size.toFixed(1), unit: units[i] };
 }
+
+// Approved Vibrant Multi-color SVGs
+const vibrantIcons = {
+  cpu: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect width="16" height="16" x="4" y="4" rx="3" fill="#3b82f6" fill-opacity="0.12" stroke="#3b82f6"/>
+          <rect width="8" height="8" x="8" y="8" rx="1" fill="#fbbf24" fill-opacity="0.7" stroke="#d97706"/>
+          <line x1="9" y1="1" x2="9" y2="4" stroke="#3b82f6"/><line x1="15" y1="1" x2="15" y2="4" stroke="#3b82f6"/>
+          <line x1="9" y1="20" x2="9" y2="23" stroke="#3b82f6"/><line x1="15" y1="20" x2="15" y2="23" stroke="#3b82f6"/>
+        </svg>`,
+  mem: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="6" width="18" height="12" rx="2" fill="#10b981" fill-opacity="0.12" stroke="#10b981"/>
+          <rect x="6" y="9" width="3" height="6" rx="0.5" fill="#10b981" fill-opacity="0.8"/>
+          <rect x="11" y="9" width="3" height="6" rx="0.5" fill="#10b981" fill-opacity="0.8"/>
+          <rect x="16" y="9" width="3" height="6" rx="0.5" fill="#fbbf24" fill-opacity="0.8" stroke="#d97706" stroke-width="1"/>
+        </svg>`,
+  disk: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="4" width="16" height="16" rx="2" fill="#6366f1" fill-opacity="0.12" stroke="#6366f1"/>
+          <path d="M4 10h16" stroke="#6366f1"/><path d="M4 14h16" stroke="#6366f1"/>
+          <circle cx="8" cy="7" r="1.5" fill="#fbbf24"/><circle cx="16" cy="17" r="1.5" fill="#10b981"/>
+        </svg>`,
+  net: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" fill="#06b6d4" fill-opacity="0.12" stroke="#06b6d4"/>
+          <path d="M12 8v8M9 13l3 3 3-3" stroke="#06b6d4" stroke-width="2"/>
+        </svg>`,
+  io: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="m21 16-4 4-4-4M17 20V4" stroke="#a855f7" stroke-width="2"/>
+          <path opacity="0.4" d="M3 8l4-4 4 4M7 4v16" stroke="#a855f7"/>
+        </svg>`,
+  images: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="5" y="5" width="14" height="14" rx="2" fill="#6366f1" fill-opacity="0.12" stroke="#6366f1"/>
+          <path d="M8 9h8M8 12h8M8 15h5" stroke="#6366f1"/>
+        </svg>`,
+  docker: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="12" viewBox="0 0 24 18" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M7.2 6.2h2.1V4.1H7.2v2.1Zm2.7 0H12V4.1H9.9v2.1Zm2.8 0h2.1V4.1h-2.1v2.1ZM9.9 3.5H12V1.4H9.9v2.1Zm-5.4 5h15.6c.9 0 1.7.3 2.4.9-.4 2.2-1.5 4-3.2 5.2-1.6 1.1-3.7 1.7-6.2 1.7H9.2c-3 0-5.2-1.1-6.5-3.2-.7-1.1-1-2.3-.9-3.7.8-.1 1.7-.4 2.7-.9Zm0-.6h2.1V5.8H4.5v2.1Zm2.7 0h2.1V5.8H7.2v2.1Zm2.7 0H12V5.8H9.9v2.1Zm2.8 0h2.1V5.8h-2.1v2.1Zm2.7 0h2.1V5.8h-2.1v2.1Z"/>
+        </svg>`
+};
 </script>
 
 <style scoped>
 .host-card {
   cursor: pointer;
-  min-height: 238px;
-  border-color: var(--border-subtle) !important;
+  min-height: 286px;
   background: var(--host-card-bg) !important;
+  border-color: var(--border-subtle) !important;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.host-card :deep(.el-card__body) {
+  padding: 14px 16px;
 }
 .host-card:hover {
   border-color: var(--border-strong) !important;
-  transform: translateY(-1px);
-  box-shadow: var(--host-card-hover-shadow);
+  transform: translateY(-2px);
+  box-shadow: var(--host-card-hover-shadow) !important;
 }
 
-.card-header {
+/* Header Row */
+.card-header-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 42px;
-  margin-bottom: 14px;
+  min-height: 26px;
 }
 .card-header-left {
   display: flex;
@@ -262,24 +388,14 @@ function formatRateParts(bytesPerSec: number | undefined): { amount: string; uni
   flex: 1;
 }
 .card-header-text {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
-  flex: 1;
 }
 .host-name {
-  display: block;
   font-size: 16px;
-  font-weight: 600;
   color: var(--text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.host-meta {
-  display: block;
-  margin-top: 2px;
-  color: var(--text-muted);
-  font-size: 12px;
-  max-width: 250px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -287,233 +403,408 @@ function formatRateParts(bytesPerSec: number | undefined): { amount: string; uni
 .card-header-right {
   display: flex;
   align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Pills & Badges */
+.m-badge-danger {
+  font-size: 10.5px;
+  color: var(--danger);
+  background: rgba(248, 113, 113, 0.10);
+  border: 1px solid rgba(248, 113, 113, 0.18);
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.m-badge-success-pill {
+  font-size: 11px;
+  color: var(--success);
+  border: 1px solid rgba(52, 211, 153, 0.24);
+  background: rgba(52, 211, 153, 0.06);
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.m-badge-offline-pill {
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-muted);
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .error-badge {
+  display: inline-flex;
+  align-items: center;
+  color: var(--danger);
   cursor: help;
 }
 
-.capacity-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 102px;
-  margin-bottom: 12px;
-}
-.capacity-metric {
-  min-height: 26px;
-}
-.metric-topline {
-  display: grid;
-  grid-template-columns: auto 14ch;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 5px;
-}
-.metric-label {
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-.metric-value {
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 12px;
-  color: var(--text-secondary);
-  min-width: 14ch;
-  text-align: right;
-  white-space: nowrap;
-}
-.metric-track {
-  height: 6px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(148, 163, 184, 0.14);
-}
-.metric-fill {
-  display: block;
-  height: 100%;
-  min-width: 2px;
-  border-radius: inherit;
-  background: var(--metric-color);
-  box-shadow: 0 0 16px color-mix(in srgb, var(--metric-color), transparent 45%);
-  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease, box-shadow 0.3s ease;
-}
-
-.telemetry-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  min-height: 48px;
-  margin-bottom: 12px;
-}
-.telemetry-item {
-  display: grid;
-  grid-template-columns: minmax(34px, auto) max-content;
-  align-items: center;
-  justify-content: space-between;
-  column-gap: 6px;
-  min-height: 44px;
-  padding: 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 7px;
-  background: var(--surface-muted);
-}
-.telemetry-label-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  flex: 0 0 auto;
-}
-.telemetry-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-.activity-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  display: inline-block;
-  flex-shrink: 0;
-}
-.activity-dot.idle { background: var(--text-muted); }
-.activity-dot.low { background: var(--accent-cyan); }
-.activity-dot.active { background: var(--warning); }
-.activity-dot.busy { background: var(--danger); }
-.telemetry-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: max-content;
-  justify-self: end;
-}
-.telemetry-line {
-  display: grid;
-  grid-template-columns: 12px max-content;
-  justify-content: end;
-  align-items: center;
-  gap: 2px;
-}
-.tl-label {
-  font-family: var(--font-mono);
+.host-subtitle {
   font-size: 12px;
   color: var(--text-muted);
-  text-align: center;
-  user-select: none;
-}
-.tl-value {
-  display: grid;
-  grid-template-columns: 5.8ch 3.8ch;
-  justify-content: end;
-  align-items: baseline;
-  gap: 2px;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  font-size: 11.5px;
-  color: var(--text-primary);
-  white-space: nowrap;
-}
-.tl-amount {
-  min-width: 5.8ch;
-  text-align: right;
-}
-.tl-unit {
-  min-width: 3.8ch;
-  color: var(--text-secondary);
-  text-align: left;
-}
-
-.metrics-missing {
-  min-height: 102px;
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--border-subtle);
-  border-radius: 7px;
-  color: var(--text-muted);
-  font-size: 12px;
-  margin-bottom: 14px;
-}
-
-.card-footer {
-  display: grid;
-  grid-template-columns: 0.8fr 0.8fr 0.8fr 1.6fr;
-  min-height: 30px;
-  padding-top: 9px;
-  border-top: 1px solid var(--border-subtle);
-}
-.docker-stat {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-width: 0;
-  min-height: 22px;
-  padding: 0 6px;
-  color: var(--text-secondary);
-}
-.docker-stat:not(:last-child) {
-  border-right: 1px solid var(--border-subtle);
-}
-.stat-label {
-  width: 14px;
-  min-width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  color: var(--text-secondary);
-  font-size: 10.5px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.stat-value {
-  min-width: 0;
+  margin-top: 3px;
+  margin-left: 18px;
+  margin-bottom: 12px;
   overflow: hidden;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  line-height: 1;
-  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.docker-stat.strong .stat-value {
-  color: var(--success);
+
+/* Capacity sub-cards */
+.m-capacity-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 10px;
 }
-.docker-stat.stopped .stat-value {
-  color: var(--danger);
+.m-sub-card {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  min-height: 110px;
 }
-.docker-stat.version .stat-value {
-  font-size: 11px;
+.m-sub-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
 }
-.docker-mark svg {
-  width: 15px;
-  height: 12px;
+.icon-wrapper {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.icon-wrapper :deep(svg) {
+  width: 14px;
+  height: 14px;
   display: block;
-  fill: currentColor;
 }
-.docker-stat.version .stat-label {
-  color: #1d9bf0;
+.icon-wrapper.cpu-color { background: rgba(59, 130, 246, 0.08); color: #3b82f6; }
+.icon-wrapper.mem-color { background: rgba(16, 185, 129, 0.08); color: #10b981; }
+.icon-wrapper.disk-color { background: rgba(99, 102, 241, 0.08); color: #6366f1; }
+
+.sub-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 600;
 }
-.running-dot, .stopped-dot {
+.sub-value {
+  font-size: 13.5px;
+  color: var(--text-primary);
+  line-height: 1.25;
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-top: 3px;
+}
+.val-amount {
+  width: 2.6em;
+  display: inline-block;
+  text-align: right;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.val-unit {
+  width: 1.5em;
+  display: inline-block;
+  text-align: right;
+  font-weight: 700;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.sub-value small {
+  font-size: 10px;
+  font-weight: normal;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.m-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: auto;
+  margin-bottom: 2px;
+}
+.m-progress-track {
+  flex: 1;
+  height: 6px;
+  background: rgba(148, 163, 184, 0.12);
+  border-radius: 99px;
+  overflow: hidden;
+}
+.m-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
+.m-percent-label {
+  font-size: 10px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.sub-chart {
+  position: absolute;
+  bottom: 6px;
+  left: 0;
+  width: 100%;
+  height: 32px;
+}
+
+/* Telemetry split panel */
+.m-telemetry-box {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(96px, 1fr) minmax(96px, 1fr);
+  padding: 12px;
+  margin-bottom: 12px;
+  min-height: 110px;
+}
+.m-tel-col {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 86px;
+}
+.net-part {
+  padding-right: 10px;
+}
+.io-part .m-tel-header {
+  justify-content: center;
+  padding-left: 0;
+}
+.io-part {
+  justify-content: flex-start;
+}
+.m-tel-header {
+  font-size: 12px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.icon-wrapper-inline {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.icon-wrapper-inline.net-color { background: rgba(6, 182, 212, 0.08); color: #06b6d4; }
+.icon-wrapper-inline.io-color { background: rgba(168, 85, 247, 0.08); color: #a855f7; }
+.icon-wrapper-inline :deep(svg) {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+/* Network middle value row — fills space between header & bottom, vertically centered */
+.m-net-values {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 0;
+  padding-bottom: 22px;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+.m-net-rate-item {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.net-arrow {
+  width: 14px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 900;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.net-arrow.up   { color: #10b981; }
+.net-arrow.down { color: #f59e0b; }
+.net-amount {
+  font-size: 13.5px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  width: 3.5em;
+  display: inline-block;
+  text-align: right;
+}
+.net-unit {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: normal;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  width: 3em;
+  display: inline-block;
+  text-align: right;
+}
+.m-net-chart {
+  position: absolute;
+  bottom: 4px;
+  left: 0;
+  width: 100%;
+  height: 24px;
+}
+.border-lr {
+  border-left: 1px solid var(--border-subtle);
+  border-right: 1px solid var(--border-subtle);
+}
+.text-center {
+  text-align: center;
+}
+.flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* I/O middle value row — fills space between header & bottom, vertically centered */
+.m-io-value {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 0;
+  padding-bottom: 0;
+  line-height: 1;
+  position: relative;
+  z-index: 1;
+}
+.io-amount {
+  font-size: 13.5px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  width: 3.5em;
+  display: inline-block;
+  text-align: right;
+}
+.io-unit {
+  font-size: 10px;
+  line-height: 1;
+  font-weight: normal;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  width: 3em;
+  display: inline-block;
+  text-align: right;
+}
+
+.metrics-missing {
+  min-height: 96px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+/* Footer splits */
+.m-footer {
+  display: flex;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 9px;
+  margin-top: auto;
+  align-items: center;
+}
+.m-foot-item {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-primary);
+  border-right: 1px solid var(--border-subtle);
+  height: 18px;
+  gap: 4px;
+  min-width: 0;
+}
+.foot-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   display: inline-block;
-  flex-shrink: 0;
 }
-.running-dot { background: var(--el-color-success); }
-.stopped-dot { background: var(--el-color-danger); }
+.foot-dot.green { background: var(--success); }
+.foot-dot.red { background: var(--danger); }
+
+.footer-icon-wrap :deep(svg) {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+.docker-icon {
+  color: #1d9bf0;
+}
+.docker-icon :deep(svg) {
+  width: 15px;
+  height: 12px;
+}
+.m-foot-item--version {
+  flex: 1.5;
+  border-right: none;
+}
+.m-version-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.82;
+}
+
+.font-bold { font-weight: 700; }
+.font-mono { font-family: var(--font-mono); }
+.text-right { text-align: right; }
 
 @media (max-width: 420px) {
-  .telemetry-grid {
+  .m-capacity-grid {
     grid-template-columns: 1fr;
+  }
+  .m-telemetry-box {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .border-lr {
+    border-left: none;
+    border-right: none;
+    border-top: 1px solid var(--border-subtle);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 8px 0;
   }
 }
 </style>
