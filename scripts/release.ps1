@@ -30,8 +30,22 @@ finally {
     Pop-Location
 }
 
+Push-Location fleetge-agent
+try {
+    python -m pytest test_agent.py
+}
+finally {
+    Pop-Location
+}
+
 git add VERSION backend/app/version.py frontend/package.json frontend/package-lock.json
-git commit -m "chore: release v$Version"
+$staged = git diff --cached --name-only
+if ($staged) {
+    git commit -m "chore: release v$Version"
+}
+else {
+    git commit --allow-empty -m "chore: release v$Version"
+}
 git tag -a "v$Version" -m "v$Version"
 
 if (-not $NoPush) {
@@ -39,4 +53,4 @@ if (-not $NoPush) {
     git push $Remote "v$Version"
 }
 
-Write-Host "Release v$Version is ready. GitHub Actions will build images and create the release from the tag."
+Write-Host "Release v$Version is ready. GitHub Actions will build app and agent images and create the release from the tag."
