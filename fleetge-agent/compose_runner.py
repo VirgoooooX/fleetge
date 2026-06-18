@@ -630,7 +630,7 @@ async def stream_stack_compose_logs(websocket: WebSocket, name: str, tail: int =
         exit_code = await _stream_docker_command(
             websocket,
             stack_path,
-            _compose_args(stack_path, "logs", "-f", "--tail", str(tail)),
+            _compose_args(stack_path, "logs", "--no-color", "-f", "--tail", str(tail)),
         )
         await websocket.send_json({"type": "exit", "code": exit_code})
     except WebSocketDisconnect:

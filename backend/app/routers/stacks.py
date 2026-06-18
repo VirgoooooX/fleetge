@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import shlex
 from typing import Any, AsyncGenerator, Optional
 
@@ -51,6 +52,11 @@ SERVICE_ACTIONS: dict[str, str] = {
     "restart": "restartService",
 }
 
+_ANSI_RE = re.compile(
+    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
+)
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+
 
 def _sse_event(event: str, data: dict) -> str:
     """Format an SSE event frame with JSON-encoded data.
@@ -59,6 +65,12 @@ def _sse_event(event: str, data: dict) -> str:
     sequences that would corrupt the SSE protocol framing.
     """
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _clean_log_text(text: str) -> str:
+    """Remove terminal color/control sequences before sending logs to the UI."""
+    text = _ANSI_RE.sub("", text)
+    return _CONTROL_RE.sub("", text)
 
 
 def _convert_docker_run_to_compose(command: str) -> str:
@@ -705,7 +717,7 @@ async def stream_stack_logs(
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
     def parse_compose_log_line(line: str) -> dict:
-        clean = line.rstrip("\r")
+        clean = _clean_log_text(line).rstrip("\r")
         if " | " in clean:
             service, text = clean.split(" | ", 1)
             return {"text": text, "service": service.strip()}
@@ -731,7 +743,7 @@ async def stream_stack_logs(
             buffer = ""
             try:
                 async for chunk in proxy.stream_container_logs(container.id, tail=tail):
-                    buffer += chunk.replace("\x00", "")
+                    buffer += _clean_log_text(chunk)
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         await queue.put(
@@ -785,7 +797,7 @@ async def stream_stack_logs(
             buffer = ""
             try:
                 async for chunk in proxy.stream_stack_compose_logs(stack_name, tail=tail):
-                    buffer += chunk.replace("\x00", "")
+                    buffer += _clean_log_text(chunk)
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         yield _sse_event("line", parse_compose_log_line(line))
@@ -794,14 +806,11 @@ async def stream_stack_logs(
                 yield _sse_event("complete", {"message": "Log stream ended."})
                 return
             except Exception as exc:
-                yield _sse_event(
-                    "error",
-                    {
-                        "message": (
-                            "Compose log stream unavailable; falling back to "
-                            f"container logs. {exc}"
-                        )
-                    },
+                logger.debug(
+                    "Compose log stream unavailable for %s/%s, falling back to container logs: %s",
+                    host_id,
+                    stack_name,
+                    exc,
                 )
 
             if not stack_containers:

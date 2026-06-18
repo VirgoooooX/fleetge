@@ -443,7 +443,7 @@ def test_compose_logs_stream_uses_compose_project_logs(stack_base, monkeypatch):
         assert ws.receive_json() == {"type": "stdout", "chunk": "web  | boot\n"}
         assert ws.receive_json() == {"type": "exit", "code": 0}
 
-    assert commands == [["compose", "logs", "-f", "--tail", "42"]]
+    assert commands == [["compose", "logs", "--no-color", "-f", "--tail", "42"]]
 
 
 def test_websocket_invalid_action(stack_base):

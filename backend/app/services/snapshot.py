@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
 from sqlmodel import select
 
 from app.config import get_settings
@@ -40,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 VISIBLE_UPDATE_STATUSES = {"up_to_date", "updatable"}
 FAILED_UPDATE_STATUSES = {"needs_auth", "check_failed"}
+TRANSIENT_AGENT_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.PoolTimeout,
+    httpx.NetworkError,
+)
 
 
 def _utc_now() -> datetime:
@@ -446,7 +454,8 @@ class SnapshotManager:
         try:
             await asyncio.wait_for(lock.acquire(), timeout=lock_timeout)
         except asyncio.TimeoutError:
-            logger.warning("Host %s refresh lock contention timeout", host_id)
+            log = logger.warning if force_status_on_timeout else logger.debug
+            log("Host %s refresh lock contention timeout", host_id)
             if force_status_on_timeout and snap:
                 snap.status = "degraded"
                 snap.error_message = "refresh lock contention timeout"
@@ -461,7 +470,8 @@ class SnapshotManager:
                 timeout=execution_timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning("Host %s refresh execution timeout", host_id)
+            log = logger.warning if force_status_on_timeout else logger.debug
+            log("Host %s refresh execution timeout", host_id)
             if force_status_on_timeout and snap:
                 snap.status = "degraded"
                 snap.error_message = "refresh execution timeout"
@@ -733,9 +743,12 @@ class SnapshotManager:
                 task.add_done_callback(lambda _: self._stats_tasks.pop(cfg.host_id, None))
 
         except Exception as exc:
-            logger.warning(
-                "Agent poll failed for %s: %s", cfg.host_id, exc, exc_info=True
-            )
+            if isinstance(exc, TRANSIENT_AGENT_ERRORS):
+                logger.warning("Agent poll failed for %s: %s", cfg.host_id, exc)
+            else:
+                logger.warning(
+                    "Agent poll failed for %s: %s", cfg.host_id, exc, exc_info=True
+                )
             self._record_failure(cfg.host_id)
             snap.status = "degraded"
             snap.error_message = str(exc)

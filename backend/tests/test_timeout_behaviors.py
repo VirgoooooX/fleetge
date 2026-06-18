@@ -3,6 +3,8 @@ import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 # Ensure test env vars are set before importing app modules
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
 os.environ.setdefault("CREDENTIALS_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
@@ -79,6 +81,39 @@ class SnapshotManagerTimeoutTests(unittest.IsolatedAsyncioTestCase):
         # Assert status is degraded due to execution timeout
         self.assertEqual(self.snap.status, "degraded")
         self.assertIn("execution timeout", self.snap.error_message)
+
+    async def test_retry_lock_contention_is_debug_only(self):
+        lock = self.manager._host_refresh_locks.setdefault(self.host_id, asyncio.Lock())
+        await lock.acquire()
+        try:
+            with patch("app.services.snapshot.logger.warning") as warn_log, \
+                 patch("app.services.snapshot.logger.debug") as debug_log:
+                await self.manager.refresh_host_docker(
+                    self.host_id,
+                    trigger_initial_update_check=False,
+                    lock_timeout=0.01,
+                    force_status_on_timeout=False,
+                )
+
+            warn_log.assert_not_called()
+            debug_log.assert_called()
+        finally:
+            lock.release()
+
+    async def test_transient_agent_connection_error_logs_without_traceback(self):
+        self.manager._agent_clients[self.host_id] = MagicMock()
+        proxy = self.manager._agent_clients[self.host_id]
+        proxy.version = AsyncMock(side_effect=httpx.ConnectError("All connection attempts failed"))
+
+        with self.assertLogs("app.services.snapshot", level="WARNING") as logs:
+            await self.manager._refresh_host_docker_locked(
+                self.host_id,
+                trigger_initial_update_check=False,
+            )
+
+        self.assertIn("Agent poll failed for test-host", logs.output[0])
+        self.assertIsNone(logs.records[0].exc_info)
+        self.assertEqual(self.snap.status, "degraded")
 
     async def test_no_stats_task_accumulation(self):
         # Mock dependencies for _refresh_host_docker_locked

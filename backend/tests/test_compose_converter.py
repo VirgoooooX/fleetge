@@ -2,7 +2,7 @@ import pytest
 import yaml
 from fastapi import HTTPException
 
-from app.routers.stacks import _convert_docker_run_to_compose
+from app.routers.stacks import _clean_log_text, _convert_docker_run_to_compose
 
 
 def test_convert_docker_run_common_flags():
@@ -30,3 +30,9 @@ def test_convert_docker_run_rejects_unsupported_flags():
 
     assert exc_info.value.status_code == 400
     assert "Unsupported docker run flag" in exc_info.value.detail
+
+
+def test_clean_log_text_strips_ansi_sequences():
+    raw = "\x1b[36mMoviePilot_115\x1b[0m\x1b[32mINFO:\x1b[0m message\x00"
+
+    assert _clean_log_text(raw) == "MoviePilot_115INFO: message"
