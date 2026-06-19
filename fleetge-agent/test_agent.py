@@ -513,7 +513,7 @@ def test_compose_logs_stream_uses_compose_project_logs(stack_base, monkeypatch):
         await websocket.send_json({"type": "stdout", "chunk": "web  | boot\n"})
         return 0
 
-    monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
+    monkeypatch.setattr(compose_runner, "_stream_with_subprocess", fake_stream)
 
     with client.websocket_connect(
         "/api/agent/stacks/test-stack/logs?tail=42&token=test-secret-token"

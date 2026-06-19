@@ -953,7 +953,9 @@ async def stream_stack_compose_logs(websocket: WebSocket, name: str, tail: int =
             return
 
         await websocket.send_json({"type": "ready"})
-        exit_code = await _stream_docker_command(
+        # Logs are not interactive. Use a pipe-based subprocess so quiet streams
+        # still flush their initial tail instead of waiting inside PTY reads.
+        exit_code = await _stream_with_subprocess(
             websocket,
             stack_path,
             _compose_args(stack_path, "logs", "--no-color", "-f", "--tail", str(tail)),
