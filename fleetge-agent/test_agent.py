@@ -501,6 +501,23 @@ def test_update_services_job_emits_job_id(stack_base, monkeypatch):
         assert ws.receive_json() == {"type": "exit", "code": 0}
 
 
+def test_create_job_persists_job_id_field(stack_base):
+    """Creating a persisted job must keep the status payload job_id field."""
+    job_id = compose_runner.asyncio.run(
+        compose_runner._create_job("selfUpdate", "fleetge", ["agent"])
+    )
+
+    status_path, log_path = compose_runner._job_paths(job_id)
+    with open(status_path, "r", encoding="utf-8") as f:
+        status = compose_runner.json.load(f)
+
+    assert status["job_id"] == job_id
+    assert status["action"] == "selfUpdate"
+    assert status["stack_name"] == "fleetge"
+    assert status["services"] == ["agent"]
+    assert os.path.isfile(log_path)
+
+
 def test_compose_logs_stream_uses_compose_project_logs(stack_base, monkeypatch):
     """The stack log terminal follows docker compose logs, not container IDs."""
     stack_dir = stack_base / "test-stack"

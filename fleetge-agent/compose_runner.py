@@ -104,8 +104,8 @@ def _job_paths(job_id: str) -> tuple[str, str]:
     return f"{base}.json", f"{base}.log"
 
 
-async def _write_job_status(job_id: str, **updates) -> None:
-    status_path, _ = _job_paths(job_id)
+async def _write_job_status(status_job_id: str, **updates) -> None:
+    status_path, _ = _job_paths(status_job_id)
 
     def write() -> None:
         current = {}
