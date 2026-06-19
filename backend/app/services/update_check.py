@@ -26,6 +26,56 @@ _cache_lock = asyncio.Lock()
 FAILURE_STATUSES = {"needs_auth", "check_failed"}
 
 
+def _parse_bearer_challenge(header: str) -> tuple[str, dict[str, str]] | None:
+    """Parse a Docker Registry Bearer challenge.
+
+    Public registries such as GHCR can still return a 401 challenge and require
+    an anonymous Bearer token before serving manifests.
+    """
+    if not header or not header.lower().startswith("bearer "):
+        return None
+
+    params = {
+        match.group(1).lower(): match.group(2)
+        for match in re.finditer(r'([A-Za-z_][A-Za-z0-9_-]*)="([^"]*)"', header)
+    }
+    realm = params.get("realm")
+    if not realm:
+        return None
+
+    token_params: dict[str, str] = {}
+    for key in ("service", "scope"):
+        if params.get(key):
+            token_params[key] = params[key]
+    return realm, token_params
+
+
+async def _get_bearer_token_from_challenge(
+    client: httpx.AsyncClient,
+    header: str,
+) -> tuple[Optional[str], Optional[str]]:
+    challenge = _parse_bearer_challenge(header)
+    if not challenge:
+        return None, "needs_auth"
+
+    realm, params = challenge
+    try:
+        tr = await client.get(realm, params=params, timeout=10)
+        if tr.status_code in (401, 403):
+            return None, "needs_auth"
+        tr.raise_for_status()
+        token = tr.json().get("token") or tr.json().get("access_token")
+        if not token:
+            return None, "check_failed"
+        return token, None
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            return None, "needs_auth"
+        return None, "check_failed"
+    except Exception:
+        return None, "check_failed"
+
+
 def _parse_image_ref(image: str) -> dict:
     """Parse a Docker image reference into components.
 
@@ -136,7 +186,7 @@ async def _get_manifest_digest(
             return None, "check_failed"
 
     elif registry == "ghcr.io":
-        # GHCR — no token needed for public images
+        # GHCR public packages can still require an anonymous Bearer token.
         manifest_url = (
             f"https://ghcr.io/v2/{repository}/manifests/{tag}"
         )
@@ -152,12 +202,24 @@ async def _get_manifest_digest(
                 }
                 r = await client.get(manifest_url, headers=headers, timeout=15)
                 if r.status_code == 401:
+                    token, error_status = await _get_bearer_token_from_challenge(
+                        client,
+                        r.headers.get("WWW-Authenticate", ""),
+                    )
+                    if error_status:
+                        return None, error_status
+                    r = await client.get(
+                        manifest_url,
+                        headers={**headers, "Authorization": f"Bearer {token}"},
+                        timeout=15,
+                    )
+                if r.status_code in (401, 403):
                     return None, "needs_auth"
                 r.raise_for_status()
                 digest = r.headers.get("Docker-Content-Digest")
                 return digest, None
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
+            if exc.response.status_code in (401, 403):
                 return None, "needs_auth"
             return None, "check_failed"
         except Exception:

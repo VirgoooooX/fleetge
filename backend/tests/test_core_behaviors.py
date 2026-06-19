@@ -235,6 +235,72 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "updatable")
         self.assertEqual(result.registry_digest, "sha256:new")
 
+    async def test_ghcr_public_manifest_follows_bearer_challenge(self):
+        from app.services import update_check
+
+        class FakeResponse:
+            def __init__(self, status_code, headers=None, payload=None):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise update_check.httpx.HTTPStatusError(
+                        "error",
+                        request=update_check.httpx.Request("GET", "https://example.invalid"),
+                        response=update_check.httpx.Response(self.status_code),
+                    )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, headers=None, params=None, timeout=None):
+                self.calls.append((url, headers or {}, params or {}))
+                if url == "https://ghcr.io/v2/virgoooox/fleetge/manifests/latest":
+                    if not (headers or {}).get("Authorization"):
+                        return FakeResponse(
+                            401,
+                            {
+                                "WWW-Authenticate": (
+                                    'Bearer realm="https://ghcr.io/token",'
+                                    'service="ghcr.io",'
+                                    'scope="repository:virgoooox/fleetge:pull"'
+                                )
+                            },
+                        )
+                    return FakeResponse(
+                        200,
+                        {"Docker-Content-Digest": "sha256:registry"},
+                    )
+                if url == "https://ghcr.io/token":
+                    assert params["service"] == "ghcr.io"
+                    assert params["scope"] == "repository:virgoooox/fleetge:pull"
+                    return FakeResponse(200, payload={"token": "anonymous-token"})
+                return FakeResponse(404)
+
+        fake_client = FakeClient()
+        with patch("app.services.update_check.httpx.AsyncClient", return_value=fake_client):
+            digest, error_status = await update_check._get_manifest_digest(
+                "ghcr.io",
+                "virgoooox/fleetge",
+                "latest",
+            )
+
+        self.assertEqual(error_status, None)
+        self.assertEqual(digest, "sha256:registry")
+        self.assertEqual(len(fake_client.calls), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
