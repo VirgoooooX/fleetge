@@ -267,7 +267,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
 
             async def get(self, url, headers=None, params=None, timeout=None):
                 self.calls.append((url, headers or {}, params or {}))
-                if url == "https://ghcr.io/v2/virgoooox/fleetge/manifests/latest":
+                if url == "https://ghcr.io/v2/virgooooox/fleetge/manifests/latest":
                     if not (headers or {}).get("Authorization"):
                         return FakeResponse(
                             401,
@@ -275,7 +275,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                                 "WWW-Authenticate": (
                                     'Bearer realm="https://ghcr.io/token",'
                                     'service="ghcr.io",'
-                                    'scope="repository:virgoooox/fleetge:pull"'
+                                    'scope="repository:virgooooox/fleetge:pull"'
                                 )
                             },
                         )
@@ -285,7 +285,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                     )
                 if url == "https://ghcr.io/token":
                     assert params["service"] == "ghcr.io"
-                    assert params["scope"] == "repository:virgoooox/fleetge:pull"
+                    assert params["scope"] == "repository:virgooooox/fleetge:pull"
                     return FakeResponse(200, payload={"token": "anonymous-token"})
                 return FakeResponse(404)
 
@@ -293,7 +293,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.services.update_check.httpx.AsyncClient", return_value=fake_client):
             digest, error_status = await update_check._get_manifest_digest(
                 "ghcr.io",
-                "virgoooox/fleetge",
+                "virgooooox/fleetge",
                 "latest",
             )
 

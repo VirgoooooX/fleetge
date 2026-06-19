@@ -18,7 +18,7 @@
       <pre>
 services:
   fleetge:
-    image: ghcr.io/virgoooox/fleetge:latest
+    image: ghcr.io/virgooooox/fleetge:latest
     restart: unless-stopped
     ports:
       - "80:8000"

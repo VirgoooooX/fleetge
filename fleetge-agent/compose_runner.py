@@ -741,7 +741,7 @@ async def _start_update_services_job(stack_name: str, stack_path: str, services:
 async def _start_self_updater_container(stack_name: str, stack_path: str, services: list[str]) -> str:
     job_id = await _create_job("selfUpdate", stack_name, services)
     self_info = await _get_agent_self_info()
-    updater_image = FLEETGE_UPDATER_IMAGE or self_info.get("image") or "ghcr.io/virgoooox/fleetge-agent:latest"
+    updater_image = FLEETGE_UPDATER_IMAGE or self_info.get("image") or "ghcr.io/virgooooox/fleetge-agent:latest"
     stacks_host_path = self_info.get("stacks_host_path") or os.path.realpath(STACKS_BASE_DIR)
     stacks_container_path = self_info.get("stacks_container_path") or os.path.realpath(STACKS_BASE_DIR)
     job_status_path, _ = _job_paths(job_id)

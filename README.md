@@ -86,7 +86,7 @@ version: '3.8'
 
 services:
   fleetge:
-    image: ghcr.io/virgoooox/fleetge:latest
+    image: ghcr.io/virgooooox/fleetge:latest
     container_name: fleetge
     restart: unless-stopped
     ports:
@@ -152,7 +152,7 @@ version: '3.8'
 
 services:
   agent:
-    image: ghcr.io/virgoooox/fleetge-agent:latest
+    image: ghcr.io/virgooooox/fleetge-agent:latest
     container_name: fleetge-agent
     restart: unless-stopped
     ports:
@@ -247,7 +247,7 @@ version: '3.8'
 
 services:
   fleetge:
-    image: ghcr.io/virgoooox/fleetge:latest
+    image: ghcr.io/virgooooox/fleetge:latest
     container_name: fleetge
     restart: unless-stopped
     ports:
@@ -312,7 +312,7 @@ version: '3.8'
 
 services:
   agent:
-    image: ghcr.io/virgoooox/fleetge-agent:latest
+    image: ghcr.io/virgooooox/fleetge-agent:latest
     container_name: fleetge-agent
     restart: unless-stopped
     ports:

@@ -5,7 +5,7 @@
 
 services:
   agent:
-    image: ghcr.io/virgoooox/fleetge-agent:latest
+    image: ghcr.io/virgooooox/fleetge-agent:latest
     container_name: fleetge-agent
     restart: unless-stopped
     ports:
