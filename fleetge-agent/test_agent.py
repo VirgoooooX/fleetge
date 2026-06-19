@@ -422,6 +422,85 @@ def test_service_actions_generate_compose_args(stack_base, monkeypatch, action, 
     assert commands == [expected]
 
 
+def test_update_services_generates_pull_and_no_deps_up(stack_base, monkeypatch):
+    """Service image updates can target selected services without recreating dependencies."""
+    stack_dir = stack_base / "test-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  web:\n    image: nginx\n")
+    commands = []
+
+    async def fake_stream(websocket, stack_path, args, cols=160, rows=24):
+        commands.append(args)
+        await websocket.send_json({"type": "stdout", "chunk": "ok\n"})
+        return 0
+
+    async def fake_self_info():
+        return {"stack_name": "other-stack", "service_name": "fleetge-agent"}
+
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
+    monkeypatch.setattr(compose_runner, "_get_agent_self_info", fake_self_info)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/test-stack/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": "updateServices", "services": ["web"]})
+        assert ws.receive_json()["type"] == "stdout"
+        assert ws.receive_json()["type"] == "stdout"
+        assert ws.receive_json() == {"type": "exit", "code": 0}
+
+    assert commands == [
+        ["compose", "pull", "web"],
+        ["compose", "up", "-d", "--no-deps", "web"],
+    ]
+
+
+def test_update_services_refuses_current_agent_service(stack_base, monkeypatch):
+    """The agent refuses non-handoff updates that would recreate itself."""
+    stack_dir = stack_base / "fleetge"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  fleetge-agent:\n    image: agent\n")
+
+    async def fake_self_info():
+        return {"stack_name": "fleetge", "service_name": "fleetge-agent"}
+
+    monkeypatch.setattr(compose_runner, "_get_agent_self_info", fake_self_info)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/fleetge/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": "updateServices", "services": ["fleetge-agent"]})
+        msg = ws.receive_json()
+        assert msg["type"] == "error"
+        assert "Refusing to update" in msg["message"]
+
+
+def test_update_services_job_emits_job_id(stack_base, monkeypatch):
+    """Fleetge app-only updates are handed to a persisted background job."""
+    stack_dir = stack_base / "fleetge"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  fleetge:\n    image: app\n")
+
+    async def fake_self_info():
+        return {"stack_name": "fleetge", "service_name": "fleetge-agent"}
+
+    async def fake_start_job(stack_name, stack_path, services):
+        assert stack_name == "fleetge"
+        assert services == ["fleetge"]
+        return "job123"
+
+    monkeypatch.setattr(compose_runner, "_get_agent_self_info", fake_self_info)
+    monkeypatch.setattr(compose_runner, "_start_update_services_job", fake_start_job)
+
+    with client.websocket_connect(
+        "/api/agent/stacks/fleetge/execute?token=test-secret-token"
+    ) as ws:
+        ws.send_json({"action": "updateServicesJob", "services": ["fleetge"]})
+        job = ws.receive_json()
+        assert job["type"] == "job"
+        assert job["job_id"] == "job123"
+        assert ws.receive_json() == {"type": "exit", "code": 0}
+
+
 def test_compose_logs_stream_uses_compose_project_logs(stack_base, monkeypatch):
     """The stack log terminal follows docker compose logs, not container IDs."""
     stack_dir = stack_base / "test-stack"

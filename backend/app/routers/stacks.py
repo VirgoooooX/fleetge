@@ -16,13 +16,16 @@ from app.auth.handler import get_current_user
 from app.database import get_session, engine
 from app.models import AuditLog
 from app.schemas import (
+    ContainerSummary,
     StackComposeDetail,
     StackComposeSaveRequest,
     StackOperationResponse,
     StackSummary,
+    UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
 from app.services.snapshot import snapshot_manager
+from app.services.update_check import FAILURE_STATUSES, run_update_check
 
 logger = logging.getLogger(__name__)
 
@@ -961,6 +964,190 @@ async def stack_service_action(
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+def _containers_by_service(snap: Any, stack_name: str) -> dict[str, ContainerSummary]:
+    services: dict[str, ContainerSummary] = {}
+    for container in snap.containers:
+        if container.stack_name != stack_name or not container.service_name or not container.image:
+            continue
+        services.setdefault(container.service_name, container)
+    return services
+
+
+async def _fresh_check_fleetge_services(
+    host_id: str,
+    stack_name: str,
+    snap: Any,
+) -> tuple[dict[str, ContainerSummary], dict[str, UpdateCheckResult]]:
+    service_containers = _containers_by_service(snap, stack_name)
+    if not service_containers:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot plan Fleetge update: no running compose service containers were found for this stack.",
+        )
+
+    image_refs = [
+        (container.image, container.repo_digests)
+        for container in service_containers.values()
+    ]
+    results = await run_update_check(host_id, image_refs, force=True)
+    by_image = {result.image: result for result in results}
+    return service_containers, by_image
+
+
+async def _poll_agent_job_events(
+    conn: AgentClient,
+    job_id: str,
+    timeout_seconds: float = 600.0,
+) -> AsyncGenerator[str, None]:
+    started = asyncio.get_running_loop().time()
+    last_size = 0
+    reconnect_notice_sent = False
+
+    while True:
+        if asyncio.get_running_loop().time() - started > timeout_seconds:
+            yield _sse_event("complete", {
+                "status": "error",
+                "message": f"Fleetge update job {job_id} timed out.",
+            })
+            return
+
+        try:
+            logs = await conn.get_job_logs(job_id)
+            content = logs.get("content", "")
+            if len(content) > last_size:
+                yield _sse_event("chunk", {"raw": content[last_size:]})
+                last_size = len(content)
+
+            job = await conn.get_job(job_id)
+            status = job.get("status")
+            if status in ("success", "error"):
+                message = (
+                    "Fleetge update completed successfully."
+                    if status == "success"
+                    else job.get("message") or f"Fleetge update job {job_id} failed."
+                )
+                yield _sse_event("complete", {
+                    "status": "success" if status == "success" else "error",
+                    "message": message,
+                })
+                return
+
+            reconnect_notice_sent = False
+        except Exception:
+            if not reconnect_notice_sent:
+                yield _sse_event("chunk", {"raw": "Waiting for Fleetge Agent to reconnect...\n"})
+                reconnect_notice_sent = True
+
+        await asyncio.sleep(2.0)
+
+
+async def _stream_fleetge_update(
+    host_id: str,
+    stack_name: str,
+    conn: AgentClient,
+    self_info: dict,
+    cols: int,
+    rows: int,
+) -> AsyncGenerator[str, None]:
+    agent_service = self_info.get("service_name")
+    if not agent_service:
+        yield _sse_event("error", {"message": "Cannot plan Fleetge update: agent service name is unknown."})
+        return
+
+    yield _sse_event("chunk", {"raw": "Detected Fleetge control stack. Running fresh image check...\n"})
+    await snapshot_manager.refresh_host_docker(host_id, trigger_initial_update_check=False)
+    refreshed = snapshot_manager.get_snapshot(host_id)
+    if refreshed is None:
+        yield _sse_event("error", {"message": f"Host '{host_id}' not found after refresh."})
+        return
+
+    try:
+        service_containers, results_by_image = await _fresh_check_fleetge_services(host_id, stack_name, refreshed)
+    except HTTPException as exc:
+        yield _sse_event("error", {"message": exc.detail})
+        return
+    except Exception as exc:
+        yield _sse_event("error", {"message": f"Fresh image check failed: {exc}"})
+        return
+
+    failures: dict[str, str] = {}
+    updatable_services: list[str] = []
+    for service_name, container in service_containers.items():
+        result = results_by_image.get(container.image)
+        if result is None:
+            failures[service_name] = "check_failed"
+            continue
+        yield _sse_event("chunk", {"raw": f"{service_name}: {container.image} -> {result.status}\n"})
+        if result.status in FAILURE_STATUSES:
+            failures[service_name] = result.status
+        elif result.status == "updatable":
+            updatable_services.append(service_name)
+
+    if failures:
+        detail = ", ".join(f"{svc}={status}" for svc, status in sorted(failures.items()))
+        yield _sse_event("complete", {
+            "status": "error",
+            "message": f"Fleetge update requires a fresh image check, but some services could not be checked: {detail}",
+        })
+        return
+
+    if not updatable_services:
+        yield _sse_event("complete", {
+            "status": "success",
+            "message": "Fresh image check completed. Fleetge images are already up to date.",
+        })
+        return
+
+    if agent_service in updatable_services:
+        agent_action = "selfUpdate"
+        yield _sse_event("chunk", {
+            "raw": f"Agent service '{agent_service}' needs update. Handing off to temporary self-updater...\n"
+        })
+    else:
+        agent_action = "updateServicesJob"
+        yield _sse_event("chunk", {
+            "raw": f"Updating Fleetge app services without touching agent: {', '.join(updatable_services)}\n"
+        })
+
+    log_queue: asyncio.Queue = asyncio.Queue()
+    task = asyncio.create_task(
+        conn.stack_action(
+            stack_name,
+            agent_action,
+            log_queue=log_queue,
+            cols=cols,
+            rows=rows,
+            services=updatable_services,
+        )
+    )
+
+    while True:
+        chunk = await log_queue.get()
+        if chunk is None:
+            break
+        yield _sse_event("chunk", {"raw": chunk})
+
+    result = await task
+    if not result.get("success", result.get("ok", True)):
+        yield _sse_event("complete", {
+            "status": "error",
+            "message": result.get("message", "Failed to start Fleetge update job."),
+        })
+        return
+
+    job_id = result.get("job_id")
+    if not job_id:
+        yield _sse_event("complete", {
+            "status": "success",
+            "message": result.get("message", "Fleetge update completed."),
+        })
+        return
+
+    yield _sse_event("chunk", {"raw": f"Tracking Fleetge update job {job_id}...\n"})
+    async for event in _poll_agent_job_events(conn, job_id):
+        yield event
+
+
 @router.post(
     "/hosts/{host_id}/stacks/{stack_name}/{action}",
 )
@@ -1016,6 +1203,33 @@ async def stack_action(
 
         conn = AgentClient(snap.host_config)
         try:
+            if action == "update":
+                try:
+                    self_info = await conn.get_self()
+                except Exception as exc:
+                    logger.debug("Agent self identity unavailable for %s/%s: %s", host_id, stack_name, exc)
+                    self_info = {}
+
+                if self_info.get("stack_name") == stack_name:
+                    async for event in _stream_fleetge_update(
+                        host_id,
+                        stack_name,
+                        conn,
+                        self_info,
+                        cols,
+                        rows,
+                    ):
+                        yield event
+
+                    asyncio.create_task(
+                        snapshot_manager.refresh_host_docker_with_retry(host_id)
+                    )
+                    _write_audit_log_standalone(
+                        username, f"stack.{action}", host_id, stack_name,
+                        "success", "Fleetge planned update completed", ip,
+                    )
+                    return
+
             task = asyncio.create_task(
                 conn.stack_action(
                     stack_name, socket_event, log_queue=log_queue, cols=cols, rows=rows

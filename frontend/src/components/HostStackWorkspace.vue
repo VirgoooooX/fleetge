@@ -1606,7 +1606,7 @@ async function runStackUpdate(stackName: string): Promise<boolean> {
     await streamSse({
       url,
       method: "POST",
-      timeoutMs: 240000,
+      timeoutMs: 600000,
       signal: controller.signal,
       onTimeout: () => {
         if (completed) return;

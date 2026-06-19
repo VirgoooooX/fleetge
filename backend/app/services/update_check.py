@@ -212,6 +212,7 @@ async def check_image(
     host_id: str,
     image_ref: str,
     repo_digests: list[str] | None = None,
+    force: bool = False,
 ) -> UpdateCheckResult:
     """Check if a single image has an update available.
 
@@ -229,21 +230,22 @@ async def check_image(
     repo_digests = repo_digests or []
     # Check cache first
     cache_key = f"{host_id}:{image_ref}"
-    async with _cache_lock:
-        cached = _update_cache.get(cache_key)
-        cache_ttl = get_settings().UPDATE_CHECK_INTERVAL
-        if (
-            cached
-            and cached.get("status") not in FAILURE_STATUSES
-            and (time.monotonic() - cached.get("ts", 0)) < cache_ttl
-        ):
-            return UpdateCheckResult(
-                host_id=host_id,
-                image=image_ref,
-                current_digest=cached["local"],
-                registry_digest=cached["registry"],
-                status=cached["status"],
-            )
+    if not force:
+        async with _cache_lock:
+            cached = _update_cache.get(cache_key)
+            cache_ttl = get_settings().UPDATE_CHECK_INTERVAL
+            if (
+                cached
+                and cached.get("status") not in FAILURE_STATUSES
+                and (time.monotonic() - cached.get("ts", 0)) < cache_ttl
+            ):
+                return UpdateCheckResult(
+                    host_id=host_id,
+                    image=image_ref,
+                    current_digest=cached["local"],
+                    registry_digest=cached["registry"],
+                    status=cached["status"],
+                )
 
     # Parse image reference
     parsed = _parse_image_ref(image_ref)
@@ -289,7 +291,7 @@ async def check_image(
 
 
 async def run_update_check(
-    host_id: str, image_refs: list[tuple[str, list[str]]]
+    host_id: str, image_refs: list[tuple[str, list[str]]], force: bool = False
 ) -> list[UpdateCheckResult]:
     """Run update checks for multiple images on a host.
 
@@ -321,7 +323,7 @@ async def run_update_check(
             for delay in delays:
                 if delay:
                     await asyncio.sleep(delay)
-                last_result = await check_image(host_id, image_ref, repo_digests)
+                last_result = await check_image(host_id, image_ref, repo_digests, force=force)
                 if last_result.status not in FAILURE_STATUSES:
                     return last_result
             return last_result

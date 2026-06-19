@@ -226,6 +226,26 @@ class AgentClient:
         # snapshot_manager will merge this with compose labels to resolve service lists.
         return [{"name": name} for name in r.json()]
 
+    async def get_self(self) -> dict:
+        """GET /api/agent/self returns this agent's compose identity."""
+        r = await self._client.get("/api/agent/self", headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
+    async def get_job(self, job_id: str) -> dict:
+        """GET /api/agent/jobs/{job_id}."""
+        encoded = urllib.parse.quote(job_id, safe="")
+        r = await self._client.get(f"/api/agent/jobs/{encoded}", headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
+    async def get_job_logs(self, job_id: str) -> dict:
+        """GET /api/agent/jobs/{job_id}/logs."""
+        encoded = urllib.parse.quote(job_id, safe="")
+        r = await self._client.get(f"/api/agent/jobs/{encoded}/logs", headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
     async def get_global_env(self) -> str:
         """GET /api/agent/global-env."""
         r = await self._client.get("/api/agent/global-env", headers=self._headers())
@@ -328,6 +348,7 @@ class AgentClient:
         cols: int = 160,
         rows: int = 24,
         service: Optional[str] = None,
+        services: Optional[list[str]] = None,
     ) -> dict:
         """Execute docker compose command on the agent and stream control output via WebSocket."""
         # Convert start/stop/down/restart/update actions to Agent supported compose commands
@@ -346,6 +367,8 @@ class AgentClient:
             agent_action = "delete"
         elif action in ("startService", "stopService", "restartService"):
             agent_action = action
+        elif action in ("updateServices", "updateServicesJob", "selfUpdate"):
+            agent_action = action
 
         # Establish WebSocket URI — token passed via Authorization header
         ws_uri = f"{self._ws_base_url}/api/agent/stacks/{name}/execute"
@@ -358,10 +381,13 @@ class AgentClient:
                 payload = {"action": agent_action, "cols": cols, "rows": rows}
                 if service is not None:
                     payload["service"] = service
+                if services is not None:
+                    payload["services"] = services
                 await ws.send(json.dumps(payload))
                 
                 exit_code = 0
                 error_msg = ""
+                job_id = ""
                 
                 # Consume lines
                 while True:
@@ -383,6 +409,11 @@ class AgentClient:
                                 await log_queue.put(f"ERROR: {error_msg}")
                             exit_code = -1
                             break
+                        elif msg_type == "job":
+                            job_id = msg.get("job_id", "")
+                            message = msg.get("message") or (f"Started job {job_id}" if job_id else "Started job")
+                            if log_queue is not None:
+                                await log_queue.put(message + "\n")
                     except websockets.ConnectionClosed:
                         break
 
@@ -392,7 +423,10 @@ class AgentClient:
 
                 if exit_code != 0:
                     return {"success": False, "ok": False, "message": error_msg or f"Command failed with exit code {exit_code}"}
-                return {"success": True, "ok": True, "message": "Operation completed successfully"}
+                result = {"success": True, "ok": True, "message": "Operation completed successfully"}
+                if job_id:
+                    result["job_id"] = job_id
+                return result
 
         except Exception as exc:
             if log_queue is not None:

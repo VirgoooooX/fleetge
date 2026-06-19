@@ -1313,7 +1313,7 @@ class SnapshotManager:
             return
 
         try:
-            results = await run_update_check(host_id, due_refs)
+            results = await run_update_check(host_id, due_refs, force=force)
 
             with Session(engine) as session:
                 fresh_rows = session.exec(

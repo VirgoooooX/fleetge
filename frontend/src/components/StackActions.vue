@@ -204,7 +204,7 @@ const actionTimeouts: Record<string, number> = {
   stop: 120000,
   down: 120000,
   restart: 120000,
-  update: 240000,
+  update: 600000,
 };
 
 async function confirmAndRun(action: string, label: string) {

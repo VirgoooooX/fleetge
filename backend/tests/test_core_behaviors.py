@@ -210,6 +210,31 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.snap.update_check_results[0].status, "up_to_date")
         self.assertEqual(self.snap.update_count, 0)
 
+    async def test_forced_update_check_bypasses_memory_cache(self):
+        from app.services import update_check
+
+        async with update_check._cache_lock:
+            update_check._update_cache.clear()
+            update_check._update_cache[f"{self.host_id}:nginx:latest"] = {
+                "local": "sha256:old",
+                "registry": "sha256:old",
+                "status": "up_to_date",
+                "ts": update_check.time.monotonic(),
+            }
+
+        with patch("app.services.update_check._get_manifest_digest", new_callable=AsyncMock) as mock_digest:
+            mock_digest.return_value = ("sha256:new", None)
+            result = await update_check.check_image(
+                self.host_id,
+                "nginx:latest",
+                ["nginx:latest@sha256:old"],
+                force=True,
+            )
+
+        mock_digest.assert_called_once()
+        self.assertEqual(result.status, "updatable")
+        self.assertEqual(result.registry_digest, "sha256:new")
+
 
 if __name__ == "__main__":
     unittest.main()

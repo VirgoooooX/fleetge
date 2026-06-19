@@ -3,11 +3,16 @@ import re
 import shutil
 import asyncio
 import json
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 STACKS_BASE_DIR = os.environ.get("STACKS_BASE_DIR", "/opt/stacks")
+FLEETGE_STACK_NAME = os.environ.get("FLEETGE_STACK_NAME", "").strip()
+FLEETGE_AGENT_SERVICE = os.environ.get("FLEETGE_AGENT_SERVICE", "").strip()
+FLEETGE_UPDATER_IMAGE = os.environ.get("FLEETGE_UPDATER_IMAGE", "").strip()
 
 router = APIRouter()
 
@@ -47,6 +52,11 @@ class GlobalEnvRequest(BaseModel):
     content: str = ""
 
 
+class JobLogResponse(BaseModel):
+    content: str = ""
+    size: int = 0
+
+
 def _validate_stack_name(name: str) -> None:
     """Ensure stack name is safe and does not contain path traversal characters."""
     if not STACK_NAME_RE.match(name):
@@ -64,6 +74,83 @@ def _validate_service_name(name: Optional[str]) -> str:
             detail="Invalid service name. Only letters, numbers, dots, hyphens, and underscores are allowed.",
         )
     return service
+
+
+def _validate_services(services: object) -> list[str]:
+    if not isinstance(services, list) or not services:
+        raise HTTPException(status_code=400, detail="services must be a non-empty list")
+    return [_validate_service_name(str(service)) for service in services]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _jobs_dir() -> str:
+    path = os.path.join(os.path.realpath(STACKS_BASE_DIR), ".fleetge", "jobs")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _validate_job_id(job_id: str) -> str:
+    if not re.match(r"^[a-zA-Z0-9_.-]+$", job_id or ""):
+        raise HTTPException(status_code=400, detail="Invalid job id")
+    return job_id
+
+
+def _job_paths(job_id: str) -> tuple[str, str]:
+    safe_job_id = _validate_job_id(job_id)
+    base = os.path.join(_jobs_dir(), safe_job_id)
+    return f"{base}.json", f"{base}.log"
+
+
+async def _write_job_status(job_id: str, **updates) -> None:
+    status_path, _ = _job_paths(job_id)
+
+    def write() -> None:
+        current = {}
+        if os.path.isfile(status_path):
+            try:
+                with open(status_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    current.update(loaded)
+            except Exception:
+                pass
+        current.update(updates)
+        current["updated_at"] = _utc_now_iso()
+        tmp_path = f"{status_path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(current, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, status_path)
+
+    await asyncio.to_thread(write)
+
+
+async def _append_job_log(job_id: str, text: str) -> None:
+    _, log_path = _job_paths(job_id)
+    await asyncio.to_thread(_append_job_log_sync, log_path, text)
+
+
+def _append_job_log_sync(log_path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    with open(log_path, "a", encoding="utf-8", errors="replace") as f:
+        f.write(text)
+
+
+async def _create_job(action: str, stack_name: str, services: list[str]) -> str:
+    job_id = uuid.uuid4().hex[:12]
+    await _write_job_status(
+        job_id,
+        job_id=job_id,
+        action=action,
+        stack_name=stack_name,
+        services=services,
+        status="queued",
+        started_at=_utc_now_iso(),
+    )
+    await _append_job_log(job_id, f"Fleetge job {job_id} queued: {action}\n")
+    return job_id
 
 
 def _get_stack_path(name: str) -> str:
@@ -86,6 +173,113 @@ def _get_stack_path(name: str) -> str:
         )
 
     return stack_real
+
+
+def _current_container_candidates() -> list[str]:
+    candidates: list[str] = []
+    try:
+        with open("/etc/hostname", "r", encoding="utf-8") as f:
+            hostname = f.read().strip()
+        if hostname:
+            candidates.append(hostname)
+    except Exception:
+        pass
+
+    try:
+        with open("/proc/self/cgroup", "r", encoding="utf-8") as f:
+            text = f.read()
+        for match in re.finditer(r"([0-9a-f]{12,64})", text):
+            value = match.group(1)
+            if value not in candidates:
+                candidates.append(value)
+    except Exception:
+        pass
+
+    return candidates
+
+
+async def _inspect_container(container_id: str) -> Optional[dict]:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker", "container", "inspect", container_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10.0)
+    except Exception:
+        return None
+    if process.returncode != 0:
+        return None
+    try:
+        payload = json.loads(stdout.decode("utf-8", errors="replace"))
+    except Exception:
+        return None
+    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+        return payload[0]
+    return None
+
+
+def _host_mount_for_path(inspect: dict, container_path: str) -> tuple[str, str]:
+    """Return (host_source, container_destination) mount covering container_path."""
+    path = os.path.realpath(container_path)
+    mounts = inspect.get("Mounts", []) if isinstance(inspect, dict) else []
+    best: tuple[str, str] | None = None
+    for mount in mounts or []:
+        dest = mount.get("Destination")
+        source = mount.get("Source")
+        if not dest or not source:
+            continue
+        dest_real = os.path.realpath(dest)
+        try:
+            common = os.path.commonpath([path, dest_real])
+        except ValueError:
+            continue
+        if common != dest_real:
+            continue
+        if best is None or len(dest_real) > len(best[1]):
+            rel = os.path.relpath(path, dest_real)
+            host_source = source if rel == "." else os.path.join(source, rel)
+            best = (host_source, path)
+    if best:
+        return best
+    return path, path
+
+
+async def _get_agent_self_info() -> dict:
+    """Return the current agent's compose identity as observed through Docker."""
+    inspect: dict = {}
+    container_id = ""
+    for candidate in _current_container_candidates():
+        found = await _inspect_container(candidate)
+        if found:
+            inspect = found
+            container_id = str(found.get("Id") or candidate)
+            break
+
+    config = inspect.get("Config", {}) if inspect else {}
+    labels = config.get("Labels", {}) if isinstance(config, dict) else {}
+    labels = labels or {}
+    image = str(config.get("Image") or inspect.get("Image") or "")
+    stack_name = FLEETGE_STACK_NAME or labels.get("com.docker.compose.project") or ""
+    service_name = FLEETGE_AGENT_SERVICE or labels.get("com.docker.compose.service") or ""
+    working_dir = labels.get("com.docker.compose.project.working_dir") or ""
+    stack_path = os.path.realpath(working_dir) if working_dir else (
+        _get_stack_path(stack_name) if stack_name and STACK_NAME_RE.match(stack_name) else ""
+    )
+    stacks_host_path, stacks_container_path = _host_mount_for_path(inspect, STACKS_BASE_DIR)
+
+    return {
+        "container_id": container_id[:12] if container_id else "",
+        "stack_name": stack_name,
+        "service_name": service_name,
+        "stack_path": stack_path,
+        "image": image,
+        "version": labels.get("org.opencontainers.image.version") or "",
+        "revision": labels.get("org.opencontainers.image.revision") or "",
+        "stacks_base_dir": os.path.realpath(STACKS_BASE_DIR),
+        "stacks_host_path": stacks_host_path,
+        "stacks_container_path": stacks_container_path,
+    }
 
 
 def _find_compose_file(stack_path: str) -> Optional[str]:
@@ -145,6 +339,39 @@ async def list_stacks():
         raise HTTPException(status_code=500, detail=f"Failed to scan stacks directory: {exc}")
 
     return sorted(stacks)
+
+
+@router.get("/self")
+async def get_self():
+    """Return this agent container's compose identity for backend update planning."""
+    return await _get_agent_self_info()
+
+
+@router.get("/jobs/{job_id}")
+async def get_job(job_id: str):
+    """Return a persisted Fleetge agent job status."""
+    status_path, _ = _job_paths(job_id)
+    if not os.path.isfile(status_path):
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    try:
+        with open(status_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read job status: {exc}")
+
+
+@router.get("/jobs/{job_id}/logs", response_model=JobLogResponse)
+async def get_job_logs(job_id: str):
+    """Return a persisted Fleetge agent job log."""
+    _, log_path = _job_paths(job_id)
+    if not os.path.isfile(log_path):
+        return JobLogResponse()
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read()
+        return JobLogResponse(content=content, size=len(content))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read job log: {exc}")
 
 
 @router.get("/global-env")
@@ -460,6 +687,105 @@ async def _run_docker_command_capture(stack_path: str, args: list[str]) -> tuple
         return 1, f"Failed to run docker command: {exc}"
 
 
+async def _run_job_command(job_id: str, stack_path: str, args: list[str]) -> int:
+    await _append_job_log(job_id, f"\n$ docker {' '.join(args)}\n")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", *args,
+            cwd=stack_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception as exc:
+        await _append_job_log(job_id, f"Failed to start docker command: {exc}\n")
+        return 1
+
+    assert proc.stdout is not None
+    while True:
+        chunk = await proc.stdout.read(4096)
+        if not chunk:
+            break
+        await _append_job_log(job_id, chunk.decode("utf-8", errors="replace"))
+
+    await proc.wait()
+    code = proc.returncode if proc.returncode is not None else 0
+    await _append_job_log(job_id, f"\nCommand exited with code {code}\n")
+    return code
+
+
+async def _run_update_services_job(job_id: str, stack_path: str, services: list[str]) -> None:
+    await _write_job_status(job_id, status="running", phase="pull")
+    exit_code = await _run_job_command(job_id, stack_path, _compose_args(stack_path, "pull", *services))
+    if exit_code == 0:
+        await _write_job_status(job_id, status="running", phase="up")
+        exit_code = await _run_job_command(
+            job_id,
+            stack_path,
+            _compose_args(stack_path, "up", "-d", "--no-deps", *services),
+        )
+
+    if exit_code == 0:
+        await _write_job_status(job_id, status="success", phase="done", exit_code=0, finished_at=_utc_now_iso())
+        await _append_job_log(job_id, "\nFleetge update job completed successfully.\n")
+    else:
+        await _write_job_status(job_id, status="error", phase="failed", exit_code=exit_code, finished_at=_utc_now_iso())
+        await _append_job_log(job_id, f"\nFleetge update job failed with exit code {exit_code}.\n")
+
+
+async def _start_update_services_job(stack_name: str, stack_path: str, services: list[str]) -> str:
+    job_id = await _create_job("updateServicesJob", stack_name, services)
+    asyncio.create_task(_run_update_services_job(job_id, stack_path, services))
+    return job_id
+
+
+async def _start_self_updater_container(stack_name: str, stack_path: str, services: list[str]) -> str:
+    job_id = await _create_job("selfUpdate", stack_name, services)
+    self_info = await _get_agent_self_info()
+    updater_image = FLEETGE_UPDATER_IMAGE or self_info.get("image") or "ghcr.io/virgoooox/fleetge-agent:latest"
+    stacks_host_path = self_info.get("stacks_host_path") or os.path.realpath(STACKS_BASE_DIR)
+    stacks_container_path = self_info.get("stacks_container_path") or os.path.realpath(STACKS_BASE_DIR)
+    job_status_path, _ = _job_paths(job_id)
+
+    await _write_job_status(job_id, status="handoff", phase="starting-updater")
+    await _append_job_log(job_id, f"Starting temporary updater container for services: {', '.join(services)}\n")
+
+    container_name = f"fleetge-self-updater-{job_id}"
+    cmd = [
+        "run", "-d", "--rm",
+        "--name", container_name,
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{stacks_host_path}:{stacks_container_path}",
+        "-e", f"STACKS_BASE_DIR={stacks_container_path}",
+        updater_image,
+        "python", "-m", "self_updater",
+        "--job-id", job_id,
+        "--stack-dir", stack_path,
+        "--jobs-dir", os.path.dirname(job_status_path),
+        "--services", *services,
+    ]
+
+    exit_code, output = await _run_docker_command_capture("/", cmd)
+    await _append_job_log(job_id, output)
+    if exit_code != 0:
+        await _write_job_status(
+            job_id,
+            status="error",
+            phase="start-updater-failed",
+            exit_code=exit_code,
+            finished_at=_utc_now_iso(),
+        )
+        raise HTTPException(status_code=502, detail=output.strip() or "Failed to start self-updater container")
+
+    await _write_job_status(
+        job_id,
+        status="handoff",
+        phase="updater-started",
+        updater_container=container_name,
+    )
+    await _append_job_log(job_id, f"Temporary updater started: {container_name}\n")
+    return job_id
+
+
 async def _delete_stack_after_down(stack_path: str, args: list[str]) -> tuple[int, str]:
     exit_code, output = await _run_docker_command_capture(stack_path, args)
     if exit_code != 0:
@@ -667,10 +993,12 @@ async def execute_stack_command(websocket: WebSocket, name: str):
         data = await websocket.receive_json()
         action = data.get("action")
         service = data.get("service")
+        services = data.get("services")
         cols = data.get("cols", 160)
         rows = data.get("rows", 24)
         service_actions = {"startService", "stopService", "restartService"}
-        special_actions = {"update", "delete"} | service_actions
+        service_update_actions = {"updateServices", "updateServicesJob", "selfUpdate"}
+        special_actions = {"update", "delete"} | service_actions | service_update_actions
         if action not in ACTION_ARGS and action not in special_actions:
             await websocket.send_json({
                 "type": "error",
@@ -733,6 +1061,52 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                     args = _compose_args(stack_path, "restart", service_name)
                 exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
                 await websocket.send_json({"type": "exit", "code": exit_code})
+            elif action in service_update_actions:
+                service_names = _validate_services(services)
+                self_info = await _get_agent_self_info()
+                is_self_stack = self_info.get("stack_name") == name
+                self_service = self_info.get("service_name") or FLEETGE_AGENT_SERVICE
+                if action != "selfUpdate" and is_self_stack and self_service in service_names:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Refusing to update the current agent service without selfUpdate handoff.",
+                    })
+                    await websocket.close()
+                    return
+
+                if action == "updateServices":
+                    exit_code = await _stream_docker_command(
+                        websocket,
+                        stack_path,
+                        _compose_args(stack_path, "pull", *service_names),
+                        cols=cols,
+                        rows=rows,
+                    )
+                    if exit_code == 0:
+                        exit_code = await _stream_docker_command(
+                            websocket,
+                            stack_path,
+                            _compose_args(stack_path, "up", "-d", "--no-deps", *service_names),
+                            cols=cols,
+                            rows=rows,
+                        )
+                    await websocket.send_json({"type": "exit", "code": exit_code})
+                elif action == "updateServicesJob":
+                    job_id = await _start_update_services_job(name, stack_path, service_names)
+                    await websocket.send_json({
+                        "type": "job",
+                        "job_id": job_id,
+                        "message": f"Started Fleetge service update job {job_id}.",
+                    })
+                    await websocket.send_json({"type": "exit", "code": 0})
+                else:
+                    job_id = await _start_self_updater_container(name, stack_path, service_names)
+                    await websocket.send_json({
+                        "type": "job",
+                        "job_id": job_id,
+                        "message": f"Handed off Fleetge self-update to job {job_id}.",
+                    })
+                    await websocket.send_json({"type": "exit", "code": 0})
             else:
                 args = _compose_args(stack_path, *ACTION_ARGS[action])
                 exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
