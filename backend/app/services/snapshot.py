@@ -623,7 +623,7 @@ class SnapshotManager:
                 ))
                 continue
 
-            cached_target = row.registry_digest
+            cached_target = _normalize_image_id(row.registry_digest)
             if cached_target in local_candidates:
                 self._clear_updatable_tag(host_id, image, local_candidates[0])
                 summaries.append(FinalizeSummary(
@@ -720,7 +720,7 @@ class SnapshotManager:
             )
             if results:
                 self.persist_update_check_results(host_id, results)
-                return results[0].registry_digest
+                return _normalize_image_id(results[0].registry_digest)
         except Exception as exc:
             logger.warning("Confirmatory registry re-poll failed for %s: %s", image, exc)
         return None

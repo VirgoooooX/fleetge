@@ -15,11 +15,11 @@
         <!-- Error Tooltip -->
         <el-tooltip
           v-if="hasError"
-          :content="host.error_message"
+          :content="refreshIssueText"
           placement="top"
           effect="dark"
         >
-          <span class="error-badge">
+          <span class="error-badge" :class="`is-${statusTone}`">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <line x1="12" y1="8" x2="12" y2="12"/>
@@ -29,11 +29,8 @@
         </el-tooltip>
 
         <!-- Status Tag -->
-        <span v-if="host.status === 'online'" class="m-badge-success-pill">
-          {{ t('status.online', '在线') }}
-        </span>
-        <span v-else class="m-badge-offline-pill">
-          {{ t('status.offline', '离线') }}
+        <span class="m-status-pill" :class="`is-${statusTone}`">
+          {{ statusLabel }}
         </span>
       </div>
     </div>
@@ -210,6 +207,24 @@ const { t } = useI18n();
 
 const displayUpdateCount = computed(() => props.updateCount ?? props.host.update_count);
 const hasError = computed(() => !!props.host.error_message);
+const statusTone = computed(() => {
+  if (props.host.status === "online") return "online";
+  if (props.host.status === "degraded") return "degraded";
+  if (props.host.status === "offline") return "offline";
+  return "unknown";
+});
+const statusLabel = computed(() => {
+  const keys: Record<string, string> = {
+    online: "status.online",
+    degraded: "status.degraded",
+    offline: "status.offline",
+    unknown: "status.unknown",
+  };
+  return t(keys[statusTone.value] as any);
+});
+const refreshIssueText = computed(() => (
+  `${t("hostCard.refreshIssue" as any)}${props.host.error_message || ""}`
+));
 
 // Sparkline History Queues
 const cpuHistory = ref<number[]>([]);
@@ -431,32 +446,55 @@ const vibrantIcons = {
   font-weight: var(--weight-bold);
   white-space: nowrap;
 }
-.m-badge-success-pill {
+.m-status-pill {
   font-size: var(--font-size-micro);
-  color: var(--success);
-  border: 1px solid rgba(52, 211, 153, 0.24);
-  background: rgba(52, 211, 153, 0.06);
-  padding: 1px 9px;
-  border-radius: 999px;
-  font-weight: var(--weight-bold);
-  white-space: nowrap;
-}
-.m-badge-offline-pill {
-  font-size: var(--font-size-micro);
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-muted);
   padding: 1px 9px;
   border-radius: 999px;
   font-weight: var(--weight-bold);
   white-space: nowrap;
 }
 
+.m-status-pill.is-online {
+  color: var(--success);
+  border: 1px solid rgba(52, 211, 153, 0.24);
+  background: rgba(52, 211, 153, 0.06);
+}
+
+.m-status-pill.is-degraded {
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.26);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.m-status-pill.is-offline {
+  color: var(--danger);
+  border: 1px solid rgba(248, 113, 113, 0.28);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.m-status-pill.is-unknown {
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-muted);
+}
+
 .error-badge {
   display: inline-flex;
   align-items: center;
-  color: var(--danger);
   cursor: help;
+}
+
+.error-badge.is-online,
+.error-badge.is-degraded {
+  color: var(--warning);
+}
+
+.error-badge.is-offline {
+  color: var(--danger);
+}
+
+.error-badge.is-unknown {
+  color: var(--text-muted);
 }
 
 .host-subtitle {

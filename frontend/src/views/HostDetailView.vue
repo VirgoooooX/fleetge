@@ -91,7 +91,7 @@
       :update-loading="updateLoading"
       :structure-loading="structureLoading"
       @refresh="fetchDetail"
-      @check-updates="runUpdateCheck"
+      @check-updates="syncUpdateResults"
     />
   </div>
 </template>
@@ -286,6 +286,12 @@ async function runUpdateCheck() {
       updateLoading.value = false;
     }
   }
+}
+
+async function syncUpdateResults() {
+  const requestedHostId = hostId.value;
+  const fetchedUpdateResults = await fetchUpdateResults(requestedHostId);
+  dashboardStore.patchHostDetailUpdateResults(requestedHostId, fetchedUpdateResults);
 }
 
 async function fetchDetailCached(options: { skipUpdates?: boolean; silent?: boolean } = {}) {

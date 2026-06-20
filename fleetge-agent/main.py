@@ -14,6 +14,12 @@ LEVELS = {
 }
 log_level = LEVELS.get(LOG_LEVEL_STR, logging.INFO)
 
+
+class _SuppressInvalidHttpRequestWarning(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "Invalid HTTP request received" not in record.getMessage()
+
+
 logger = logging.getLogger("fleetge-agent")
 logger.setLevel(log_level)
 if not logger.handlers:
@@ -23,7 +29,9 @@ if not logger.handlers:
 
 # Configure Uvicorn loggers to respect AGENT_LOG_LEVEL
 for uvicorn_logger in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-    logging.getLogger(uvicorn_logger).setLevel(log_level)
+    uv_logger = logging.getLogger(uvicorn_logger)
+    uv_logger.setLevel(log_level)
+    uv_logger.addFilter(_SuppressInvalidHttpRequestWarning())
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException

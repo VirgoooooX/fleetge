@@ -63,6 +63,7 @@
   "hostCard.stoppedContainers": "停止容器",
   "hostCard.imageCount": "镜像数量",
   "hostCard.dockerVersion": "Docker 版本",
+  "hostCard.refreshIssue": "最近一次刷新异常：",
 
   "containerTable.name": "名称",
   "containerTable.image": "镜像",
@@ -77,7 +78,7 @@
 
   "status.online": "在线",
   "status.offline": "离线",
-  "status.degraded": "指标异常",
+  "status.degraded": "部分异常",
   "status.unknown": "状态未知",
 
   "stack.action.start": "启动",

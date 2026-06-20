@@ -149,7 +149,7 @@
                   @refresh="$emit('refresh')"
                   @operation-start="onOperationStart"
                   @terminal-chunk="onTerminalChunk"
-                  @operation-complete="onOperationComplete"
+                  @operation-complete="handleOperationComplete"
                   @compose="openCompose(stack.name)"
                   @detail="selectStack(stack.name)"
                 />
@@ -261,7 +261,7 @@
               @refresh="$emit('refresh')"
               @operation-start="onOperationStart"
               @terminal-chunk="onTerminalChunk"
-              @operation-complete="onOperationComplete"
+              @operation-complete="handleOperationComplete"
               @compose="openCompose(selectedStack.name)"
             />
           </div>
@@ -1049,6 +1049,10 @@ const logsLoading = ref(false);
 const logsActive = ref(false);
 const logViewportRef = ref<HTMLElement | null>(null);
 let logStreamController: AbortController | null = null;
+let logReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const LOG_RECONNECT_ACTIONS = new Set(["start", "restart", "update", "up", "service-start", "service-restart"]);
+const LOG_STOP_ACTIONS = new Set(["stop", "down", "delete", "service-stop"]);
+const MAX_LOG_RECONNECT_ATTEMPTS = 6;
 
 const terminalOutputs = reactive<Record<string, string[]>>({});
 const runningOperations = reactive<Record<string, { abort: () => void; action: string }>>({});
@@ -1779,7 +1783,15 @@ function normalizeLogText(text: string): string {
   return text.replace(/\t/g, "  ").trimEnd();
 }
 
+function clearLogReconnectTimer() {
+  if (logReconnectTimer) {
+    clearTimeout(logReconnectTimer);
+    logReconnectTimer = null;
+  }
+}
+
 function stopLogs() {
+  clearLogReconnectTimer();
   if (logStreamController) {
     logStreamController.abort();
     logStreamController = null;
@@ -1788,16 +1800,30 @@ function stopLogs() {
   logsLoading.value = false;
 }
 
-function loadLogs() {
-  if (!selectedStack.value) return;
+function scheduleLogReconnect(stackName: string, attempt: number) {
+  if (attempt >= MAX_LOG_RECONNECT_ATTEMPTS || selectedStackName.value !== stackName) return;
+  clearLogReconnectTimer();
+  const delay = Math.min(5000, 600 + attempt * 900);
+  logReconnectTimer = setTimeout(() => {
+    logReconnectTimer = null;
+    if (selectedStackName.value === stackName) {
+      loadLogs({ preserveLines: true, retry: true, attempt: attempt + 1, stackName });
+    }
+  }, delay);
+}
+
+function loadLogs(options: { preserveLines?: boolean; retry?: boolean; attempt?: number; stackName?: string } = {}) {
+  const stackName = options.stackName || selectedStack.value?.name;
+  if (!stackName) return;
   stopLogs();
   logsLoading.value = true;
   logsActive.value = true;
-  logLines.value = [];
+  if (!options.preserveLines) {
+    logLines.value = [];
+  }
 
   const controller = new AbortController();
   logStreamController = controller;
-  const stackName = selectedStack.value.name;
   const url =
     `/api/hosts/${encodeURIComponent(props.hostId)}` +
     `/stacks/${encodeURIComponent(stackName)}` +
@@ -1827,11 +1853,17 @@ function loadLogs() {
         logsLoading.value = false;
         logsActive.value = false;
         appendLogLine(ev.data?.message || "Log stream ended.", "", "warn");
+        if (options.retry) {
+          scheduleLogReconnect(stackName, options.attempt || 0);
+        }
       }
     },
   }).catch((error: any) => {
     if (controller.signal.aborted) return;
     appendLogLine(`Failed to stream logs: ${error.message}`, "", "error");
+    if (options.retry) {
+      scheduleLogReconnect(stackName, options.attempt || 0);
+    }
   }).finally(() => {
     if (logStreamController === controller) {
       logStreamController = null;
@@ -1878,10 +1910,12 @@ function onOperationStart(stackName: string, state: OperationState) {
 
   if (
     selectedStackName.value === stackName &&
-    (state.action === "start" || state.action === "service-start")
+    LOG_RECONNECT_ACTIONS.has(state.action)
   ) {
     stopLogs();
-    logLines.value = [];
+    if (state.action === "start" || state.action === "service-start" || logLines.value.length === 0) {
+      logLines.value = [];
+    }
     logsLoading.value = true;
   }
 }
@@ -1899,15 +1933,26 @@ function onOperationComplete(stackName: string, state: OperationState) {
 
   if (selectedStackName.value !== stackName) return;
 
-  if (state.status === "success" && (state.action === "start" || state.action === "service-start")) {
-    loadLogs();
+  if (state.status === "success" && LOG_RECONNECT_ACTIONS.has(state.action)) {
+    loadLogs({
+      preserveLines: state.action !== "start" && state.action !== "service-start",
+      retry: true,
+      stackName,
+    });
   } else if (
     state.status === "success" &&
-    (state.action === "stop" || state.action === "down" || state.action === "service-stop")
+    LOG_STOP_ACTIONS.has(state.action)
   ) {
     stopLogs();
   } else if (logsLoading.value) {
     logsLoading.value = false;
+  }
+}
+
+function handleOperationComplete(stackName: string, state: OperationState) {
+  onOperationComplete(stackName, state);
+  if (state.status === "success" && state.action === "update") {
+    emit("check-updates");
   }
 }
 

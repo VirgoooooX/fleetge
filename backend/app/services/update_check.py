@@ -159,6 +159,12 @@ def _normalize_digest(value: str | None) -> Optional[str]:
     return value.lower()
 
 
+def _append_digest(values: list[str], value: str | None) -> None:
+    digest = _normalize_digest(value)
+    if digest and digest not in values:
+        values.append(digest)
+
+
 def _parse_platform(platform: str | None) -> dict[str, str]:
     if not platform:
         return {"os": "linux", "architecture": "amd64"}
@@ -187,15 +193,17 @@ def _platform_matches(candidate: dict | None, requested: dict[str, str]) -> bool
     return True
 
 
-async def _resolve_registry_digest_from_response(
+async def _resolve_registry_digest_candidates_from_response(
     client: httpx.AsyncClient,
     manifest_url: str,
     response: httpx.Response,
     headers: dict[str, str],
     platform: str | None,
-) -> Optional[str]:
+) -> list[str]:
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip()
     header_digest = response.headers.get("Docker-Content-Digest")
+    candidates: list[str] = []
+    _append_digest(candidates, header_digest)
     try:
         payload = response.json()
     except Exception:
@@ -230,7 +238,8 @@ async def _resolve_registry_digest_from_response(
             )
         child_digest = selected.get("digest") if selected else None
         if not child_digest:
-            return header_digest
+            return candidates
+        _append_digest(candidates, child_digest)
 
         child_response = await client.get(
             manifest_url.rsplit("/", 1)[0] + f"/{child_digest}",
@@ -238,24 +247,45 @@ async def _resolve_registry_digest_from_response(
             timeout=15,
         )
         child_response.raise_for_status()
+        _append_digest(candidates, child_response.headers.get("Docker-Content-Digest"))
         try:
             child_payload = child_response.json()
         except Exception:
             child_payload = {}
         config_digest = (child_payload.get("config") or {}).get("digest")
-        return config_digest or child_response.headers.get("Docker-Content-Digest") or child_digest
+        _append_digest(candidates, config_digest)
+        return candidates
 
     config_digest = (payload.get("config") or {}).get("digest")
-    return config_digest or header_digest
+    _append_digest(candidates, config_digest)
+    return candidates
 
 
-async def _get_manifest_digest(
+async def _resolve_registry_digest_from_response(
+    client: httpx.AsyncClient,
+    manifest_url: str,
+    response: httpx.Response,
+    headers: dict[str, str],
+    platform: str | None,
+) -> Optional[str]:
+    candidates = await _resolve_registry_digest_candidates_from_response(
+        client, manifest_url, response, headers, platform
+    )
+    return candidates[-1] if candidates else None
+
+
+async def _get_manifest_digest_candidates(
     registry: str, repository: str, tag: str, platform: str | None = None
-) -> tuple[Optional[str], Optional[str]]:
-    """Query registry for the manifest digest.
+) -> tuple[list[str], Optional[str]]:
+    """Query registry for all useful comparable digests.
 
-    Returns (digest, error_status).
-    digest is None on error; error_status is one of "needs_auth" | "check_failed".
+    The registry exposes more than one digest for many images:
+    - Docker-Content-Digest: manifest or index digest, comparable with RepoDigests.
+    - config.digest: image config digest, often comparable with Docker image Id.
+
+    Returning all candidates avoids false positives caused by comparing a local
+    RepoDigest with a remote config digest, or a local image Id with a remote
+    manifest/index digest.
     """
     # Determine the manifest URL and auth scope
     if registry == "docker.io":
@@ -271,7 +301,7 @@ async def _get_manifest_digest(
                 # First get a token
                 tr = await client.get(token_url, timeout=10)
                 if tr.status_code == 401:
-                    return None, "needs_auth"
+                    return [], "needs_auth"
                 tr.raise_for_status()
                 token = tr.json().get("token", "")
 
@@ -282,18 +312,18 @@ async def _get_manifest_digest(
                 }
                 mr = await client.get(manifest_url, headers=headers, timeout=15)
                 if mr.status_code == 401:
-                    return None, "needs_auth"
+                    return [], "needs_auth"
                 mr.raise_for_status()
-                digest = await _resolve_registry_digest_from_response(
+                candidates = await _resolve_registry_digest_candidates_from_response(
                     client, manifest_url, mr, headers, platform
                 )
-                return digest, None
+                return candidates, None
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 401:
-                return None, "needs_auth"
-            return None, "check_failed"
+                return [], "needs_auth"
+            return [], "check_failed"
         except Exception:
-            return None, "check_failed"
+            return [], "check_failed"
 
     elif registry == "ghcr.io":
         # GHCR public packages can still require an anonymous Bearer token.
@@ -312,7 +342,7 @@ async def _get_manifest_digest(
                         r.headers.get("WWW-Authenticate", ""),
                     )
                     if error_status:
-                        return None, error_status
+                        return [], error_status
                     headers = {**headers, "Authorization": f"Bearer {token}"}
                     r = await client.get(
                         manifest_url,
@@ -320,18 +350,18 @@ async def _get_manifest_digest(
                         timeout=15,
                     )
                 if r.status_code in (401, 403):
-                    return None, "needs_auth"
+                    return [], "needs_auth"
                 r.raise_for_status()
-                digest = await _resolve_registry_digest_from_response(
+                candidates = await _resolve_registry_digest_candidates_from_response(
                     client, manifest_url, r, headers, platform
                 )
-                return digest, None
+                return candidates, None
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
-                return None, "needs_auth"
-            return None, "check_failed"
+                return [], "needs_auth"
+            return [], "check_failed"
         except Exception:
-            return None, "check_failed"
+            return [], "check_failed"
 
     else:
         # Generic registry (assume OCI-compatible)
@@ -345,21 +375,35 @@ async def _get_manifest_digest(
                 }
                 r = await client.get(manifest_url, headers=headers, timeout=10)
                 if r.status_code == 401:
-                    return None, "needs_auth"
+                    return [], "needs_auth"
                 # 403 might mean the registry is accessible but view denied
                 if r.status_code in (401, 403):
-                    return None, "needs_auth"
+                    return [], "needs_auth"
                 r.raise_for_status()
-                digest = await _resolve_registry_digest_from_response(
+                candidates = await _resolve_registry_digest_candidates_from_response(
                     client, manifest_url, r, headers, platform
                 )
-                return digest, None
+                return candidates, None
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
-                return None, "needs_auth"
-            return None, "check_failed"
+                return [], "needs_auth"
+            return [], "check_failed"
         except Exception:
-            return None, "check_failed"
+            return [], "check_failed"
+
+
+async def _get_manifest_digest(
+    registry: str, repository: str, tag: str, platform: str | None = None
+) -> tuple[Optional[str], Optional[str]]:
+    """Query registry for the manifest digest.
+
+    Returns (digest, error_status).
+    digest is None on error; error_status is one of "needs_auth" | "check_failed".
+    """
+    candidates, error_status = await _get_manifest_digest_candidates(
+        registry, repository, tag, platform
+    )
+    return (candidates[-1] if candidates else None), error_status
 
 
 def _extract_local_digest(repo_digests: list[str]) -> Optional[str]:
@@ -371,8 +415,20 @@ def _extract_local_digest(repo_digests: list[str]) -> Optional[str]:
     """
     for d in repo_digests:
         if "@" in d:
-            return d.split("@")[1]
+            return _normalize_digest(d.split("@")[1])
     return None
+
+
+def _local_digest_candidates(
+    repo_digests: list[str] | None,
+    local_image_id: str | None,
+) -> list[str]:
+    candidates: list[str] = []
+    _append_digest(candidates, local_image_id)
+    for d in repo_digests or []:
+        if "@" in d:
+            _append_digest(candidates, d.split("@", 1)[1])
+    return candidates
 
 
 async def check_image(
@@ -419,26 +475,32 @@ async def check_image(
     # Parse image reference
     parsed = _parse_image_ref(image_ref)
 
-    # Prefer Docker image ID because it is the local config digest. Registry
-    # manifest/index responses are resolved to config.digest for the selected
-    # platform, which avoids comparing a multi-arch index digest with a local
-    # platform digest. RepoDigest remains a fallback for older snapshots.
+    # Compare all known local identities against all registry identities.
+    # Docker exposes both image config digests (ImageID) and manifest/index
+    # digests (RepoDigests); registries expose the same split via
+    # config.digest and Docker-Content-Digest. Either pair may be the stable
+    # comparable value depending on registry/image shape.
     local_image_id = _normalize_digest(local_image_id)
-    effective_local = local_image_id or _extract_local_digest(repo_digests)
+    local_candidates = _local_digest_candidates(repo_digests, local_image_id)
+    effective_local = local_candidates[0] if local_candidates else None
 
     # Check registry
-    registry_digest, error_status = await _get_manifest_digest(
+    registry_candidates, error_status = await _get_manifest_digest_candidates(
         parsed["registry"], parsed["repository"], parsed["tag"], platform=platform
     )
-    registry_digest = _normalize_digest(registry_digest)
+    matched_registry = next(
+        (digest for digest in registry_candidates if digest in local_candidates),
+        None,
+    )
+    registry_digest = matched_registry or (registry_candidates[0] if registry_candidates else None)
 
     # Determine status
     if error_status:
         status = error_status  # "needs_auth" | "check_failed"
         registry_digest = None
-    elif registry_digest and effective_local:
-        status = "up_to_date" if registry_digest == effective_local else "updatable"
-    elif registry_digest and not effective_local:
+    elif registry_candidates and local_candidates:
+        status = "up_to_date" if matched_registry else "updatable"
+    elif registry_candidates and not local_candidates:
         # Can't compare — remote digest known but no local digest
         status = "check_failed"
     else:

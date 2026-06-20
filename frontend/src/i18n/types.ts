@@ -71,6 +71,7 @@ export interface I18nSchema {
   "hostCard.stoppedContainers": string;
   "hostCard.imageCount": string;
   "hostCard.dockerVersion": string;
+  "hostCard.refreshIssue": string;
 
   // ── Container Table ────────────────────────────────────────
   "containerTable.name": string;

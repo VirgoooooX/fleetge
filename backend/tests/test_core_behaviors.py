@@ -212,8 +212,8 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 "ts": update_check.time.monotonic(),
             }
 
-        with patch("app.services.update_check._get_manifest_digest", new_callable=AsyncMock) as mock_digest:
-            mock_digest.return_value = ("sha256:new", None)
+        with patch("app.services.update_check._get_manifest_digest_candidates", new_callable=AsyncMock) as mock_digest:
+            mock_digest.return_value = (["sha256:new"], None)
             result = await update_check.check_image(
                 self.host_id,
                 "nginx:latest",
@@ -300,6 +300,65 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, "up_to_date")
         self.assertEqual(result.current_digest, "sha256:local-config")
         self.assertEqual(result.registry_digest, "sha256:local-config")
+
+    async def test_update_check_accepts_single_manifest_repodigest_match(self):
+        """Single-manifest tags may only match Docker-Content-Digest via RepoDigest."""
+        from app.services import update_check
+
+        class FakeResponse:
+            def __init__(self, status_code, headers=None, payload=None):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise update_check.httpx.HTTPStatusError(
+                        "error",
+                        request=update_check.httpx.Request("GET", "https://example.invalid"),
+                        response=update_check.httpx.Response(self.status_code),
+                    )
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, headers=None, params=None, timeout=None):
+                if url.startswith("https://auth.docker.io/token"):
+                    return FakeResponse(200, payload={"token": "token"})
+                if url == "https://registry-1.docker.io/v2/80x86/filebrowser/manifests/2.9.4-amd64":
+                    return FakeResponse(
+                        200,
+                        {
+                            "Content-Type": "application/vnd.docker.distribution.manifest.v2+json",
+                            "Docker-Content-Digest": "sha256:manifest-digest",
+                        },
+                        {
+                            "schemaVersion": 2,
+                            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                            "config": {"digest": "sha256:config-digest"},
+                        },
+                    )
+                return FakeResponse(404)
+
+        with patch("app.services.update_check.httpx.AsyncClient", return_value=FakeClient()):
+            result = await update_check.check_image(
+                self.host_id,
+                "80x86/filebrowser:2.9.4-amd64",
+                ["80x86/filebrowser@sha256:manifest-digest"],
+                local_image_id="sha256:local-image-id",
+                platform="linux/amd64",
+                force=True,
+            )
+
+        self.assertEqual(result.status, "up_to_date")
+        self.assertEqual(result.registry_digest, "sha256:manifest-digest")
 
     async def test_ghcr_public_manifest_follows_bearer_challenge(self):
         from app.services import update_check
@@ -737,10 +796,10 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(summaries[0].cleared)
         self.assertIn("sha256:img", summaries[0].verdict)
-        self.assertIn("sha256:cached_A", summaries[0].verdict)
+        self.assertIn("sha256:cached_a", summaries[0].verdict)
         # The fresh digest is truncated to [:19] in the verdict, so check the
         # untruncated prefix "sha256:registry_C"
-        self.assertIn("sha256:registry_C", summaries[0].verdict)
+        self.assertIn("sha256:registry_c", summaries[0].verdict)
 
     # ------------------------------------------------------------------
     # _stack_convergence_block_reason unit tests

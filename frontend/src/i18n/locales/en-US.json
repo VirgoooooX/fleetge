@@ -63,6 +63,7 @@
   "hostCard.stoppedContainers": "Stopped containers",
   "hostCard.imageCount": "Image count",
   "hostCard.dockerVersion": "Docker version",
+  "hostCard.refreshIssue": "Last refresh issue: ",
 
   "containerTable.name": "Name",
   "containerTable.image": "Image",
@@ -77,7 +78,7 @@
 
   "status.online": "Online",
   "status.offline": "Offline",
-  "status.degraded": "Degraded",
+  "status.degraded": "Partial issue",
   "status.unknown": "Unknown",
 
   "stack.action.start": "Start",
