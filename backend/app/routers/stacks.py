@@ -433,6 +433,9 @@ async def deploy_stack_compose(
 
         conn = AgentClient(snap.host_config)
         try:
+            # Capture pre-deploy updatable targets so finalize can judge them.
+            target_images = _capture_updatable_targets(snap, stack_name)
+
             task = asyncio.create_task(
                 conn.save_stack(
                     stack_name, payload.compose_yaml, payload.compose_env,
@@ -466,6 +469,10 @@ async def deploy_stack_compose(
                     await snapshot_manager.refresh_host_docker(host_id)
                 except Exception as refresh_exc:
                     logger.warning("Pre-complete refresh failed for deploy: %s", refresh_exc)
+
+                if target_images:
+                    async for event in _run_finalize(host_id, stack_name, target_images):
+                        yield event
 
             yield _sse_event(
                 "complete",
@@ -973,6 +980,64 @@ def _containers_by_service(snap: Any, stack_name: str) -> dict[str, ContainerSum
     return services
 
 
+def _capture_updatable_targets(snap: Any, stack_name: str) -> list[str]:
+    """Snapshot the images marked updatable for this stack BEFORE the update.
+
+    ``finalize_stack_update`` only needs to judge these images — an image that
+    was already up_to_date has nothing to clear. Capturing pre-update avoids
+    racing with the refresh that runs after ``compose up``.
+    """
+    targets: list[str] = []
+    seen: set[str] = set()
+    for container in getattr(snap, "containers", []):
+        if container.stack_name != stack_name or not container.image:
+            continue
+        if container.image in seen:
+            continue
+        result = getattr(snap, "update_results", {}).get(container.image)
+        if result == "updatable":
+            targets.append(container.image)
+            seen.add(container.image)
+    return targets
+
+
+async def _run_finalize(
+    host_id: str,
+    stack_name: str,
+    target_images: list[str],
+    wait_timeout: float = 45.0,
+) -> AsyncGenerator[str, None]:
+    """Run finalize_stack_update and stream a per-image verdict block.
+
+    Emits ``chunk`` SSE events containing the verdict lines. Intended to be
+    emitted right before the ``complete`` event on a successful update, so the
+    user sees *why* each tag was cleared or kept.
+    """
+    if not target_images:
+        yield _sse_event("chunk", {"raw": "No images were marked updatable; nothing to clear.\n"})
+        return
+
+    yield _sse_event("chunk", {"raw": "\n--- update verification ---\n"})
+    try:
+        summaries = await snapshot_manager.finalize_stack_update(
+            host_id, stack_name, target_images, wait_timeout=wait_timeout
+        )
+    except Exception as exc:
+        logger.warning("finalize_stack_update failed for %s/%s: %s", host_id, stack_name, exc)
+        yield _sse_event("chunk", {
+            "raw": f"Update verification skipped (internal error: {exc}). Tag state unchanged.\n"
+        })
+        return
+
+    if not summaries:
+        yield _sse_event("chunk", {"raw": "No updatable tags found to verify.\n"})
+        return
+
+    for s in summaries:
+        marker = "✓" if s.cleared else "·"
+        yield _sse_event("chunk", {"raw": f"{marker} {s.verdict}\n"})
+
+
 async def _fresh_check_fleetge_services(
     host_id: str,
     stack_name: str,
@@ -986,7 +1051,12 @@ async def _fresh_check_fleetge_services(
         )
 
     image_refs = [
-        (container.image, container.repo_digests)
+        (
+            container.image,
+            container.repo_digests,
+            container.tag_image_id or container.image_id,
+            container.tag_platform or container.platform,
+        )
         for container in service_containers.values()
     ]
     results = await run_update_check(host_id, image_refs, force=True)
@@ -1000,6 +1070,7 @@ async def _poll_agent_job_events(
     job_id: str,
     timeout_seconds: float = 600.0,
     before_success_complete: Optional[Callable[[], Awaitable[None]]] = None,
+    before_success_events: Optional[Callable[[], AsyncGenerator[str, None]]] = None,
 ) -> AsyncGenerator[str, None]:
     started = asyncio.get_running_loop().time()
     last_size = 0
@@ -1025,6 +1096,9 @@ async def _poll_agent_job_events(
             if status in ("success", "error"):
                 if status == "success" and before_success_complete is not None:
                     await before_success_complete()
+                if status == "success" and before_success_events is not None:
+                    async for event in before_success_events():
+                        yield event
                 message = (
                     "Fleetge update completed successfully."
                     if status == "success"
@@ -1102,6 +1176,12 @@ async def _stream_fleetge_update(
         })
         return
 
+    target_images = list(dict.fromkeys(
+        service_containers[service_name].image
+        for service_name in updatable_services
+        if service_name in service_containers and service_containers[service_name].image
+    ))
+
     if agent_service in updatable_services:
         agent_action = "selfUpdate"
         yield _sse_event("chunk", {
@@ -1145,6 +1225,9 @@ async def _stream_fleetge_update(
             await snapshot_manager.refresh_host_docker(host_id, trigger_initial_update_check=False)
         except Exception as refresh_exc:
             logger.warning("Pre-complete refresh failed for Fleetge update: %s", refresh_exc)
+        if target_images:
+            async for event in _run_finalize(host_id, stack_name, target_images):
+                yield event
         yield _sse_event("complete", {
             "status": "success",
             "message": result.get("message", "Fleetge update completed."),
@@ -1159,10 +1242,16 @@ async def _stream_fleetge_update(
         except Exception as refresh_exc:
             logger.warning("Pre-complete refresh failed for Fleetge update job %s: %s", job_id, refresh_exc)
 
+    async def finalize_before_complete() -> AsyncGenerator[str, None]:
+        if target_images:
+            async for event in _run_finalize(host_id, stack_name, target_images):
+                yield event
+
     async for event in _poll_agent_job_events(
         conn,
         job_id,
         before_success_complete=refresh_before_complete,
+        before_success_events=finalize_before_complete,
     ):
         yield event
 
@@ -1249,6 +1338,12 @@ async def stack_action(
                     )
                     return
 
+            # Capture which images are updatable for this stack *before* the
+            # action runs. Only the update action produces new images, but
+            # capture unconditionally for any action — finalize is a no-op if
+            # there are no targets.
+            target_images = _capture_updatable_targets(snap, stack_name) if action == "update" else []
+
             task = asyncio.create_task(
                 conn.stack_action(
                     stack_name, socket_event, log_queue=log_queue, cols=cols, rows=rows
@@ -1276,6 +1371,13 @@ async def stack_action(
                     await snapshot_manager.refresh_host_docker(host_id)
                 except Exception as refresh_exc:
                     logger.warning("Pre-complete refresh failed for stack action: %s", refresh_exc)
+
+                # Authoritative tag clearing + verdict, only on the success
+                # path. A failed update must NOT clear tags even if the image
+                # was pulled; the plain refresh above is read-only for tags.
+                if target_images:
+                    async for event in _run_finalize(host_id, stack_name, target_images):
+                        yield event
 
             yield _sse_event(
                 "complete",

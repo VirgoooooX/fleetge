@@ -24,6 +24,20 @@ logger = logging.getLogger(__name__)
 _update_cache: dict[str, dict] = {}
 _cache_lock = asyncio.Lock()
 FAILURE_STATUSES = {"needs_auth", "check_failed"}
+INDEX_MEDIA_TYPES = {
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.oci.image.index.v1+json",
+}
+MANIFEST_ACCEPT = (
+    "application/vnd.docker.distribution.manifest.v2+json,"
+    "application/vnd.oci.image.manifest.v1+json"
+)
+REGISTRY_ACCEPT = (
+    "application/vnd.docker.distribution.manifest.v2+json,"
+    "application/vnd.docker.distribution.manifest.list.v2+json,"
+    "application/vnd.oci.image.manifest.v1+json,"
+    "application/vnd.oci.image.index.v1+json"
+)
 
 
 def _parse_bearer_challenge(header: str) -> tuple[str, dict[str, str]] | None:
@@ -136,8 +150,107 @@ def _parse_image_ref(image: str) -> dict:
     }
 
 
+def _normalize_digest(value: str | None) -> Optional[str]:
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    return value.lower()
+
+
+def _parse_platform(platform: str | None) -> dict[str, str]:
+    if not platform:
+        return {"os": "linux", "architecture": "amd64"}
+    parts = platform.split("/")
+    parsed: dict[str, str] = {}
+    if len(parts) >= 1 and parts[0]:
+        parsed["os"] = parts[0].lower()
+    if len(parts) >= 2 and parts[1]:
+        parsed["architecture"] = parts[1].lower()
+    if len(parts) >= 3 and parts[2]:
+        parsed["variant"] = parts[2].lower()
+    parsed.setdefault("os", "linux")
+    parsed.setdefault("architecture", "amd64")
+    return parsed
+
+
+def _platform_matches(candidate: dict | None, requested: dict[str, str]) -> bool:
+    candidate = candidate or {}
+    if (candidate.get("os") or "").lower() != requested.get("os"):
+        return False
+    if (candidate.get("architecture") or "").lower() != requested.get("architecture"):
+        return False
+    requested_variant = requested.get("variant")
+    if requested_variant:
+        return (candidate.get("variant") or "").lower() == requested_variant
+    return True
+
+
+async def _resolve_registry_digest_from_response(
+    client: httpx.AsyncClient,
+    manifest_url: str,
+    response: httpx.Response,
+    headers: dict[str, str],
+    platform: str | None,
+) -> Optional[str]:
+    content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip()
+    header_digest = response.headers.get("Docker-Content-Digest")
+    try:
+        payload = response.json()
+    except Exception:
+        payload = {}
+
+    media_type = payload.get("mediaType") or content_type
+    if media_type in INDEX_MEDIA_TYPES:
+        requested_platform = _parse_platform(platform)
+        manifests = payload.get("manifests") or []
+        selected = next(
+            (
+                item for item in manifests
+                if _platform_matches(item.get("platform"), requested_platform)
+            ),
+            None,
+        )
+        if selected is None:
+            selected = next(
+                (
+                    item for item in manifests
+                    if _platform_matches(item.get("platform"), {"os": "linux", "architecture": "amd64"})
+                ),
+                None,
+            )
+        if selected is None:
+            selected = next(
+                (
+                    item for item in manifests
+                    if (item.get("platform") or {}).get("os") != "unknown"
+                ),
+                None,
+            )
+        child_digest = selected.get("digest") if selected else None
+        if not child_digest:
+            return header_digest
+
+        child_response = await client.get(
+            manifest_url.rsplit("/", 1)[0] + f"/{child_digest}",
+            headers={**headers, "Accept": MANIFEST_ACCEPT},
+            timeout=15,
+        )
+        child_response.raise_for_status()
+        try:
+            child_payload = child_response.json()
+        except Exception:
+            child_payload = {}
+        config_digest = (child_payload.get("config") or {}).get("digest")
+        return config_digest or child_response.headers.get("Docker-Content-Digest") or child_digest
+
+    config_digest = (payload.get("config") or {}).get("digest")
+    return config_digest or header_digest
+
+
 async def _get_manifest_digest(
-    registry: str, repository: str, tag: str
+    registry: str, repository: str, tag: str, platform: str | None = None
 ) -> tuple[Optional[str], Optional[str]]:
     """Query registry for the manifest digest.
 
@@ -165,18 +278,15 @@ async def _get_manifest_digest(
                 # Then request manifest
                 headers = {
                     "Authorization": f"Bearer {token}",
-                    "Accept": (
-                        "application/vnd.docker.distribution.manifest.v2+json,"
-                        "application/vnd.docker.distribution.manifest.list.v2+json,"
-                        "application/vnd.oci.image.manifest.v1+json,"
-                        "application/vnd.oci.image.index.v1+json"
-                    ),
+                    "Accept": REGISTRY_ACCEPT,
                 }
                 mr = await client.get(manifest_url, headers=headers, timeout=15)
                 if mr.status_code == 401:
                     return None, "needs_auth"
                 mr.raise_for_status()
-                digest = mr.headers.get("Docker-Content-Digest")
+                digest = await _resolve_registry_digest_from_response(
+                    client, manifest_url, mr, headers, platform
+                )
                 return digest, None
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 401:
@@ -193,12 +303,7 @@ async def _get_manifest_digest(
         try:
             async with httpx.AsyncClient() as client:
                 headers = {
-                    "Accept": (
-                        "application/vnd.docker.distribution.manifest.v2+json,"
-                        "application/vnd.docker.distribution.manifest.list.v2+json,"
-                        "application/vnd.oci.image.manifest.v1+json,"
-                        "application/vnd.oci.image.index.v1+json"
-                    ),
+                    "Accept": REGISTRY_ACCEPT,
                 }
                 r = await client.get(manifest_url, headers=headers, timeout=15)
                 if r.status_code == 401:
@@ -208,15 +313,18 @@ async def _get_manifest_digest(
                     )
                     if error_status:
                         return None, error_status
+                    headers = {**headers, "Authorization": f"Bearer {token}"}
                     r = await client.get(
                         manifest_url,
-                        headers={**headers, "Authorization": f"Bearer {token}"},
+                        headers=headers,
                         timeout=15,
                     )
                 if r.status_code in (401, 403):
                     return None, "needs_auth"
                 r.raise_for_status()
-                digest = r.headers.get("Docker-Content-Digest")
+                digest = await _resolve_registry_digest_from_response(
+                    client, manifest_url, r, headers, platform
+                )
                 return digest, None
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
@@ -233,12 +341,7 @@ async def _get_manifest_digest(
         try:
             async with httpx.AsyncClient() as client:
                 headers = {
-                    "Accept": (
-                        "application/vnd.docker.distribution.manifest.v2+json,"
-                        "application/vnd.docker.distribution.manifest.list.v2+json,"
-                        "application/vnd.oci.image.manifest.v1+json,"
-                        "application/vnd.oci.image.index.v1+json"
-                    ),
+                    "Accept": REGISTRY_ACCEPT,
                 }
                 r = await client.get(manifest_url, headers=headers, timeout=10)
                 if r.status_code == 401:
@@ -247,7 +350,9 @@ async def _get_manifest_digest(
                 if r.status_code in (401, 403):
                     return None, "needs_auth"
                 r.raise_for_status()
-                digest = r.headers.get("Docker-Content-Digest")
+                digest = await _resolve_registry_digest_from_response(
+                    client, manifest_url, r, headers, platform
+                )
                 return digest, None
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in (401, 403):
@@ -274,6 +379,8 @@ async def check_image(
     host_id: str,
     image_ref: str,
     repo_digests: list[str] | None = None,
+    local_image_id: str | None = None,
+    platform: str | None = None,
     force: bool = False,
 ) -> UpdateCheckResult:
     """Check if a single image has an update available.
@@ -312,13 +419,18 @@ async def check_image(
     # Parse image reference
     parsed = _parse_image_ref(image_ref)
 
-    # Extract local digest from RepoDigest only (never ImageID)
-    effective_local = _extract_local_digest(repo_digests)
+    # Prefer Docker image ID because it is the local config digest. Registry
+    # manifest/index responses are resolved to config.digest for the selected
+    # platform, which avoids comparing a multi-arch index digest with a local
+    # platform digest. RepoDigest remains a fallback for older snapshots.
+    local_image_id = _normalize_digest(local_image_id)
+    effective_local = local_image_id or _extract_local_digest(repo_digests)
 
     # Check registry
     registry_digest, error_status = await _get_manifest_digest(
-        parsed["registry"], parsed["repository"], parsed["tag"]
+        parsed["registry"], parsed["repository"], parsed["tag"], platform=platform
     )
+    registry_digest = _normalize_digest(registry_digest)
 
     # Determine status
     if error_status:
@@ -353,7 +465,7 @@ async def check_image(
 
 
 async def run_update_check(
-    host_id: str, image_refs: list[tuple[str, list[str]]], force: bool = False
+    host_id: str, image_refs: list[tuple], force: bool = False
 ) -> list[UpdateCheckResult]:
     """Run update checks for multiple images on a host.
 
@@ -368,30 +480,49 @@ async def run_update_check(
     Returns:
         List of UpdateCheckResult (one per unique image).
     """
-    # Deduplicate: merge repo_digests for the same image_ref
-    merged: dict[str, list[str]] = {}
-    for image_ref, repo_digests in image_refs:
-        existing = merged.setdefault(image_ref, [])
+    # Deduplicate: merge repo_digests for the same image_ref. Keep one local
+    # image ID/platform as the primary comparable identity.
+    merged: dict[str, dict] = {}
+    for item in image_refs:
+        image_ref = item[0]
+        repo_digests = item[1] if len(item) > 1 else []
+        local_image_id = item[2] if len(item) > 2 else None
+        platform = item[3] if len(item) > 3 else None
+        existing = merged.setdefault(
+            image_ref,
+            {"repo_digests": [], "local_image_id": None, "platform": None},
+        )
         for digest in repo_digests or []:
-            if digest and digest not in existing:
-                existing.append(digest)
+            if digest and digest not in existing["repo_digests"]:
+                existing["repo_digests"].append(digest)
+        if local_image_id and not existing["local_image_id"]:
+            existing["local_image_id"] = local_image_id
+        if platform and not existing["platform"]:
+            existing["platform"] = platform
 
     semaphore = asyncio.Semaphore(8)
 
-    async def check_one(image_ref: str, repo_digests: list[str]) -> UpdateCheckResult:
+    async def check_one(image_ref: str, info: dict) -> UpdateCheckResult:
         async with semaphore:
             delays = [0.0, 2.0, 8.0]
             last_result: UpdateCheckResult | None = None
             for delay in delays:
                 if delay:
                     await asyncio.sleep(delay)
-                last_result = await check_image(host_id, image_ref, repo_digests, force=force)
+                last_result = await check_image(
+                    host_id,
+                    image_ref,
+                    info["repo_digests"],
+                    local_image_id=info.get("local_image_id"),
+                    platform=info.get("platform"),
+                    force=force,
+                )
                 if last_result.status not in FAILURE_STATUSES:
                     return last_result
             return last_result
 
     return await asyncio.gather(
-        *(check_one(image_ref, repo_digests) for image_ref, repo_digests in merged.items())
+        *(check_one(image_ref, info) for image_ref, info in merged.items())
     )
 
 

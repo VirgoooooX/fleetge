@@ -96,7 +96,7 @@ onMounted(() => {
     convertEol: true,
     cursorBlink: props.status === "running",
     cursorStyle: "bar",
-    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+    fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
     fontSize: 12,
     lineHeight: 1.55,
     scrollback: 2000,

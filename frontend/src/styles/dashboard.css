@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700;800&display=swap");
+
 /* Fleetge — Docker fleet console dark system */
 
 :root {
@@ -23,8 +25,28 @@
   --warning: #fbbf24;
   --danger: #f87171;
   --focus-ring: rgba(96, 165, 250, 0.42);
-  --font-body: "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  --font-latin: "Geist";
+  --font-cjk: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei";
+  --font-body: var(--font-latin), var(--font-cjk), sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-base: 14px;
+  --text-lg: 15px;
+  --title-sm: 20px;
+  --title-md: 22px;
+  --title-lg: 24px;
+  --display-sm: 28px;
+  --display-md: 32px;
+  --el-font-family: var(--font-body);
+  --el-font-size-extra-small: var(--text-sm);
+  --el-font-size-small: var(--text-md);
+  --el-font-size-base: var(--text-base);
+  --el-font-size-medium: 16px;
+  --el-font-size-large: 18px;
+  --el-font-size-extra-large: var(--title-sm);
 
   /* Backward-compatible aliases used by existing components. */
   --bg-dark: var(--surface-base);
@@ -87,8 +109,35 @@ body {
   color: var(--text-primary);
 }
 
+#app {
+  min-height: 100vh;
+  font-family: var(--font-body);
+}
+
 * {
   box-sizing: border-box;
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+}
+
+.u-mono {
+  font-family: var(--font-mono) !important;
+}
+
+.u-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+.u-code-token {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0;
 }
 
 button,

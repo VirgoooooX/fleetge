@@ -298,7 +298,7 @@
                   <StatusIcon :status="container.state === 'running' ? 'online' : 'offline'" />
                   <div class="container-main">
                     <span class="container-name">{{ container.service_name || container.name }}</span>
-                    <span class="container-meta">{{ container.image }}</span>
+                    <span class="container-meta container-meta--mono">{{ container.image }}</span>
                   </div>
                   <span class="container-status">{{ container.status || container.state }}</span>
 
@@ -1559,7 +1559,7 @@ async function confirmUpdateAll() {
 
   try {
     for (const stack of stacksToUpdate) {
-      const ok = await runStackUpdate(stack.name);
+      const ok = await runStackUpdate(stack.name, { refreshOnSuccess: false });
       if (ok) successCount += 1;
     }
 
@@ -1579,7 +1579,11 @@ async function confirmUpdateAll() {
   }
 }
 
-async function runStackUpdate(stackName: string): Promise<boolean> {
+async function runStackUpdate(
+  stackName: string,
+  options: { refreshOnSuccess?: boolean } = {},
+): Promise<boolean> {
+  const refreshOnSuccess = options.refreshOnSuccess !== false;
   const action = "update";
   const label = t("stack.action.update");
   const startedAt = Date.now();
@@ -1633,6 +1637,9 @@ async function runStackUpdate(stackName: string): Promise<boolean> {
             message: data.message || t(succeeded ? "stack.confirm.success" : "stack.confirm.failure", { action: label }),
             updatedAt: Date.now(),
           });
+          if (succeeded && refreshOnSuccess) {
+            emit("refresh");
+          }
         } else if (ev.event === "error") {
           completed = true;
           onOperationComplete(stackName, {
@@ -1663,6 +1670,9 @@ async function runStackUpdate(stackName: string): Promise<boolean> {
         message: t("stack.confirm.success", { action: label }),
         updatedAt: Date.now(),
       });
+      if (refreshOnSuccess) {
+        emit("refresh");
+      }
     }
   } catch (e: any) {
     if (!completed) {
@@ -1865,6 +1875,15 @@ function onOperationStart(stackName: string, state: OperationState) {
       action: state.action
     };
   }
+
+  if (
+    selectedStackName.value === stackName &&
+    (state.action === "start" || state.action === "service-start")
+  ) {
+    stopLogs();
+    logLines.value = [];
+    logsLoading.value = true;
+  }
 }
 
 function onOperationComplete(stackName: string, state: OperationState) {
@@ -1877,6 +1896,19 @@ function onOperationComplete(stackName: string, state: OperationState) {
   operationPanelAction.value = state.action;
   scheduleOperationAutoClose(stackName, state.status === "success" ? 2400 : 6500);
   delete runningOperations[stackName];
+
+  if (selectedStackName.value !== stackName) return;
+
+  if (state.status === "success" && (state.action === "start" || state.action === "service-start")) {
+    loadLogs();
+  } else if (
+    state.status === "success" &&
+    (state.action === "stop" || state.action === "down" || state.action === "service-stop")
+  ) {
+    stopLogs();
+  } else if (logsLoading.value) {
+    logsLoading.value = false;
+  }
 }
 
 watch(selectedStackName, () => {
@@ -2422,6 +2454,11 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+.container-meta--mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .service-status {
   flex: 1;
   min-width: 0;
@@ -2721,7 +2758,7 @@ onUnmounted(() => {
   border-radius: 8px;
   background: #020609;
   color: #e5f2ff;
-  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
   padding: 10px;
@@ -2965,7 +3002,8 @@ onUnmounted(() => {
 }
 
 .stat-card-value {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 17px;
   font-weight: 850;
   color: var(--text-primary);
@@ -2990,7 +3028,8 @@ onUnmounted(() => {
 }
 
 .stat-card-sub {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
+  font-variant-numeric: tabular-nums;
   font-size: 9px;
   color: var(--text-secondary);
   margin-top: 1px;

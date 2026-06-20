@@ -130,6 +130,7 @@ export interface I18nSchema {
   "stackOp.stopping": string;
   "stackOp.restarting": string;
   "stackOp.updating": string;
+  "stackOp.deploying": string;
   "stackOp.pruning": string;
   "stackOp.deleting": string;
   "stackOp.serviceStarting": string;

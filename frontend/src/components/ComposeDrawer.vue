@@ -22,7 +22,7 @@
             maxlength="64"
             clearable
           />
-          <p>{{ composeFileName }}</p>
+          <p class="compose-editor__meta">{{ composeFileName }}</p>
           <p v-if="managed" class="compose-editor__managed">{{ t('compose.managedByStackService') }}</p>
         </div>
         <div class="compose-editor__actions">
@@ -62,8 +62,19 @@
         <el-icon class="is-loading" :size="28"><Loading /></el-icon>
       </div>
 
+      <StackOperationDock
+        v-if="showDeployTerminal"
+        class="compose-deploy-dock"
+        :stack-name="targetStackName"
+        action="deploy"
+        :lines="deployChunks"
+        :status="deployDockStatus"
+        :message="operationStatus?.message || ''"
+        @close="clearDeployOutput"
+      />
+
       <el-tabs
-        v-else-if="saving !== 'deploy'"
+        v-if="!loading"
         v-model="activeTab"
         class="compose-tabs"
       >
@@ -89,23 +100,6 @@
         </el-tab-pane>
       </el-tabs>
 
-      <div v-if="saving === 'deploy'" class="deploy-terminal">
-        <div class="deploy-terminal-header">
-          <span>{{ t('compose.deployOutput') }}</span>
-          <el-button
-            v-if="deployChunks.length > 0"
-            class="ui-button ui-button--compact"
-            size="small"
-            text
-            :icon="DocumentCopy"
-            @click="copyDeployOutput"
-          >
-            {{ deployCopied ? t('terminal.copied') : t('terminal.copyOutput') }}
-          </el-button>
-        </div>
-        <div class="deploy-terminal-viewport" ref="deployTerminalRef" />
-      </div>
-
       <div v-if="operationStatus" class="compose-operation-status" :class="`op-${operationStatus.status}`">
         <el-icon v-if="operationStatus.status === 'running'" class="is-loading"><Loading /></el-icon>
         <el-icon v-else-if="operationStatus.status === 'success'"><SuccessFilled /></el-icon>
@@ -117,17 +111,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onUnmounted } from "vue";
+import { ref, computed, watch, onUnmounted } from "vue";
 import MonacoEditor from "@/components/MonacoEditor.vue";
+import StackOperationDock from "@/components/StackOperationDock.vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
-import { Loading, SuccessFilled, WarningFilled, DocumentCopy } from "@element-plus/icons-vue";
+import { Loading, SuccessFilled, WarningFilled } from "@element-plus/icons-vue";
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
 import { useConfirm } from "@/composables/useConfirm";
-import { Terminal as XtermTerminal, type ITheme } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 
 const props = defineProps<{
   visible: boolean;
@@ -226,46 +218,18 @@ const composeFileName = ref("compose.yaml");
 const newStackName = ref("");
 const managed = ref(false);
 const operationStatus = ref<{
-  status: string;
+  status: "running" | "success" | "error" | "idle";
   message: string;
   logTail?: string;
 } | null>(null);
 
 const deployChunks = ref<string[]>([]);
 const deployStreamActive = ref(false);
-const deployCopied = ref(false);
-const deployTerminalRef = ref<HTMLElement | null>(null);
-let deployTerminal: XtermTerminal | null = null;
-let deployFitAddon: FitAddon | null = null;
-let deployRenderedChunkCount = 0;
-let deployResizeObserver: ResizeObserver | null = null;
-let deployThemeObserver: MutationObserver | null = null;
-
-const darkDeployTheme: ITheme = {
-  background: "#0d1117",
-  foreground: "#e6edf3",
-  cursor: "#58a6ff",
-  black: "#0d1117",
-  blue: "#58a6ff",
-  cyan: "#22d3ee",
-  green: "#3fb950",
-  red: "#f85149",
-  yellow: "#f0883e",
-  white: "#e6edf3",
-};
-
-const lightDeployTheme: ITheme = {
-  background: "#f8fafc",
-  foreground: "#0f172a",
-  cursor: "#2563eb",
-  black: "#0f172a",
-  blue: "#2563eb",
-  cyan: "#0891b2",
-  green: "#16a34a",
-  red: "#dc2626",
-  yellow: "#d97706",
-  white: "#f8fafc",
-};
+const showDeployTerminal = computed(() => deployStreamActive.value || deployChunks.value.length > 0);
+const deployDockStatus = computed<"running" | "success" | "error" | "idle">(() => {
+  if (deployStreamActive.value) return "running";
+  return operationStatus.value?.status || "idle";
+});
 
 const DEFAULT_COMPOSE_YAML = `services:
   app:
@@ -311,23 +275,6 @@ watch(
     }
   },
   { immediate: true }
-);
-
-watch(
-  () => deployChunks.value,
-  () => {
-    deployRenderedChunkCount = 0;
-    deployTerminal?.clear();
-    deployTerminal?.reset();
-    writeDeployChunks(0, true);
-  }
-);
-
-watch(
-  () => deployChunks.value.length,
-  () => {
-    writeDeployChunks(deployRenderedChunkCount);
-  }
 );
 
 function initializeCreateCompose() {
@@ -447,14 +394,22 @@ async function save(deploy: boolean) {
   saving.value = "deploy";
   deployChunks.value = [];
   deployStreamActive.value = true;
-  nextTick(() => initDeployTerminal());
 
   operationStatus.value = {
     status: "running",
     message: t("compose.deploying"),
   };
 
-  const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackNameForRequest)}/compose/deploy`;
+  // Pass cols/rows so the agent's PTY (and thus `docker compose`'s progress
+  // formatter) wraps at a width close to what the dock can actually render.
+  // The backend default is cols=160, which overflows the dock's ~90-125 col
+  // surface → xterm soft-wraps each progress line, and `\r` refreshes then
+  // only reset to column 0 of the *current* visual line, leaving the wrapped
+  // tail behind as stray "extra lines". Matching the stack page's cols=110
+  // (proven not to wrap inside StackOperationDock) avoids this.
+  const cols = 110;
+  const rows = 24;
+  const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackNameForRequest)}/compose/deploy?cols=${cols}&rows=${rows}`;
   let completed = false;
 
   try {
@@ -482,10 +437,10 @@ async function save(deploy: boolean) {
       },
       onEvent: (ev) => {
         if (ev.event === "chunk") {
-          deployChunks.value.push(ev.data?.raw ?? ev.rawData);
+          deployChunks.value.push(normalizeDeployChunk(ev.data?.raw ?? ev.rawData));
         } else if (ev.event === "line") {
           // Backward compatibility for old SSE protocol
-          deployChunks.value.push(ev.data?.text ?? ev.rawData);
+          deployChunks.value.push(normalizeDeployChunk(ev.data?.text ?? ev.rawData));
         } else if (ev.event === "complete") {
           completed = true;
           deployStreamActive.value = false;
@@ -539,114 +494,18 @@ async function save(deploy: boolean) {
   }
 }
 
-watch(
-  () => saving.value,
-  (newVal, oldVal) => {
-    if (newVal !== "deploy" && oldVal === "deploy") {
-      disposeDeployTerminal();
-    }
-  }
-);
-
 onUnmounted(() => {
-  disposeDeployTerminal();
+  deployChunks.value = [];
+  deployStreamActive.value = false;
 });
 
-function currentDeployTheme(): ITheme {
-  return document.documentElement.dataset.theme === "light"
-    ? lightDeployTheme
-    : darkDeployTheme;
+function normalizeDeployChunk(value: string): string {
+  return String(value || "").replace(/\r(?!\n)/g, "\r\x1b[2K");
 }
 
-function applyDeployTheme() {
-  if (!deployTerminal) return;
-  deployTerminal.options.theme = currentDeployTheme();
-}
-
-function initDeployTerminal() {
-  if (deployTerminal || !deployTerminalRef.value) return;
-
-  deployTerminal = new XtermTerminal({
-    convertEol: true,
-    cursorBlink: true,
-    cursorStyle: "bar",
-    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
-    fontSize: 12,
-    lineHeight: 1.55,
-    scrollback: 2000,
-    theme: currentDeployTheme(),
-  });
-
-  deployFitAddon = new FitAddon();
-  deployTerminal.loadAddon(deployFitAddon);
-
-  deployTerminal.open(deployTerminalRef.value);
-  deployRenderedChunkCount = 0;
-  writeDeployChunks(0, true);
-  nextTick(() => deployFitAddon?.fit());
-
-  deployResizeObserver = new ResizeObserver(() => deployFitAddon?.fit());
-  deployResizeObserver.observe(deployTerminalRef.value);
-
-  deployThemeObserver = new MutationObserver(() => applyDeployTheme());
-  deployThemeObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme", "class"],
-  });
-}
-
-function disposeDeployTerminal() {
-  deployResizeObserver?.disconnect();
-  deployResizeObserver = null;
-  deployThemeObserver?.disconnect();
-  deployThemeObserver = null;
-  deployTerminal?.dispose();
-  deployTerminal = null;
-  deployFitAddon = null;
-  deployRenderedChunkCount = 0;
-}
-
-function writeDeployChunks(startIndex: number, force = false) {
-  if (!deployTerminal) return;
-
-  if (deployChunks.value.length === 0) {
-    deployRenderedChunkCount = 0;
-    if (force) {
-      deployTerminal.clear();
-    }
-    return;
-  }
-
-  if (startIndex === 0 && deployRenderedChunkCount === 0) {
-    deployTerminal.clear();
-  }
-
-  for (let i = startIndex; i < deployChunks.value.length; i++) {
-    deployTerminal.write(deployChunks.value[i]);
-  }
-  deployRenderedChunkCount = deployChunks.value.length;
-  deployFitAddon?.fit();
-}
-
-function getDeployTerminalPlainText(): string {
-  if (!deployTerminal) return "";
-  const buffer = deployTerminal.buffer.active;
-  const lines: string[] = [];
-  for (let i = 0; i < buffer.length; i++) {
-    const line = buffer.getLine(i);
-    if (line) lines.push(line.translateToString().trimEnd());
-  }
-  return lines.join("\n").trimEnd();
-}
-
-async function copyDeployOutput() {
-  try {
-    await navigator.clipboard.writeText(getDeployTerminalPlainText());
-    deployCopied.value = true;
-    setTimeout(() => { deployCopied.value = false; }, 2000);
-  } catch {
-    ElMessage.warning(t("terminal.copyFailed"));
-  }
+function clearDeployOutput() {
+  if (deployStreamActive.value) return;
+  deployChunks.value = [];
 }
 </script>
 
@@ -726,7 +585,7 @@ async function copyDeployOutput() {
   box-shadow: 0 0 0 1px var(--border-subtle) inset;
 }
 
-.compose-editor p {
+.compose-editor__meta {
   margin: 4px 0 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
@@ -735,7 +594,7 @@ async function copyDeployOutput() {
 
 .compose-editor__managed {
   color: var(--success) !important;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 11px;
   margin-top: 4px;
 }
@@ -777,63 +636,8 @@ async function copyDeployOutput() {
 
 /* Monaco editor handles its own typography */
 
-.deploy-terminal {
-  display: flex;
-  flex-direction: column;
-  max-height: 60vh;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.deploy-terminal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 12px;
-  background: #161b22;
-  color: #8b949e;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border-bottom: 1px solid #30363d;
-}
-
-.deploy-terminal-viewport {
-  flex: 1;
-  min-height: 260px;
-  height: 50vh;
-  padding: 12px;
-  overflow: hidden;
-  background: #0d1117;
-}
-
-.deploy-terminal-viewport :deep(.xterm) {
-  height: 100%;
-}
-
-.deploy-terminal-viewport :deep(.xterm-viewport) {
-  background: #0d1117 !important;
-}
-
-:global([data-theme="light"] .deploy-terminal) {
-  border-color: rgba(60, 72, 88, 0.16);
-}
-
-:global([data-theme="light"] .deploy-terminal-header) {
-  background: #eef2f7;
-  color: #64748b;
-  border-bottom-color: rgba(60, 72, 88, 0.16);
-}
-
-:global([data-theme="light"] .deploy-terminal-viewport) {
-  background: #f8fafc;
-}
-
-:global([data-theme="light"] .deploy-terminal-viewport) :deep(.xterm-viewport) {
-  background: #f8fafc !important;
+.compose-deploy-dock {
+  flex: 0 0 auto;
 }
 
 .compose-operation-status {

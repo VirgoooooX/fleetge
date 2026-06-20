@@ -12,6 +12,7 @@ Cache tiers:
 import asyncio
 import logging
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -35,7 +36,7 @@ from app.schemas import (
     UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
-from app.services.update_check import run_update_check
+from app.services.update_check import _extract_local_digest, run_update_check
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,76 @@ TRANSIENT_AGENT_ERRORS = (
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+@dataclass
+class FinalizeSummary:
+    """One per-image verdict produced by finalize_stack_update."""
+
+    image: str
+    cleared: bool
+    verdict: str
+
+
+# Container states that block tag clearing: the stack has not converged to a
+# stable, healthy state. ``starting`` is included because a healthcheck that
+# has not yet turned ``healthy`` means we cannot confirm the new image runs.
+_BLOCKING_CONTAINER_STATES = {"created", "exited", "dead", "restarting", "paused"}
+_BLOCKING_HEALTH_STATUSES = {"starting", "unhealthy"}
+_FINALIZE_WAIT_INTERVAL_SECONDS = 2.0
+
+
+def _stack_convergence_block_reason(containers: list[ContainerSummary]) -> Optional[str]:
+    """Return a human-readable reason if the stack has NOT converged, else None.
+
+    A stack is considered converged when every container of the image is in a
+    running state and either has no healthcheck or reports ``healthy``. Any
+    Created/Exited/Restarting container, or a still-``starting``/``unhealthy``
+    healthcheck, blocks clearing the update tag.
+    """
+    for c in containers:
+        state = (c.state or "").lower()
+        if state in _BLOCKING_CONTAINER_STATES:
+            return f"container '{c.name}' is {state}"
+        if state != "running":
+            return f"container '{c.name}' state is '{state}'"
+
+        health = c.health
+        if isinstance(health, dict):
+            health_status = (health.get("Status") or "").lower()
+            if health_status in _BLOCKING_HEALTH_STATUSES:
+                return f"container '{c.name}' health is {health_status}"
+    return None
+
+
+def _normalize_image_id(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _container_image_identity_block_reason(
+    containers: list[ContainerSummary],
+) -> Optional[str]:
+    """Return a reason if a running container is not using the current tag image.
+
+    ``repo_digests`` are read from ``docker image inspect <tag>``. A successful
+    pull updates that tag even if compose fails to recreate the container, so
+    digest comparison alone can clear a tag incorrectly. ``image_id`` is the
+    actual running container image, and ``tag_image_id`` is the current local
+    tag target; both must match before finalize can clear.
+    """
+    for c in containers:
+        container_image_id = _normalize_image_id(c.image_id)
+        tag_image_id = _normalize_image_id(c.tag_image_id)
+        if not container_image_id:
+            return f"container '{c.name}' image id is unknown"
+        if not tag_image_id:
+            return f"current tag image id for '{c.image}' is unknown"
+        if container_image_id != tag_image_id:
+            return (
+                f"container '{c.name}' still uses image {container_image_id[:19]} "
+                f"while tag points to {tag_image_id[:19]}"
+            )
+    return None
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
@@ -113,6 +184,70 @@ class SnapshotManager:
         # Failure backoff: skip unreachable hosts so they don't slow the poll cycle
         self._consecutive_failures: dict[str, int] = {}
         self._backoff_until: dict[str, float] = {}
+
+    def _finalize_block_reason_for_snapshot(
+        self,
+        snap: HostSnapshot,
+        stack_name: str,
+        target_images: list[str],
+    ) -> Optional[str]:
+        stack_containers = [
+            c for c in snap.containers
+            if c.stack_name == stack_name and c.image
+        ]
+        containers_by_image: dict[str, list[ContainerSummary]] = {}
+        for c in stack_containers:
+            containers_by_image.setdefault(c.image, []).append(c)
+
+        for image in target_images:
+            containers = containers_by_image.get(image, [])
+            if not containers:
+                return f"{image}: no container found in stack '{stack_name}'"
+            identity_reason = _container_image_identity_block_reason(containers)
+            if identity_reason:
+                return f"{image}: {identity_reason}"
+            convergence_reason = _stack_convergence_block_reason(containers)
+            if convergence_reason:
+                return f"{image}: {convergence_reason}"
+        return None
+
+    async def _wait_for_stack_update_convergence(
+        self,
+        host_id: str,
+        stack_name: str,
+        target_images: list[str],
+        wait_timeout: float,
+        wait_interval: float = _FINALIZE_WAIT_INTERVAL_SECONDS,
+    ) -> None:
+        if wait_timeout <= 0 or not target_images:
+            return
+
+        deadline = time.monotonic() + wait_timeout
+        while True:
+            snap = self._snapshots.get(host_id)
+            if snap is not None:
+                reason = self._finalize_block_reason_for_snapshot(
+                    snap, stack_name, target_images
+                )
+                if reason is None:
+                    return
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+
+            await asyncio.sleep(min(wait_interval, remaining))
+            try:
+                await self.refresh_host_docker(
+                    host_id,
+                    trigger_initial_update_check=False,
+                    force_status_on_timeout=False,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "Finalize convergence refresh failed for %s/%s: %s",
+                    host_id, stack_name, exc,
+                )
 
     def increment_connections(self) -> None:
         self._active_connections += 1
@@ -355,6 +490,269 @@ class SnapshotManager:
         if snap is not None:
             current_images = {c.image for c in snap.containers if c.image}
             self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
+
+    async def finalize_stack_update(
+        self,
+        host_id: str,
+        stack_name: str,
+        target_images: list[str],
+        wait_timeout: float = 0.0,
+        wait_interval: float = _FINALIZE_WAIT_INTERVAL_SECONDS,
+    ) -> list[FinalizeSummary]:
+        """Authoritative post-update tag clearing + per-image verdict.
+
+        Runs *after* a successful ``docker compose up``. For each image that
+        was marked ``updatable`` before the update, decide whether the update
+        actually landed and produce a terminal-ready verdict line. The tag is
+        cleared only when the evidence is conclusive; otherwise it is left in
+        place with a human-readable reason.
+
+        Decision matrix per image::
+
+            healthy/running + local == cached registry_digest
+                -> clear tag, "up to date (digest matched)"
+            healthy/running + local != cached, re-poll == local
+                -> clear tag, "up to date (tag advanced, re-checked)"
+            healthy/running + local != cached, re-poll != local / failed
+                -> keep, show local/cached/fresh digests
+            stack not converged (created/exited/restarting/unhealthy/starting)
+                -> keep, "waiting for health" or the blocking state
+            local digest missing
+                -> keep, "cannot determine local digest"
+            image not running in this stack
+                -> keep, "not found in running stack"
+
+        Note: digest match and health are evaluated independently. A matching
+        digest means "the image bytes updated"; health means "the new
+        container is well". We require *both* to clear, because clearing on a
+        digest match alone would hide a container that updated its image but
+        fails to start (the exact failure mode behind the original bug).
+        """
+        ordered_targets = list(dict.fromkeys(target_images))
+        await self._wait_for_stack_update_convergence(
+            host_id, stack_name, ordered_targets, wait_timeout, wait_interval
+        )
+
+        snap = self._snapshots.get(host_id)
+        summaries: list[FinalizeSummary] = []
+        if snap is None:
+            return summaries
+
+        # Containers of this stack, keyed by image. Only running/transitioning
+        # containers in THIS stack matter — other stacks sharing the image are
+        # out of scope for this update's verdict.
+        stack_containers = [
+            c for c in snap.containers
+            if c.stack_name == stack_name and c.image
+        ]
+        containers_by_image: dict[str, list[ContainerSummary]] = {}
+        for c in stack_containers:
+            containers_by_image.setdefault(c.image, []).append(c)
+
+        with Session(engine) as session:
+            rows = session.exec(
+                select(ImageUpdateCache).where(
+                    ImageUpdateCache.host_id == host_id,
+                    ImageUpdateCache.image.in_(ordered_targets),  # type: ignore[attr-defined]
+                )
+            ).all()
+            rows_by_image = {row.image: row for row in rows}
+
+        for image in ordered_targets:
+            row = rows_by_image.get(image)
+            containers = containers_by_image.get(image, [])
+
+            if not row or row.status != "updatable":
+                # Nothing to clear (already up_to_date, or a non-conclusive
+                # cache row). Still report so the terminal confirms the state.
+                status = row.status if row else "unknown"
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=False,
+                    verdict=f"{image}: no updatable tag ({status})",
+                ))
+                continue
+
+            if not containers:
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=False,
+                    verdict=(
+                        f"{image}: marked updatable from running container, "
+                        f"but not found in running stack '{stack_name}' "
+                        f"(compose/runtime drift)"
+                    ),
+                ))
+                continue
+
+            primary_container = containers[0]
+            local_repo_digest = _extract_local_digest(primary_container.repo_digests)
+            local_image_digest = _normalize_image_id(
+                primary_container.tag_image_id or primary_container.image_id
+            ) or None
+            local_candidates = [
+                digest for digest in (local_image_digest, local_repo_digest) if digest
+            ]
+            if not local_candidates:
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=False,
+                    verdict=(
+                        f"{image}: cannot determine local digest "
+                        f"(image id and RepoDigests missing)"
+                    ),
+                ))
+                continue
+
+            identity_reason = _container_image_identity_block_reason(containers)
+            if identity_reason:
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=False,
+                    verdict=f"{image}: {identity_reason}",
+                ))
+                continue
+
+            # Health convergence gate across every container of this image.
+            block_reason = _stack_convergence_block_reason(containers)
+            if block_reason:
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=False,
+                    verdict=f"{image}: {block_reason}",
+                ))
+                continue
+
+            cached_target = row.registry_digest
+            if cached_target in local_candidates:
+                self._clear_updatable_tag(host_id, image, local_candidates[0])
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=True,
+                    verdict=f"{image}: up to date (digest matched)",
+                ))
+                continue
+
+            # Mismatch: do ONE confirmatory re-poll to distinguish "tag
+            # advanced" (container is actually newer) from a real digest
+            # discrepancy. This is the only registry round-trip, and only on
+            # the already-abnormal path.
+            fresh_target = await self._confirm_registry_digest(
+                host_id,
+                image,
+                primary_container.repo_digests,
+                local_image_id=local_image_digest,
+                platform=primary_container.tag_platform or primary_container.platform,
+            )
+            if fresh_target and fresh_target in local_candidates:
+                self._clear_updatable_tag(host_id, image, local_candidates[0])
+                summaries.append(FinalizeSummary(
+                    image=image,
+                    cleared=True,
+                    verdict=(
+                        f"{image}: up to date (tag advanced since last check; "
+                        f"re-confirmed against registry)"
+                    ),
+                ))
+                continue
+
+            cached_txt = cached_target or "unknown"
+            fresh_txt = fresh_target or "unavailable"
+            summaries.append(FinalizeSummary(
+                image=image,
+                cleared=False,
+                verdict=(
+                    f"{image}: updated, but digest does not match target "
+                    f"(local={local_candidates[0][:19]} cached={cached_txt[:19]} "
+                    f"registry={fresh_txt[:19]})"
+                ),
+            ))
+
+        # Mirror the (possibly cleared) cache back into the snapshot so the UI
+        # reflects the new tag state without waiting for the next poll.
+        current_images = {c.image for c in snap.containers if c.image}
+        with Session(engine) as session:
+            rows = session.exec(
+                select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+            ).all()
+        self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
+        return summaries
+
+    def _clear_updatable_tag(
+        self, host_id: str, image: str, local_digest: str
+    ) -> None:
+        now = _utc_now()
+        with Session(engine) as session:
+            row = session.exec(
+                select(ImageUpdateCache).where(
+                    ImageUpdateCache.host_id == host_id,
+                    ImageUpdateCache.image == image,
+                )
+            ).first()
+            if not row or row.status != "updatable":
+                return
+            row.status = "up_to_date"
+            row.current_digest = local_digest
+            row.failure_count = 0
+            row.last_failure_status = None
+            row.last_failure_at = None
+            row.updated_at = now
+            session.add(row)
+            session.commit()
+
+    async def _confirm_registry_digest(
+        self,
+        host_id: str,
+        image: str,
+        repo_digests: list[str],
+        local_image_id: str | None = None,
+        platform: str | None = None,
+    ) -> Optional[str]:
+        """Single forced re-poll of the registry for one image.
+
+        Returns the freshly fetched registry digest, or None on any failure
+        (network, auth, parse). Failures are non-fatal — the caller falls back
+        to reporting all three digests without clearing the tag.
+        """
+        try:
+            results = await run_update_check(
+                host_id, [(image, repo_digests, local_image_id, platform)], force=True
+            )
+            if results:
+                self.persist_update_check_results(host_id, results)
+                return results[0].registry_digest
+        except Exception as exc:
+            logger.warning("Confirmatory registry re-poll failed for %s: %s", image, exc)
+        return None
+
+
+    def _evaluate_local_digest_against_cache(
+        self,
+        containers: list[ContainerSummary],
+        rows: list[ImageUpdateCache],
+    ) -> dict[str, str]:
+        """Read-only check: which images now have a local digest matching the
+        cached registry target?
+
+        This is intentionally a *query only* — it never writes to the DB. The
+        result is consumed by the post-update finalize path, which decides
+        whether to clear the ``updatable`` tag based on stack health and
+        compose/runtime consistency. Performing this clear as a side-effect of
+        a plain refresh was unsafe: it ran even when the update had failed, as
+        long as the image had already been pulled.
+        """
+        matched: dict[str, str] = {}
+        rows_by_image = {row.image: row for row in rows}
+        for container in containers:
+            if not container.image:
+                continue
+            row = rows_by_image.get(container.image)
+            if not row or row.status != "updatable" or not row.registry_digest:
+                continue
+            local_digest = _extract_local_digest(container.repo_digests)
+            if local_digest and local_digest == row.registry_digest:
+                matched[container.image] = local_digest
+        return matched
 
     async def refresh_update_checks_now(self) -> list[UpdateCheckResult]:
         """Run update checks immediately and return the refreshed cache."""
@@ -679,23 +1077,30 @@ class SnapshotManager:
                     )
                 )
 
-            # Fetch RepoDigests for each unique image
+            # Fetch tag image identity for each unique image. RepoDigests and
+            # Id come from docker image inspect <tag>; the container's ImageID
+            # remains the source of truth for what is actually running.
             unique_images = list({c.image for c in snap.containers if c.image})
             image_semaphore = asyncio.Semaphore(8)
 
-            async def inspect_image(img_name: str) -> tuple[str, list[str]]:
+            async def inspect_image(img_name: str) -> tuple[str, list[str], str, str]:
                 async with image_semaphore:
                     img_info = await proxy.image_inspect(img_name)
                 rd = img_info.get("RepoDigests", []) or []
-                return img_name, rd
+                image_id = img_info.get("Id", "") or ""
+                os_name = img_info.get("Os", "") or ""
+                arch = img_info.get("Architecture", "") or ""
+                variant = img_info.get("Variant", "") or ""
+                platform = "/".join(part for part in (os_name, arch, variant) if part)
+                return img_name, rd, image_id, platform
 
             inspect_results = await asyncio.gather(
                 *(inspect_image(img_name) for img_name in unique_images),
                 return_exceptions=True,
             )
-            image_digests: dict[str, list[str]] = {
-                img_name: [] for img_name in unique_images
-            }
+            image_digests: dict[str, list[str]] = {img_name: [] for img_name in unique_images}
+            tag_image_ids: dict[str, str] = {img_name: "" for img_name in unique_images}
+            tag_platforms: dict[str, str] = {img_name: "" for img_name in unique_images}
             for img_name, result in zip(unique_images, inspect_results):
                 if isinstance(result, Exception):
                     logger.debug(
@@ -704,8 +1109,10 @@ class SnapshotManager:
                     )
                     continue
                 try:
-                    img_name, rd = result
+                    img_name, rd, image_id, platform = result
                     image_digests[img_name] = rd
+                    tag_image_ids[img_name] = image_id
+                    tag_platforms[img_name] = platform
                 except Exception as exc:
                     logger.debug(
                         "Image inspect parse failed for %s/%s: %s",
@@ -713,50 +1120,24 @@ class SnapshotManager:
                     )
             for c in snap.containers:
                 c.repo_digests = image_digests.get(c.image, [])
+                c.tag_image_id = tag_image_ids.get(c.image) or None
+                c.tag_platform = tag_platforms.get(c.image) or None
 
             # Stacks from Agent
             await self._refresh_stacks(snap, cfg)
 
-            # Auto-verify / update image check statuses for pulled/changed images
+            # Read-only mirror of the persisted update cache into the snapshot.
+            # Tag clearing (updatable -> up_to_date) is intentionally NOT done
+            # here: a plain refresh can run after a failed update that still
+            # pulled the image, and silently clearing the tag in that case is a
+            # false "updated" signal. Clearing is the job of the post-update
+            # finalize path (finalize_stack_update), which checks stack health
+            # and compose/runtime consistency first.
             try:
-                from app.services.update_check import _extract_local_digest
-
                 with Session(engine) as session:
                     rows = session.exec(
                         select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
                     ).all()
-
-                rows_by_image = {row.image: row for row in rows}
-                changed_images = []
-                for c in snap.containers:
-                    if not c.image:
-                        continue
-                    row = rows_by_image.get(c.image)
-                    if row:
-                        new_local = _extract_local_digest(c.repo_digests)
-                        if new_local and (new_local != row.current_digest or (row.status == "updatable" and new_local == row.registry_digest)):
-                            changed_images.append((c.image, c.repo_digests))
-
-                if changed_images:
-                    logger.info("Running update check verification for pulled/changed images on host %s: %s", host_id, [img for img, _ in changed_images])
-                    results = await run_update_check(host_id, changed_images, force=True)
-                    now = _utc_now()
-                    with Session(engine) as session:
-                        for result in results:
-                            row = session.exec(
-                                select(ImageUpdateCache).where(
-                                    ImageUpdateCache.host_id == host_id,
-                                    ImageUpdateCache.image == result.image
-                                )
-                            ).first()
-                            self._persist_update_check_result(session, host_id, result, row, now)
-                        session.commit()
-
-                    # Reload updated cache rows
-                    with Session(engine) as session:
-                        rows = session.exec(
-                            select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
-                        ).all()
 
                 current_images = {c.image for c in snap.containers if c.image}
                 self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
@@ -1307,8 +1688,17 @@ class SnapshotManager:
             return
 
         host_id = snap.host_config.host_id
-        image_refs = [(c.image, c.repo_digests) for c in snap.containers]
-        current_images = {image for image, _ in image_refs}
+        image_refs = [
+            (
+                c.image,
+                c.repo_digests,
+                c.tag_image_id or c.image_id,
+                c.tag_platform or c.platform,
+            )
+            for c in snap.containers
+            if c.image
+        ]
+        current_images = {image for image, *_ in image_refs}
 
         with Session(engine) as session:
             rows = session.exec(
@@ -1323,16 +1713,28 @@ class SnapshotManager:
         now = _utc_now()
         interval = timedelta(seconds=get_settings().UPDATE_CHECK_INTERVAL)
 
-        merged_refs: dict[str, list[str]] = {}
-        for image_ref, repo_digests in image_refs:
-            existing = merged_refs.setdefault(image_ref, [])
+        merged_refs: dict[str, dict] = {}
+        for image_ref, repo_digests, local_image_id, platform in image_refs:
+            existing = merged_refs.setdefault(
+                image_ref,
+                {"repo_digests": [], "local_image_id": None, "platform": None},
+            )
             for digest in repo_digests or []:
-                if digest and digest not in existing:
-                    existing.append(digest)
+                if digest and digest not in existing["repo_digests"]:
+                    existing["repo_digests"].append(digest)
+            if local_image_id and not existing["local_image_id"]:
+                existing["local_image_id"] = local_image_id
+            if platform and not existing["platform"]:
+                existing["platform"] = platform
 
         due_refs = [
-            (image_ref, repo_digests)
-            for image_ref, repo_digests in merged_refs.items()
+            (
+                image_ref,
+                info["repo_digests"],
+                info["local_image_id"],
+                info["platform"],
+            )
+            for image_ref, info in merged_refs.items()
             if self._is_update_cache_due(
                 rows_by_image.get(image_ref),
                 now,

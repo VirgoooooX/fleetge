@@ -94,6 +94,7 @@ const actionTitle = computed(() => {
     stop: "stackOp.stopping",
     restart: "stackOp.restarting",
     update: "stackOp.updating",
+    deploy: "stackOp.deploying",
     prune: "stackOp.pruning",
     delete: "stackOp.deleting",
     "service-start": "stackOp.serviceStarting",
@@ -115,7 +116,7 @@ onMounted(() => {
   terminal = new XtermTerminal({
     convertEol: true,
     cursorBlink: false,
-    fontFamily: "'JetBrains Mono', 'Cascadia Code', Consolas, monospace",
+    fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
     fontSize: 13,
     lineHeight: 1.2,
     rows: props.compact ? 7 : 10,

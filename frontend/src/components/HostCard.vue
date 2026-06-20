@@ -141,7 +141,7 @@
               </linearGradient>
             </defs>
             <path v-if="netPaths.fill" :d="netPaths.fill" :fill="`url(#netGrad-${host.host_id})`"/>
-            <path v-if="netPaths.stroke" :d="netPaths.stroke" fill="none" stroke="#06b6d4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path v-if="netPaths.stroke" :d="netPaths.stroke" fill="none" stroke="#06b6d4" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </div>
       </div>
@@ -357,10 +357,8 @@ const vibrantIcons = {
 </script>
 
 <style scoped>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-
 .host-card {
-  font-family: "Inter", "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif !important;
+  font-family: var(--font-body) !important;
 
   /* Typography Variables Scoped locally to HostCard */
   --font-size-title: 19px;

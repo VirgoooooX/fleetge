@@ -124,7 +124,7 @@ onMounted(() => {
     fontSize: 13,
     lineHeight: 20,
     fontFamily:
-      "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, 'Courier New', monospace",
+      "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
     fontLigatures: true,
     lineNumbers: props.lineNumbers,
     lineDecorationsWidth: props.lineNumbers === "off" ? 0 : 10,

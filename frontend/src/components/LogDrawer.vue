@@ -176,7 +176,7 @@ onUnmounted(() => {
 }
 .log-text {
   margin: 0;
-  font-family: "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   color: #d4d4d4;

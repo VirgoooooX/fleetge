@@ -117,6 +117,7 @@
   "stackOp.stopping": "停止中",
   "stackOp.restarting": "重启中",
   "stackOp.updating": "更新中",
+  "stackOp.deploying": "部署中",
   "stackOp.deleting": "删除中",
   "stackOp.serviceStarting": "启动服务中",
   "stackOp.serviceStopping": "停止服务中",

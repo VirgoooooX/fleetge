@@ -94,17 +94,17 @@
             <el-form label-position="top" class="ui-form">
               <div class="form-grid">
                 <el-form-item :label="t('settings.security.jwtSecret')">
-                  <el-input v-model="readonlyForm.JWT_SECRET" disabled show-password />
+                  <el-input class="mono-input" v-model="readonlyForm.JWT_SECRET" disabled show-password />
                   <div class="form-help">{{ t('settings.security.help.jwtSecret') }}</div>
                 </el-form-item>
 
                 <el-form-item :label="t('settings.security.credentialsKey')">
-                  <el-input v-model="readonlyForm.CREDENTIALS_KEY" disabled show-password />
+                  <el-input class="mono-input" v-model="readonlyForm.CREDENTIALS_KEY" disabled show-password />
                   <div class="form-help">{{ t('settings.security.help.credentialsKey') }}</div>
                 </el-form-item>
 
                 <el-form-item :label="t('settings.security.adminPassword')">
-                  <el-input v-model="readonlyForm.ADMIN_PASSWORD" disabled show-password />
+                  <el-input class="mono-input" v-model="readonlyForm.ADMIN_PASSWORD" disabled show-password />
                   <div class="form-help">{{ t('settings.security.help.adminPassword') }}</div>
                 </el-form-item>
               </div>
@@ -124,9 +124,17 @@
 
             <el-table :data="store.hosts" stripe style="width: 100%" class="host-table">
               <el-table-column :label="t('settings.hosts.col.sort')" prop="sort_order" width="70" align="center" class-name="mobile-hidden" label-class-name="mobile-hidden" />
-              <el-table-column :label="t('settings.hosts.col.id')" prop="host_id" width="140" class-name="mobile-hidden" label-class-name="mobile-hidden" />
+              <el-table-column :label="t('settings.hosts.col.id')" prop="host_id" width="140" class-name="mobile-hidden" label-class-name="mobile-hidden">
+                <template #default="{ row }">
+                  <span class="host-code-text">{{ row.host_id }}</span>
+                </template>
+              </el-table-column>
               <el-table-column :label="t('settings.hosts.col.name')" prop="display_name" width="160" />
-              <el-table-column :label="t('settings.hosts.col.url')" min-width="200" prop="agent_url" class-name="mobile-hidden" label-class-name="mobile-hidden" />
+              <el-table-column :label="t('settings.hosts.col.url')" min-width="200" prop="agent_url" class-name="mobile-hidden" label-class-name="mobile-hidden">
+                <template #default="{ row }">
+                  <span class="host-code-text">{{ row.agent_url || "-" }}</span>
+                </template>
+              </el-table-column>
               <el-table-column :label="t('settings.hosts.col.status')" prop="enabled" width="90" align="center">
                 <template #default="{ row }">
                   <el-switch v-slot:default v-model="row.enabled" @change="toggleHostEnabled(row)" :loading="store.saving" />
@@ -203,6 +211,7 @@
         <div class="dialog-grid">
           <el-form-item :label="t('settings.hosts.form.id')" prop="host_id">
             <el-input
+              class="mono-input"
               v-model="hostForm.host_id"
               :placeholder="t('settings.hosts.form.idPlaceholder')"
               :disabled="hostFormMode === 'edit'"
@@ -226,11 +235,12 @@
 
         <div class="mode-section">
           <el-form-item :label="t('settings.hosts.form.agentUrl')" prop="agent_url">
-            <el-input v-model="hostForm.agent_url" placeholder="http://192.168.1.100:8080" />
+            <el-input class="mono-input" v-model="hostForm.agent_url" placeholder="http://192.168.1.100:8080" />
             <div class="form-help">{{ t('settings.hosts.form.agentUrlHelp') }}</div>
           </el-form-item>
           <el-form-item :label="t('settings.hosts.form.agentToken')" prop="agent_token">
             <el-input
+              class="mono-input"
               v-model="hostForm.agent_token"
               type="password"
               show-password
@@ -1026,9 +1036,16 @@ onMounted(() => {
 }
 
 .url-text {
-  font-size: 13px;
-  font-family: inherit;
+  font-size: var(--text-md);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   word-break: break-all;
+}
+
+.host-code-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .url-text.text-muted {
@@ -1114,9 +1131,14 @@ onMounted(() => {
 }
 
 .global-env-textarea :deep(textarea) {
-  font-family: var(--font-mono, "Cascadia Code", Consolas, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.mono-input :deep(.el-input__inner) {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .section-kicker {
@@ -1133,13 +1155,13 @@ onMounted(() => {
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 2px 6px;
-  font-family: var(--font-mono, monospace);
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   color: var(--accent-blue);
 }
 
 .font-mono {
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }
 
 .icon-preview-cell {

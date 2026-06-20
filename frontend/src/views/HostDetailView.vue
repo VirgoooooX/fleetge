@@ -21,7 +21,7 @@
           <span class="metrics-label">{{ t('hostDetail.load') }}</span>
         </div>
         <div class="metrics-value-container">
-          <span class="metrics-value font-mono">{{ loadText }}</span>
+          <span class="metrics-value metrics-value--numeric">{{ loadText }}</span>
         </div>
       </div>
       <div class="metrics-item">
@@ -489,9 +489,9 @@ onUnmounted(() => {
   font-weight: 600;
   text-align: right;
 }
-.metrics-value.font-mono {
-  font-family: var(--font-mono);
+.metrics-value--numeric {
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .telemetry-lines {
@@ -508,7 +508,7 @@ onUnmounted(() => {
   gap: 3px;
 }
 .tl-label {
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 12px;
   color: var(--text-muted);
   text-align: center;
@@ -520,7 +520,7 @@ onUnmounted(() => {
   justify-content: end;
   align-items: baseline;
   gap: 2px;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-primary);

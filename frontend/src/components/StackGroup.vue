@@ -435,7 +435,7 @@ function openCompose(stackName: string) {
 .log-tail-content {
   background: #1e1e2e;
   color: #cdd6f4;
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
   padding: 16px;

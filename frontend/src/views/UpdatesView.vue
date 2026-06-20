@@ -23,7 +23,11 @@
     <div v-else>
       <div class="ui-panel table-panel" v-if="results.length > 0">
         <el-table :data="results" stripe style="width: 100%">
-        <el-table-column :label="t('updates.host')" prop="host_id" width="120" />
+        <el-table-column :label="t('updates.host')" prop="host_id" width="120">
+          <template #default="{ row }">
+            <span class="host-text">{{ row.host_id }}</span>
+          </template>
+        </el-table-column>
         <el-table-column :label="t('updates.image')" prop="image" min-width="300">
           <template #default="{ row }">
             <code class="image-ref">{{ row.image }}</code>
@@ -118,14 +122,17 @@ onMounted(fetchResults);
   color: var(--text-secondary);
 }
 .image-ref {
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
   background: rgba(5, 9, 20, 0.78);
   padding: 2px 6px;
   border-radius: 4px;
 }
+.host-text,
 .digest-text {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
 .table-panel {

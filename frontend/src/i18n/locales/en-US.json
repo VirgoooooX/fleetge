@@ -117,6 +117,7 @@
   "stackOp.stopping": "Stopping",
   "stackOp.restarting": "Restarting",
   "stackOp.updating": "Updating",
+  "stackOp.deploying": "Deploying",
   "stackOp.deleting": "Deleting",
   "stackOp.serviceStarting": "Starting service",
   "stackOp.serviceStopping": "Stopping service",

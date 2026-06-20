@@ -64,8 +64,9 @@ function formatBytes(bytes: number): string {
   text-align: right;
 }
 .bar-value {
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
 </style>

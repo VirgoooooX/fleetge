@@ -131,7 +131,8 @@ function formatTime(created: number): string {
   white-space: nowrap;
 }
 .image-ref {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   background: var(--code-bg, rgba(5, 9, 20, 0.78));
   padding: 2px 6px;
   border-radius: 4px;
@@ -149,7 +150,9 @@ function formatTime(created: number): string {
   text-overflow: ellipsis;
 }
 .port-text {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
 }
 .port-none, .stats-none {

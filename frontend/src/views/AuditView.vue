@@ -14,7 +14,7 @@
       <el-table :data="logs" stripe style="width: 100%" :default-sort="{ prop: 'timestamp', order: 'descending' }">
       <el-table-column :label="t('audit.time')" prop="timestamp" width="170" sortable>
         <template #default="{ row }">
-          {{ formatTime(row.timestamp) }}
+          <span class="audit-time">{{ formatTime(row.timestamp) }}</span>
         </template>
       </el-table-column>
       <el-table-column :label="t('audit.user')" prop="user" width="100" />
@@ -23,7 +23,11 @@
           <el-tag :type="actionType(row.action)" size="small">{{ actionLabel(row.action) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('audit.host')" prop="host_id" width="120" />
+      <el-table-column :label="t('audit.host')" prop="host_id" width="120">
+        <template #default="{ row }">
+          <span class="audit-code">{{ row.host_id }}</span>
+        </template>
+      </el-table-column>
       <el-table-column :label="t('audit.stack')" prop="stack_name" width="140">
         <template #default="{ row }">
           {{ row.stack_name || '-' }}
@@ -36,7 +40,11 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('audit.ip')" prop="ip_address" width="140" />
+      <el-table-column :label="t('audit.ip')" prop="ip_address" width="140">
+        <template #default="{ row }">
+          <span class="audit-code">{{ row.ip_address || "-" }}</span>
+        </template>
+      </el-table-column>
       <el-table-column :label="t('audit.detail')" prop="detail" min-width="200">
         <template #default="{ row }">
           <span class="detail-text">{{ row.detail || '-' }}</span>
@@ -145,8 +153,15 @@ onMounted(fetchLogs);
   flex-direction: column;
   gap: 16px;
 }
+.audit-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.audit-code,
 .detail-text {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   word-break: break-all;
 }

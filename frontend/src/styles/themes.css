@@ -201,7 +201,7 @@
 }
 
 [data-theme="light"] .summary-tile.critical {
-  background: rgba(220, 38, 38, 0.06);
+  background: rgba(255, 255, 255, 0.7);
 }
 
 [data-theme="light"] .host-card {

@@ -216,8 +216,8 @@ button.summary-tile {
 }
 
 .summary-tile.critical {
-  border-color: rgba(248, 113, 113, 0.28);
-  background: var(--dash-tile-critical-bg);
+  border-color: var(--border-subtle);
+  background: var(--dash-tile-bg);
 }
 
 .summary-tile strong {
@@ -229,7 +229,9 @@ button.summary-tile {
 
 .summary-label {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 /* ── Tile icon — large background element at center-right ──── */
@@ -282,8 +284,8 @@ button.summary-tile {
 
 .summary-tile small {
   color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .summary-tile.critical strong,

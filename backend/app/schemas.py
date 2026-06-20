@@ -89,6 +89,8 @@ class ContainerSummary(BaseModel):
     image: str
     image_id: str
     repo_digests: list[str] = []  # from /images/{name}/json → RepoDigests
+    tag_image_id: Optional[str] = None  # from /images/{name}/json → Id
+    tag_platform: Optional[str] = None  # from /images/{name}/json → os/arch[/variant]
     state: str  # running | exited | paused
     status: str  # human-readable status text
     created: int  # Unix epoch seconds (from Docker API)

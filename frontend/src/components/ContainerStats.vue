@@ -50,8 +50,9 @@ function formatBytes(bytes: number): string {
   gap: 8px;
 }
 .stat-item {
-  font-size: 11px;
-  font-family: monospace;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   white-space: nowrap;
 }
