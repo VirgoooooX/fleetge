@@ -1276,36 +1276,108 @@ class SnapshotManager:
     def _apply_stack_icons(
         self, stacks: list[StackSummary], cfg: HostConfig | None
     ) -> list[StackSummary]:
-        """Apply custom icon URLs from host config to stack summaries.
+        if cfg is None:
+            return stacks
+        snap = self.get_snapshot(cfg.host_id)
+        if not snap:
+            snap = HostSnapshot()
+            snap.host_config = cfg
+        return self._apply_app_profiles(stacks, snap)
 
-        Icon value handling:
-        - Starts with ``http://`` or ``https://`` → URL, return as-is
-        - Otherwise → local file path, rewrite as ``/api/static/icons/{filename}``
-        """
-        if cfg is None or not cfg.stack_icons:
+    def _apply_app_profiles(
+        self, stacks: list[StackSummary], snap: HostSnapshot
+    ) -> list[StackSummary]:
+        """Apply app profile metadata and fallback icons to stack summaries."""
+        cfg = snap.host_config
+        if cfg is None:
             return stacks
 
-        try:
-            import json
+        profiles: list[dict] = []
+        if cfg.app_profiles:
+            try:
+                import json
+                parsed = json.loads(cfg.app_profiles)
+                if isinstance(parsed, list):
+                    profiles = parsed
+            except Exception as e:
+                logger.warning("Failed to parse app_profiles JSON for host %s: %s", cfg.host_id, e)
 
-            mapping: dict[str, str] = json.loads(cfg.stack_icons)
-        except (json.JSONDecodeError, TypeError):
-            logger.warning(
-                "Invalid stack_icons JSON for host %s: %s", cfg.host_id, cfg.stack_icons
-            )
-            return stacks
+        stack_icons_mapping: dict[str, str] = {}
+        if cfg.stack_icons:
+            try:
+                import json
+                parsed_icons = json.loads(cfg.stack_icons)
+                if isinstance(parsed_icons, dict):
+                    stack_icons_mapping = parsed_icons
+            except Exception as e:
+                logger.warning("Failed to parse stack_icons JSON for host %s: %s", cfg.host_id, e)
 
         for stack in stacks:
-            icon_value = self._match_icon(stack.name, mapping)
-            if not icon_value:
-                continue
-            if icon_value.startswith("http://") or icon_value.startswith("https://"):
-                stack.icon_url = icon_value
+            matched = self._match_profile(stack.name, profiles)
+            
+            if matched and matched.get("title"):
+                stack.title = matched["title"]
             else:
-                filename = icon_value.lstrip("/")
-                stack.icon_url = f"/api/static/icons/{filename}"
+                stack.title = self._format_stack_title(stack.name)
+
+            if matched and matched.get("app_url"):
+                stack.app_url = matched["app_url"]
+            else:
+                stack.app_url = None
+
+            if matched and matched.get("group"):
+                stack.group = matched["group"]
+            else:
+                stack.group = "未分组"
+
+            icon_val = None
+            if matched and matched.get("icon_value"):
+                icon_val = matched["icon_value"]
+            else:
+                icon_val = self._match_icon(stack.name, stack_icons_mapping)
+
+            if icon_val:
+                if icon_val.startswith("http://") or icon_val.startswith("https://"):
+                    stack.icon_url = icon_val
+                else:
+                    filename = icon_val.lstrip("/")
+                    stack.icon_url = f"/api/static/icons/{filename}"
+            else:
+                stack.icon_url = None
 
         return stacks
+
+    @staticmethod
+    def _format_stack_title(name: str) -> str:
+        s = name.replace("-", " ").replace("_", " ")
+        return s.title()
+
+    @staticmethod
+    def _match_profile(name: str, profiles: list[dict]) -> dict | None:
+        # Priority: exact match > prefix wildcard (key*) > suffix wildcard (*key).
+        # 1. Exact match
+        for p in profiles:
+            pattern = p.get("stack_pattern", "")
+            if pattern == name:
+                return p
+
+        # 2. Prefix wildcard (e.g. key*)
+        for p in profiles:
+            pattern = p.get("stack_pattern", "")
+            if pattern.endswith("*") and not pattern.startswith("*"):
+                prefix = pattern[:-1]
+                if name.startswith(prefix):
+                    return p
+
+        # 3. Suffix wildcard (e.g. *key)
+        for p in profiles:
+            pattern = p.get("stack_pattern", "")
+            if pattern.startswith("*") and not pattern.endswith("*"):
+                suffix = pattern[1:]
+                if name.endswith(suffix):
+                    return p
+
+        return None
 
     @staticmethod
     def _match_icon(name: str, mapping: dict[str, str]) -> str | None:
@@ -1317,12 +1389,17 @@ class SnapshotManager:
         if name in mapping:
             return mapping[name]
 
-        # 2. Wildcard match
+        # 2. Prefix wildcard (e.g. key*)
         for key, value in mapping.items():
-            if key.endswith("*") and name.startswith(key[:-1]):
-                return value
-            if key.startswith("*") and name.endswith(key[1:]):
-                return value
+            if key.endswith("*") and not key.startswith("*"):
+                if name.startswith(key[:-1]):
+                    return value
+
+        # 3. Suffix wildcard (e.g. *key)
+        for key, value in mapping.items():
+            if key.startswith("*") and not key.endswith("*"):
+                if name.endswith(key[1:]):
+                    return value
 
         return None
 

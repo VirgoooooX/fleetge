@@ -152,6 +152,9 @@ class StackSummary(BaseModel):
     services: list[StackService] = []
     icon_url: Optional[str] = None  # 自定义图标 URL（网络或本地），由后端根据 host_config.stack_icons 匹配
     management_status: str = "managed"  # managed | deployed | file-only | unmanaged
+    title: Optional[str] = None
+    app_url: Optional[str] = None
+    group: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -280,6 +283,14 @@ class HostUpdateRequest(BaseModel):
     agent_token: Optional[str] = None  # None = keep existing, "" = clear
 
 
+class AppProfileEntry(BaseModel):
+    stack_pattern: str
+    title: Optional[str] = None
+    app_url: Optional[str] = None
+    group: Optional[str] = None
+    icon_value: Optional[str] = None
+
+
 class HostConfigResponse(BaseModel):
     """Host config for management UI (secrets masked)."""
     host_id: str
@@ -289,6 +300,7 @@ class HostConfigResponse(BaseModel):
     agent_url: Optional[str] = None
     has_agent_token: bool = False     # masked: only show whether token exists
     stack_icons: Optional[dict[str, str]] = None  # parsed JSON mapping
+    app_profiles: Optional[list[AppProfileEntry]] = None
 
 
 class ConnectionTestResponse(BaseModel):
@@ -306,3 +318,26 @@ class StackIconEntry(BaseModel):
 
 class StackIconsUpdateRequest(BaseModel):
     icons: list[StackIconEntry]  # ordered list → converted to dict for storage
+
+
+# ── App Profiles ─────────────────────────────────────────────────────────
+
+class AppProfilesUpdateRequest(BaseModel):
+    profiles: list[AppProfileEntry]
+
+
+class AppSummary(BaseModel):
+    host_id: str
+    host_name: str
+    host_status: str
+    stack_name: str
+    status: str
+    service_count: int
+    running_count: int
+    management_status: str
+    title: Optional[str] = None
+    app_url: Optional[str] = None
+    group: Optional[str] = None
+    icon_url: Optional[str] = None
+    services: list[StackService] = []
+    update_status: str = "up_to_date"

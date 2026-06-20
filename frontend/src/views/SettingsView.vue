@@ -140,18 +140,19 @@
                   <el-switch v-slot:default v-model="row.enabled" @change="toggleHostEnabled(row)" :loading="store.saving" />
                 </template>
               </el-table-column>
-              <el-table-column :label="t('settings.hosts.col.icons')" width="130" align="center" class-name="mobile-hidden" label-class-name="mobile-hidden">
+              <el-table-column :label="t('settings.hosts.col.appProfiles')" width="130" align="center" class-name="mobile-hidden" label-class-name="mobile-hidden">
                 <template #default="{ row }">
                   <div class="icons-cell">
-                    <div class="icons-preview-strip" v-if="row.stack_icons && Object.keys(row.stack_icons).length > 0">
+                    <div class="icons-preview-strip" v-if="row.app_profiles && row.app_profiles.length > 0">
                       <el-tooltip
-                        v-for="(val, key) in sliceIconEntries(row.stack_icons, 3)"
-                        :key="key"
-                        :content="String(key)"
+                        v-for="(p, idx) in row.app_profiles.slice(0, 3)"
+                        :key="idx"
+                        :content="p.title || p.stack_pattern"
                         placement="top"
                       >
                         <el-image
-                          :src="getIconUrl(String(val))"
+                          v-if="p.icon_value"
+                          :src="getIconUrl(p.icon_value)"
                           class="icon-strip-thumb"
                           fit="contain"
                         >
@@ -159,20 +160,23 @@
                             <el-icon class="icon-strip-placeholder"><Picture /></el-icon>
                           </template>
                         </el-image>
+                        <div v-else class="icon-strip-thumb">
+                          <el-icon class="icon-strip-placeholder"><Picture /></el-icon>
+                        </div>
                       </el-tooltip>
                       <span
-                        v-if="Object.keys(row.stack_icons).length > 3"
+                        v-if="row.app_profiles.length > 3"
                         class="icons-more-chip"
-                      >+{{ Object.keys(row.stack_icons).length - 3 }}</span>
+                      >+{{ row.app_profiles.length - 3 }}</span>
                     </div>
                     <span v-else class="icons-empty">—</span>
-                    <el-tooltip :content="t('settings.hosts.col.manageIcons')" placement="top">
+                    <el-tooltip :content="t('settings.hosts.col.manageAppProfiles')" placement="top">
                       <el-button
                         size="small"
                         :icon="SettingIcon"
                         circle
                         class="icons-manage-btn"
-                        @click="openIconsDialog(row)"
+                        @click="openAppProfilesDialog(row)"
                       />
                     </el-tooltip>
                   </div>
@@ -260,75 +264,94 @@
       </el-form>
     </el-dialog>
 
-    <!-- Stack Icons Management Dialog -->
+    <!-- App Profiles Management Dialog -->
     <el-dialog
-      v-model="iconsDialogVisible"
-      :title="t('settings.icons.title', { name: selectedHost?.display_name })"
-      width="780px"
+      v-model="appProfilesDialogVisible"
+      :title="t('settings.appProfiles.title', { name: selectedHost?.display_name })"
+      width="880px"
       custom-class="ui-dialog"
     >
-      <div class="icons-dialog-body" v-loading="iconsLoading">
+      <div class="icons-dialog-body" v-loading="appProfilesLoading">
         <div class="current-icons-section">
-          <div class="section-kicker">{{ t('settings.icons.existing') }}</div>
-          <el-table :data="iconsList" stripe size="small" class="icons-table" max-height="300px">
-            <el-table-column :label="t('settings.icons.col.pattern')" prop="stack_pattern">
+          <div class="section-kicker">{{ t('settings.appProfiles.existing') }}</div>
+          <el-table :data="appProfilesList" stripe size="small" class="icons-table" max-height="300px">
+            <el-table-column :label="t('settings.appProfiles.col.pattern')" prop="stack_pattern" width="130">
               <template #default="{ row }">
                 <code class="pattern-code">{{ row.stack_pattern }}</code>
               </template>
             </el-table-column>
-            <el-table-column :label="t('settings.icons.col.type')" width="120">
+            <el-table-column :label="t('settings.appProfiles.col.title')" prop="title" width="130">
               <template #default="{ row }">
-                <el-tag v-if="isHttpUrl(row.icon_value)" size="small" type="success">{{ t('settings.icons.type.remote') }}</el-tag>
-                <el-tag v-else size="small" type="info">{{ t('settings.icons.type.local') }}</el-tag>
+                <span>{{ row.title || "-" }}</span>
               </template>
             </el-table-column>
-            <el-table-column :label="t('settings.icons.col.value')" prop="icon_value" min-width="180">
+            <el-table-column :label="t('settings.appProfiles.col.url')" prop="app_url" min-width="150">
               <template #default="{ row }">
-                <span class="url-text font-mono">{{ row.icon_value }}</span>
+                <span class="url-text font-mono">{{ row.app_url || "-" }}</span>
               </template>
             </el-table-column>
-            <el-table-column :label="t('settings.icons.col.preview')" width="80" align="center">
+            <el-table-column :label="t('settings.appProfiles.col.group')" prop="group" width="100">
               <template #default="{ row }">
-                <el-image :src="getIconUrl(row.icon_value)" class="icon-preview-cell" fit="contain">
+                <el-tag v-if="row.group" size="small">{{ row.group }}</el-tag>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+            <el-table-column :label="t('settings.appProfiles.col.icon')" width="80" align="center">
+              <template #default="{ row }">
+                <el-image v-if="row.icon_value" :src="getIconUrl(row.icon_value)" class="icon-preview-cell" fit="contain">
                   <template #error>
                     <el-icon class="icon-placeholder-cell"><Picture /></el-icon>
                   </template>
                 </el-image>
+                <span v-else>-</span>
               </template>
             </el-table-column>
-            <el-table-column :label="t('settings.icons.col.actions')" width="80" align="center">
+            <el-table-column :label="t('settings.appProfiles.col.actions')" width="80" align="center">
               <template #default="{ $index }">
-                <el-button size="small" type="danger" :icon="Delete" circle @click="removeIconMapping($index)" />
+                <el-button size="small" type="danger" :icon="Delete" circle @click="removeAppProfile($index)" />
               </template>
             </el-table-column>
           </el-table>
         </div>
 
-        <el-divider>{{ t('settings.icons.addNew') }}</el-divider>
+        <el-divider>{{ t('settings.appProfiles.addNew') }}</el-divider>
 
-        <el-form :model="iconForm" label-position="top" class="add-icon-form" ref="iconFormRef" :rules="iconRules">
+        <el-form :model="appProfileForm" label-position="top" class="add-icon-form" ref="appProfileFormRef" :rules="appProfileRules">
           <div class="icon-form-grid">
-            <el-form-item :label="t('settings.icons.form.pattern')" prop="stack_pattern">
-              <el-input v-model="iconForm.stack_pattern" :placeholder="t('settings.icons.form.patternPlaceholder')" />
+            <el-form-item :label="t('settings.appProfiles.form.pattern')" prop="stack_pattern">
+              <el-input v-model="appProfileForm.stack_pattern" :placeholder="t('settings.appProfiles.form.patternPlaceholder')" />
               <div class="form-help" v-html="t('settings.icons.form.patternHelp')"></div>
             </el-form-item>
 
-            <el-form-item :label="t('settings.icons.form.source')">
-              <el-radio-group v-model="iconForm.sourceType" size="small">
-                <el-radio-button label="url">{{ t('settings.icons.type.remote') }}</el-radio-button>
-                <el-radio-button label="local">{{ t('settings.icons.type.local') }}</el-radio-button>
+            <el-form-item :label="t('settings.appProfiles.form.title')" prop="title">
+              <el-input v-model="appProfileForm.title" :placeholder="t('settings.appProfiles.form.titlePlaceholder')" />
+            </el-form-item>
+
+            <el-form-item :label="t('settings.appProfiles.form.url')" prop="app_url">
+              <el-input v-model="appProfileForm.app_url" :placeholder="t('settings.appProfiles.form.urlPlaceholder')" />
+            </el-form-item>
+
+            <el-form-item :label="t('settings.appProfiles.form.group')" prop="group">
+              <el-input v-model="appProfileForm.group" :placeholder="t('settings.appProfiles.form.groupPlaceholder')" />
+            </el-form-item>
+
+            <el-form-item :label="t('settings.appProfiles.form.source')">
+              <el-radio-group v-model="appProfileForm.sourceType" size="small">
+                <el-radio-button label="none">{{ t('apps.chip.all') }} (None)</el-radio-button>
+                <el-radio-button label="url">{{ t('settings.appProfiles.form.remoteUrl') }}</el-radio-button>
+                <el-radio-button label="local">{{ t('settings.appProfiles.form.localFile') }}</el-radio-button>
               </el-radio-group>
             </el-form-item>
 
             <!-- URL Source -->
-            <el-form-item v-if="iconForm.sourceType === 'url'" :label="t('settings.icons.form.remoteUrl')" prop="icon_url">
-              <el-input v-model="iconForm.icon_url" placeholder="https://cdn.jsdelivr.net/.../logo.svg" />
+            <el-form-item v-if="appProfileForm.sourceType === 'url'" :label="t('settings.appProfiles.form.remoteUrl')" prop="icon_url">
+              <el-input v-model="appProfileForm.icon_url" placeholder="https://cdn.jsdelivr.net/.../logo.svg" />
             </el-form-item>
 
             <!-- Local Source -->
-            <el-form-item v-else :label="t('settings.icons.form.localFile')" prop="icon_file">
+            <el-form-item v-else-if="appProfileForm.sourceType === 'local'" :label="t('settings.appProfiles.form.localFile')" prop="icon_file">
               <div class="local-file-picker">
-                <el-select v-model="iconForm.icon_file" :placeholder="t('settings.icons.form.localPlaceholder')" class="file-select">
+                <el-select v-model="appProfileForm.icon_file" :placeholder="t('settings.appProfiles.form.localPlaceholder')" class="file-select">
                   <el-option v-for="file in availableFiles" :key="file" :label="file" :value="file" />
                 </el-select>
                 
@@ -339,15 +362,15 @@
                   :on-change="handleIconFileSelected"
                   class="upload-trigger"
                 >
-                  <el-button type="info" :icon="Upload" class="ui-button ui-button--muted">{{ t('settings.icons.form.upload') }}</el-button>
+                  <el-button type="info" :icon="Upload" class="ui-button ui-button--muted">{{ t('settings.appProfiles.form.upload') }}</el-button>
                 </el-upload>
               </div>
             </el-form-item>
           </div>
 
           <div class="icon-form-action">
-            <el-button type="primary" class="ui-button ui-button--compact" @click="addIconMapping">
-              {{ t('settings.icons.form.addBtn') }}
+            <el-button type="primary" class="ui-button ui-button--compact" @click="addAppProfile">
+              {{ t('settings.appProfiles.form.addBtn') }}
             </el-button>
           </div>
         </el-form>
@@ -355,8 +378,8 @@
 
       <template #footer>
         <div class="dialog-actions-row">
-          <el-button @click="iconsDialogVisible = false">{{ t('compose.cancel') }}</el-button>
-          <el-button type="primary" @click="saveIconMappings" :loading="store.saving">{{ t('settings.icons.form.saveBtn') }}</el-button>
+          <el-button @click="appProfilesDialogVisible = false">{{ t('compose.cancel') }}</el-button>
+          <el-button type="primary" @click="saveAppProfiles" :loading="store.saving">{{ t('settings.appProfiles.form.saveBtn') }}</el-button>
         </div>
       </template>
     </el-dialog>
@@ -414,7 +437,7 @@ import {
   Link,
   Document,
 } from "@element-plus/icons-vue";
-import { useSettingsStore, type SettingItem, type HostConfigResponse, type StackIconEntry } from "@/stores/settings";
+import { useSettingsStore, type SettingItem, type HostConfigResponse, type StackIconEntry, type AppProfileEntry } from "@/stores/settings";
 import { useMobile } from "@/composables/useMobile";
 
 const { t } = useI18n();
@@ -702,72 +725,78 @@ async function testFormConnection() {
   }
 }
 
-// Stack Icons Section
-const iconsDialogVisible = ref(false);
+// App Profiles Section
+const appProfilesDialogVisible = ref(false);
 const selectedHost = ref<HostConfigResponse | null>(null);
-const iconsLoading = ref(false);
-const iconsList = ref<StackIconEntry[]>([]);
+const appProfilesLoading = ref(false);
+const appProfilesList = ref<AppProfileEntry[]>([]);
 const availableFiles = ref<string[]>([]);
 const globalEnvDialogVisible = ref(false);
 const globalEnvLoading = ref(false);
 const globalEnvContent = ref("");
 
-const iconForm = reactive({
+const appProfileForm = reactive({
   stack_pattern: "",
-  sourceType: "url", // "url" | "local"
+  title: "",
+  app_url: "",
+  group: "",
+  sourceType: "none", // "none" | "url" | "local"
   icon_url: "",
   icon_file: "",
 });
 
-const iconFormRef = ref<FormInstance>();
-const iconRules = reactive<FormRules>({
+const appProfileFormRef = ref<FormInstance>();
+const appProfileRules = reactive<FormRules>({
   stack_pattern: [
     { required: true, message: t("settings.icons.required.pattern"), trigger: "blur" }
   ],
+  app_url: [
+    { validator: validateHttpUrl, trigger: "blur" }
+  ],
   icon_url: [
-    { required: true, message: t("settings.icons.required.url"), trigger: "blur" },
     { validator: validateHttpUrl, trigger: "blur" }
   ],
 });
 
-async function openIconsDialog(row: HostConfigResponse) {
+async function openAppProfilesDialog(row: HostConfigResponse) {
   selectedHost.value = row;
-  iconsList.value = [];
+  appProfilesList.value = [];
   availableFiles.value = [];
-  iconForm.stack_pattern = "";
-  iconForm.sourceType = "url";
-  iconForm.icon_url = "";
-  iconForm.icon_file = "";
-  iconsDialogVisible.value = true;
+  appProfileForm.stack_pattern = "";
+  appProfileForm.title = "";
+  appProfileForm.app_url = "";
+  appProfileForm.group = "";
+  appProfileForm.sourceType = "none";
+  appProfileForm.icon_url = "";
+  appProfileForm.icon_file = "";
+  appProfilesDialogVisible.value = true;
   
-  iconsLoading.value = true;
+  appProfilesLoading.value = true;
   try {
-    const res = await store.fetchStackIcons(row.host_id);
-    iconsList.value = res.icons || [];
+    const res = await store.fetchAppProfiles(row.host_id);
+    appProfilesList.value = res.profiles || [];
     availableFiles.value = res.available_files || [];
   } catch (e: any) {
-    ElMessage.error(e || t("settings.icons.fetch.error"));
+    ElMessage.error(e || t("settings.appProfiles.fetchError"));
   } finally {
-    iconsLoading.value = false;
+    appProfilesLoading.value = false;
   }
 }
 
-function isHttpUrl(value: string) {
+function isHttpUrl(value: string | null) {
+  if (!value) return false;
   return /^https?:\/\//.test(value);
 }
 
-function getIconUrl(value: string) {
-  if (isHttpUrl(value)) return value;
+function getIconUrl(value: string | null) {
+  if (!value) return "";
+  if (/^https?:\/\//.test(value)) return value;
+  if (value.startsWith("/api/") || value.startsWith("/")) return value;
   return `/api/static/icons/${value}`;
 }
 
-function sliceIconEntries(icons: Record<string, string>, n: number): Record<string, string> {
-  const entries = Object.entries(icons).slice(0, n);
-  return Object.fromEntries(entries);
-}
-
-function removeIconMapping(index: number) {
-  iconsList.value.splice(index, 1);
+function removeAppProfile(index: number) {
+  appProfilesList.value.splice(index, 1);
 }
 
 async function handleIconFileSelected(uploadFile: any) {
@@ -795,65 +824,75 @@ async function handleIconFileSelected(uploadFile: any) {
       availableFiles.value.push(filename);
       availableFiles.value.sort();
     }
-    iconForm.icon_file = filename;
+    appProfileForm.icon_file = filename;
   } catch (e: any) {
     loadingMsg.close();
     ElMessage.error(e || t("settings.icons.upload.error"));
   }
 }
 
-async function addIconMapping() {
-  if (!iconFormRef.value) return;
+async function addAppProfile() {
+  if (!appProfileFormRef.value) return;
   
-  if (!iconForm.stack_pattern.trim()) {
+  if (!appProfileForm.stack_pattern.trim()) {
     ElMessage.error(t("settings.icons.required.pattern"));
     return;
   }
   
-  let val = "";
-  if (iconForm.sourceType === "url") {
-    if (!iconForm.icon_url.trim()) {
+  let val: string | null = null;
+  if (appProfileForm.sourceType === "url") {
+    if (!appProfileForm.icon_url.trim()) {
       ElMessage.error(t("settings.icons.required.url"));
       return;
     }
-    if (!/^https?:\/\//.test(iconForm.icon_url.trim())) {
+    if (!/^https?:\/\//.test(appProfileForm.icon_url.trim())) {
       ElMessage.error(t("settings.hosts.form.invalid.url"));
       return;
     }
-    val = iconForm.icon_url.trim();
-  } else {
-    if (!iconForm.icon_file) {
+    val = appProfileForm.icon_url.trim();
+  } else if (appProfileForm.sourceType === "local") {
+    if (!appProfileForm.icon_file) {
       ElMessage.error(t("settings.icons.required.file"));
       return;
     }
-    val = iconForm.icon_file;
+    val = appProfileForm.icon_file;
   }
 
-  const dupIndex = iconsList.value.findIndex(i => i.stack_pattern === iconForm.stack_pattern.trim());
+  const dupIndex = appProfilesList.value.findIndex(i => i.stack_pattern === appProfileForm.stack_pattern.trim());
+  
+  const newProfile: AppProfileEntry = {
+    stack_pattern: appProfileForm.stack_pattern.trim(),
+    title: appProfileForm.title.trim() || null,
+    app_url: appProfileForm.app_url.trim() || null,
+    group: appProfileForm.group.trim() || null,
+    icon_value: val,
+  };
+
   if (dupIndex > -1) {
-    iconsList.value[dupIndex].icon_value = val;
-    ElMessage.info(t("settings.icons.mapping.updated", { pattern: iconForm.stack_pattern.trim() }));
+    appProfilesList.value[dupIndex] = newProfile;
+    ElMessage.info(t("settings.icons.mapping.updated", { pattern: appProfileForm.stack_pattern.trim() }));
   } else {
-    iconsList.value.push({
-      stack_pattern: iconForm.stack_pattern.trim(),
-      icon_value: val,
-    });
+    appProfilesList.value.push(newProfile);
   }
 
-  iconForm.stack_pattern = "";
-  iconForm.icon_url = "";
-  iconForm.icon_file = "";
+  appProfileForm.stack_pattern = "";
+  appProfileForm.title = "";
+  appProfileForm.app_url = "";
+  appProfileForm.group = "";
+  appProfileForm.sourceType = "none";
+  appProfileForm.icon_url = "";
+  appProfileForm.icon_file = "";
 }
 
-async function saveIconMappings() {
+async function saveAppProfiles() {
   if (!selectedHost.value) return;
   try {
-    await store.saveStackIcons(selectedHost.value.host_id, iconsList.value);
-    ElMessage.success(t("settings.icons.saveSuccess", { name: selectedHost.value.display_name }));
-    iconsDialogVisible.value = false;
+    await store.saveAppProfiles(selectedHost.value.host_id, appProfilesList.value);
+    ElMessage.success(t("settings.appProfiles.saveSuccess", { name: selectedHost.value.display_name }));
+    appProfilesDialogVisible.value = false;
     await store.fetchHosts();
   } catch (e: any) {
-    ElMessage.error(e || t("settings.icons.save.error"));
+    ElMessage.error(e || t("settings.appProfiles.saveError"));
   }
 }
 

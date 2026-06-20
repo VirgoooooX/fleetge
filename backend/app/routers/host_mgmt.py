@@ -21,6 +21,7 @@ from app.schemas import (
     ConnectionTestResponse,
     StackIconEntry,
     StackIconsUpdateRequest,
+    AppProfilesUpdateRequest,
 )
 from app.services.crypto import encrypt_string
 from app.services.host_writer import write_hosts_to_yaml
@@ -114,6 +115,13 @@ def _to_response_model(h: HostConfig) -> HostConfigResponse:
         except Exception:
             pass
             
+    app_profiles_parsed = None
+    if h.app_profiles:
+        try:
+            app_profiles_parsed = json.loads(h.app_profiles)
+        except Exception:
+            pass
+            
     return HostConfigResponse(
         host_id=h.host_id,
         display_name=h.display_name,
@@ -122,6 +130,7 @@ def _to_response_model(h: HostConfig) -> HostConfigResponse:
         agent_url=h.agent_url,
         has_agent_token=bool(h.agent_token_encrypted),
         stack_icons=stack_icons_parsed,
+        app_profiles=app_profiles_parsed,
     )
 
 
@@ -431,3 +440,93 @@ async def upload_stack_icon_file(
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(exc)}")
 
     return {"filename": sanitized_name}
+
+
+@router.get("/hosts/{host_id}/app-profiles")
+async def get_app_profiles(
+    host_id: str,
+    session: Session = Depends(get_session),
+):
+    """Get app profiles for a host, with fallback compatibility to stack_icons."""
+    host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
+    if not host:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    profiles_list = []
+    if host.app_profiles:
+        try:
+            data = json.loads(host.app_profiles)
+            if isinstance(data, list):
+                profiles_list = data
+        except Exception:
+            pass
+    elif host.stack_icons:
+        # Fallback migration representation in UI: convert dict to profiles list
+        try:
+            data = json.loads(host.stack_icons)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    profiles_list.append({
+                        "stack_pattern": k,
+                        "icon_value": v,
+                        "title": None,
+                        "app_url": None,
+                        "group": None
+                    })
+        except Exception:
+            pass
+
+    # Read available local files in stack_icons folder
+    available_files = []
+    if _STACK_ICONS_DIR.exists() and _STACK_ICONS_DIR.is_dir():
+        for entry in os.scandir(_STACK_ICONS_DIR):
+            if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
+                available_files.append(entry.name)
+    available_files.sort()
+
+    return {
+        "profiles": profiles_list,
+        "available_files": available_files,
+    }
+
+
+@router.put("/hosts/{host_id}/app-profiles")
+async def update_app_profiles(
+    host_id: str,
+    req: AppProfilesUpdateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    username: str = Depends(get_current_user),
+):
+    """Update app profiles list for a host, write to hosts.yaml and update runtime."""
+    ip = request.client.host if request.client else None
+
+    host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
+    if not host:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    cleaned_profiles = []
+    for entry in req.profiles:
+        if entry.stack_pattern.strip():
+            cleaned_profiles.append({
+                "stack_pattern": entry.stack_pattern.strip(),
+                "title": entry.title.strip() if (entry.title and entry.title.strip()) else None,
+                "app_url": entry.app_url.strip() if (entry.app_url and entry.app_url.strip()) else None,
+                "group": entry.group.strip() if (entry.group and entry.group.strip()) else None,
+                "icon_value": entry.icon_value.strip() if (entry.icon_value and entry.icon_value.strip()) else None,
+            })
+
+    # Save to DB
+    host.app_profiles = json.dumps(cleaned_profiles, ensure_ascii=False) if cleaned_profiles else None
+    session.add(host)
+    session.commit()
+
+    # Sync configuration and snapshots
+    write_hosts_to_yaml()
+    await snapshot_manager.refresh_hosts()
+
+    _write_audit_log(
+        session, username, "host.app_profiles.update", host_id, "success",
+        f"updated {len(cleaned_profiles)} app profiles", ip
+    )
+    return {"success": True, "message": f"Updated app profiles for host '{host_id}'"}

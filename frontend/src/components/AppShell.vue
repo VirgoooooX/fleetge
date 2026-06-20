@@ -162,6 +162,7 @@ import {
   AlertTriangle,
   Settings,
   Globe,
+  Grid,
 } from "@lucide/vue";
 import AppLogo from "@/components/AppLogo.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
@@ -212,6 +213,7 @@ const currentHost = computed(() => {
 
 const navItems = computed(() => [
   { id: "dashboard", label: t("nav.dashboard"), path: "/", icon: Home, badge: null },
+  { id: "apps", label: t("nav.apps"), path: "/apps", icon: Grid, badge: null },
   {
     id: "updates",
     label: t("nav.updates"),
@@ -245,6 +247,7 @@ const pageTitle = computed(() => {
   if (route.name === "updates") return t("nav.updates");
   if (route.name === "audit") return t("nav.audit");
   if (route.name === "settings") return t("nav.settings");
+  if (route.name === "apps") return t("apps.title");
   return t("nav.dashboard");
 });
 

@@ -44,6 +44,8 @@ def create_engine_and_tables():
                     conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN agent_url TEXT")
                 if "agent_token_encrypted" not in columns:
                     conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN agent_token_encrypted TEXT")
+                if "app_profiles" not in columns:
+                    conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN app_profiles TEXT")
         except Exception as exc:
             # Table might not exist yet; create_all will handle it
             pass

@@ -21,11 +21,20 @@ export interface HostConfigResponse {
   agent_url?: string;
   has_agent_token: boolean;
   stack_icons?: Record<string, string>;
+  app_profiles?: AppProfileEntry[];
 }
 
 export interface StackIconEntry {
   stack_pattern: string;
   icon_value: string;
+}
+
+export interface AppProfileEntry {
+  stack_pattern: string;
+  title: string | null;
+  app_url: string | null;
+  group: string | null;
+  icon_value: string | null;
 }
 
 export interface ConnectionTestResponse {
@@ -234,6 +243,26 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  async function fetchAppProfiles(hostId: string): Promise<{ profiles: AppProfileEntry[]; available_files: string[] }> {
+    try {
+      const res = await apiClient.get(`/api/admin/hosts/${hostId}/app-profiles`);
+      return res.data;
+    } catch (e: any) {
+      throw e.response?.data?.detail || e.message || "Failed to fetch app profiles";
+    }
+  }
+
+  async function saveAppProfiles(hostId: string, profiles: AppProfileEntry[]) {
+    saving.value = true;
+    try {
+      await apiClient.put(`/api/admin/hosts/${hostId}/app-profiles`, { profiles });
+    } catch (e: any) {
+      throw e.response?.data?.detail || e.message || "Failed to save app profiles";
+    } finally {
+      saving.value = false;
+    }
+  }
+
   return {
     settings,
     hosts,
@@ -250,6 +279,8 @@ export const useSettingsStore = defineStore("settings", () => {
     testNewConnection,
     fetchStackIcons,
     saveStackIcons,
+    fetchAppProfiles,
+    saveAppProfiles,
     uploadIcon,
     fetchGlobalEnv,
     saveGlobalEnv,

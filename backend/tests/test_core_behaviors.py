@@ -105,6 +105,32 @@ class SnapshotManagerTests(unittest.TestCase):
         self.assertEqual(existing.failure_count, 1)
         self.assertEqual(existing.last_failure_status, "check_failed")
 
+    def test_match_profile_priority(self):
+        manager = SnapshotManager()
+        profiles = [
+            {"stack_pattern": "*app", "title": "Suffix Match"},
+            {"stack_pattern": "my*", "title": "Prefix Match"},
+            {"stack_pattern": "myapp", "title": "Exact Match"},
+        ]
+        # Exact match should take highest priority
+        matched = manager._match_profile("myapp", profiles)
+        self.assertEqual(matched["title"], "Exact Match")
+
+        # Prefix wildcard should take priority over suffix wildcard
+        profiles_no_exact = [
+            {"stack_pattern": "*app", "title": "Suffix Match"},
+            {"stack_pattern": "my*", "title": "Prefix Match"},
+        ]
+        matched_prefix = manager._match_profile("myapp", profiles_no_exact)
+        self.assertEqual(matched_prefix["title"], "Prefix Match")
+
+        # Suffix wildcard matches
+        profiles_only_suffix = [
+            {"stack_pattern": "*app", "title": "Suffix Match"},
+        ]
+        matched_suffix = manager._match_profile("myapp", profiles_only_suffix)
+        self.assertEqual(matched_suffix["title"], "Suffix Match")
+
 
 class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

@@ -85,6 +85,9 @@ def load_hosts_from_yaml() -> int:
                 # Stack icons
                 stack_icons = entry.get("stack_icons")
                 existing.stack_icons = json.dumps(stack_icons, ensure_ascii=False) if stack_icons else None
+                # App profiles
+                app_profiles = entry.get("app_profiles")
+                existing.app_profiles = json.dumps(app_profiles, ensure_ascii=False) if app_profiles else None
             else:
                 host = HostConfig(
                     host_id=host_id,
@@ -94,6 +97,7 @@ def load_hosts_from_yaml() -> int:
                     agent_url=agent_url,
                     agent_token_encrypted=agent_token_encrypted,
                     stack_icons=json.dumps(stack_icons, ensure_ascii=False) if (stack_icons := entry.get("stack_icons")) else None,
+                    app_profiles=json.dumps(app_profiles, ensure_ascii=False) if (app_profiles := entry.get("app_profiles")) else None,
                 )
                 session.add(host)
 

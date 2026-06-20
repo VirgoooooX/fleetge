@@ -49,6 +49,13 @@ def write_hosts_to_yaml() -> None:
         except (json.JSONDecodeError, TypeError):
             logger.warning("Skipping invalid stack_icons JSON for host %s", h.host_id)
 
+        # App profiles
+        try:
+            if h.app_profiles:
+                host_entry["app_profiles"] = json.loads(h.app_profiles)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Skipping invalid app_profiles JSON for host %s", h.host_id)
+
         hosts_data.append(host_entry)
 
     output = {"hosts": hosts_data}

@@ -9,10 +9,54 @@ from starlette.responses import StreamingResponse
 
 from app.auth.handler import get_current_user
 from app.config import get_settings
-from app.schemas import DockerInfo, DockerDiskUsage, HostMetrics, HostListResponse
+from app.schemas import DockerInfo, DockerDiskUsage, HostMetrics, HostListResponse, AppSummary
 from app.services.snapshot import snapshot_manager
 
 router = APIRouter(prefix="/api", tags=["hosts"], dependencies=[Depends(get_current_user)])
+
+
+@router.get("/apps", response_model=list[AppSummary])
+async def list_apps():
+    """Aggregate all stacks from all host snapshots, enriched with app profile metadata."""
+    snapshots = snapshot_manager.list_snapshots()
+    apps = []
+    for snap in snapshots:
+        cfg = snap.host_config
+        if not cfg or not cfg.enabled:
+            continue
+        
+        for stack in snap.stacks:
+            # Determine update_status
+            update_status = "up_to_date"
+            stack_containers = [
+                c for c in snap.containers
+                if c.stack_name == stack.name and c.image
+            ]
+            for c in stack_containers:
+                status = snap.update_results.get(c.image)
+                if status == "updatable":
+                    update_status = "updatable"
+                    break
+            
+            apps.append(
+                AppSummary(
+                    host_id=cfg.host_id,
+                    host_name=cfg.display_name or cfg.host_id,
+                    host_status=snap.status,
+                    stack_name=stack.name,
+                    status=stack.status,
+                    service_count=stack.service_count,
+                    running_count=stack.running_count,
+                    management_status=stack.management_status,
+                    title=stack.title,
+                    app_url=stack.app_url,
+                    group=stack.group,
+                    icon_url=stack.icon_url,
+                    services=stack.services,
+                    update_status=update_status,
+                )
+            )
+    return apps
 
 
 @router.get("/hosts", response_model=HostListResponse)

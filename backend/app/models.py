@@ -24,6 +24,9 @@ class HostConfig(SQLModel, table=True):
     # Stack icon mapping — JSON string: {"stack_name": "icon_url_or_path"}
     stack_icons: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
+    # App profiles — JSON string: [{"stack_pattern": "...", "title": "...", "app_url": "...", "group": "...", "icon_value": "..."}]
+    app_profiles: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+
     # Runtime state (updated by poller)
     status: str = "unknown"  # online | offline | degraded | unknown
     last_seen: Optional[datetime] = None

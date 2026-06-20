@@ -823,6 +823,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, reactive, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import {
   Collection,
   Cpu,
@@ -965,6 +966,7 @@ const emit = defineEmits<{
 }>();
 
 const { t, locale } = useI18n();
+const route = useRoute();
 const { confirm } = useConfirm();
 
 const stackSearch = ref("");
@@ -1997,6 +1999,23 @@ watch(
       showAllStacks();
     }
   }
+);
+
+function applyQueryStack() {
+  const qStack = route.query.stack;
+  if (typeof qStack === "string" && qStack) {
+    if (props.stacks.some((s) => s.name === qStack)) {
+      selectStack(qStack);
+    }
+  }
+}
+
+watch(
+  [() => route.query.stack, () => props.stacks],
+  () => {
+    applyQueryStack();
+  },
+  { immediate: true }
 );
 
 onUnmounted(() => {
