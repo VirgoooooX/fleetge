@@ -323,6 +323,39 @@ class SnapshotManager:
             1 for row in visible_rows if row.status == "updatable"
         )
 
+    def persist_update_check_results(
+        self,
+        host_id: str,
+        results: list[UpdateCheckResult],
+    ) -> None:
+        """Persist fresh update-check results and immediately update the snapshot cache."""
+        if not results:
+            return
+
+        now = _utc_now()
+        with Session(engine) as session:
+            rows = session.exec(
+                select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+            ).all()
+            rows_by_image = {row.image: row for row in rows}
+            for result in results:
+                self._persist_update_check_result(
+                    session,
+                    host_id,
+                    result,
+                    rows_by_image.get(result.image),
+                    now,
+                )
+            session.commit()
+            rows = session.exec(
+                select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)
+            ).all()
+
+        snap = self._snapshots.get(host_id)
+        if snap is not None:
+            current_images = {c.image for c in snap.containers if c.image}
+            self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
+
     async def refresh_update_checks_now(self) -> list[UpdateCheckResult]:
         """Run update checks immediately and return the refreshed cache."""
         await self._refresh_update_checks(force=True)
@@ -706,7 +739,7 @@ class SnapshotManager:
 
                 if changed_images:
                     logger.info("Running update check verification for pulled/changed images on host %s: %s", host_id, [img for img, _ in changed_images])
-                    results = await run_update_check(host_id, changed_images)
+                    results = await run_update_check(host_id, changed_images, force=True)
                     now = _utc_now()
                     with Session(engine) as session:
                         for result in results:

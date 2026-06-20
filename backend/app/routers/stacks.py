@@ -5,7 +5,7 @@ import json
 import logging
 import re
 import shlex
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -990,6 +990,7 @@ async def _fresh_check_fleetge_services(
         for container in service_containers.values()
     ]
     results = await run_update_check(host_id, image_refs, force=True)
+    snapshot_manager.persist_update_check_results(host_id, results)
     by_image = {result.image: result for result in results}
     return service_containers, by_image
 
@@ -998,6 +999,7 @@ async def _poll_agent_job_events(
     conn: AgentClient,
     job_id: str,
     timeout_seconds: float = 600.0,
+    before_success_complete: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> AsyncGenerator[str, None]:
     started = asyncio.get_running_loop().time()
     last_size = 0
@@ -1021,6 +1023,8 @@ async def _poll_agent_job_events(
             job = await conn.get_job(job_id)
             status = job.get("status")
             if status in ("success", "error"):
+                if status == "success" and before_success_complete is not None:
+                    await before_success_complete()
                 message = (
                     "Fleetge update completed successfully."
                     if status == "success"
@@ -1137,6 +1141,10 @@ async def _stream_fleetge_update(
 
     job_id = result.get("job_id")
     if not job_id:
+        try:
+            await snapshot_manager.refresh_host_docker(host_id, trigger_initial_update_check=False)
+        except Exception as refresh_exc:
+            logger.warning("Pre-complete refresh failed for Fleetge update: %s", refresh_exc)
         yield _sse_event("complete", {
             "status": "success",
             "message": result.get("message", "Fleetge update completed."),
@@ -1144,7 +1152,18 @@ async def _stream_fleetge_update(
         return
 
     yield _sse_event("chunk", {"raw": f"Tracking Fleetge update job {job_id}...\n"})
-    async for event in _poll_agent_job_events(conn, job_id):
+
+    async def refresh_before_complete() -> None:
+        try:
+            await snapshot_manager.refresh_host_docker(host_id, trigger_initial_update_check=False)
+        except Exception as refresh_exc:
+            logger.warning("Pre-complete refresh failed for Fleetge update job %s: %s", job_id, refresh_exc)
+
+    async for event in _poll_agent_job_events(
+        conn,
+        job_id,
+        before_success_complete=refresh_before_complete,
+    ):
         yield event
 
 

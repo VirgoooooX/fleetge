@@ -190,8 +190,13 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
             # 4. Trigger docker refresh
             await self.manager._refresh_host_docker_locked(self.host_id, trigger_initial_update_check=False)
             
-            # Verify run_update_check was called for the changed image
-            mock_check.assert_called_once()
+            # Verify run_update_check was called for the changed image and bypassed
+            # the in-memory registry cache so post-update UI state is immediate.
+            mock_check.assert_called_once_with(
+                self.host_id,
+                [("nginx:latest", ["nginx:latest@sha256:new_local_digest"])],
+                force=True,
+            )
             
         # 5. Assert database cache is updated to "up_to_date"
         with Session(engine) as session:
