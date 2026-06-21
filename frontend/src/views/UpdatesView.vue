@@ -15,6 +15,15 @@
       </div>
     </header>
 
+    <el-alert
+      v-if="updateCheckRunning"
+      :title="t('updates.runningTitle')"
+      :description="t('updates.runningDesc')"
+      type="info"
+      show-icon
+      :closable="false"
+    />
+
     <div v-if="checking" class="loading-center">
       <el-icon class="is-loading" :size="32"><Loader2 /></el-icon>
       <p>{{ t('updates.checking') }}</p>
@@ -35,7 +44,7 @@
         </el-table-column>
         <el-table-column :label="t('updates.status')" width="120">
           <template #default="{ row }">
-            <UpdateBadge :status="row.status" />
+            <UpdateBadge :status="displayStatus(row)" />
           </template>
         </el-table-column>
         <el-table-column :label="t('updates.currentDigest')" prop="current_digest" min-width="200">
@@ -57,7 +66,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { computed, ref, onMounted } from "vue";
 import { ArrowLeft, RefreshCw, Loader2 } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { useDashboardStore } from "@/stores/dashboard";
@@ -68,6 +77,11 @@ interface UpdateResult {
   image: string;
   current_digest?: string;
   registry_digest?: string;
+  failure_count?: number;
+  last_failure_status?: string;
+  last_failure_http_status?: number;
+  last_failure_retry_after?: number;
+  last_failure_at?: string;
   status: string;
 }
 
@@ -75,17 +89,27 @@ const results = ref<UpdateResult[]>([]);
 const checking = ref(false);
 const dashboardStore = useDashboardStore();
 const { t } = useI18n();
+const updateCheckRunning = computed(() => dashboardStore.updateCheckRunning);
 
 function visibleResults(items: UpdateResult[]) {
   return (items || []).filter((item) =>
     item.status === "updatable" || item.status === "up_to_date"
+      || item.status === "needs_auth" || item.status === "rate_limited"
+      || item.status === "check_failed"
+      || item.last_failure_status === "needs_auth"
+      || item.last_failure_status === "rate_limited"
+      || item.last_failure_status === "check_failed"
   );
+}
+
+function displayStatus(item: UpdateResult) {
+  return item.last_failure_status || item.status;
 }
 
 async function fetchResults() {
   checking.value = true;
   try {
-    results.value = visibleResults(await dashboardStore.fetchUpdateChecks());
+    results.value = visibleResults(await dashboardStore.fetchUpdateChecks(true));
   } catch (e) {
     console.error("Failed to fetch update checks:", e);
   } finally {
@@ -96,7 +120,8 @@ async function fetchResults() {
 async function runCheck() {
   checking.value = true;
   try {
-    results.value = visibleResults(await dashboardStore.runUpdateCheck());
+    const runState = await dashboardStore.runUpdateCheck(true);
+    results.value = visibleResults(runState.results);
   } catch (e) {
     console.error("Failed to run update check:", e);
   } finally {

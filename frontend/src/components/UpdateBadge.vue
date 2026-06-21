@@ -20,6 +20,7 @@ const label = computed(() => {
     updatable: "update.status.updatable",
     needs_auth: "update.status.needsAuth",
     check_failed: "update.status.checkFailed",
+    rate_limited: "update.status.rateLimited",
   };
   const key = keys[props.status];
   return key ? t(key as any) : props.status;
@@ -31,6 +32,7 @@ const statusClass = computed(() => {
     updatable: "update",
     needs_auth: "warning",
     check_failed: "muted",
+    rate_limited: "warning",
   };
   return classes[props.status] || "muted";
 });
@@ -41,6 +43,7 @@ const hint = computed(() => {
     updatable: "update.hint.updatable",
     needs_auth: "update.hint.needsAuth",
     check_failed: "update.hint.checkFailed",
+    rate_limited: "update.hint.rateLimited",
   };
   const key = keys[props.status];
   return key ? t(key as any) : props.status;

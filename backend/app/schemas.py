@@ -219,10 +219,24 @@ class UpdateCheckResult(BaseModel):
     image: str
     current_digest: Optional[str] = None
     registry_digest: Optional[str] = None
-    status: str  # up_to_date | updatable | needs_auth | check_failed
+    registry: Optional[str] = None
+    platform: Optional[str] = None
+    http_status: Optional[int] = None
+    matched_field: Optional[str] = None
+    retry_after: Optional[int] = None
+    failure_count: int = 0
+    last_failure_status: Optional[str] = None
+    last_failure_http_status: Optional[int] = None
+    last_failure_retry_after: Optional[int] = None
+    last_failure_at: Optional[datetime] = None
+    status: str  # up_to_date | updatable | needs_auth | check_failed | rate_limited
 
 
 class UpdateCheckRunResponse(BaseModel):
+    # started=True: this /run executed the force sweep; results are fresh.
+    # started=False: a manual sweep was already in flight, so this trigger was
+    #   coalesced and results hold the last known cache. The client should keep
+    #   the cached view rather than treating this as an error.
     started: bool
     results: Optional[list[UpdateCheckResult]] = None
 

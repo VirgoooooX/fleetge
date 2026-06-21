@@ -148,6 +148,8 @@
   "update.hint.updatable": "Remote digest differs — update available",
   "update.hint.needsAuth": "Registry requires authentication — cannot check",
   "update.hint.checkFailed": "Image check failed — cannot determine if update is available",
+  "update.status.rateLimited": "Rate limited",
+  "update.hint.rateLimited": "Registry throttled (429/503) — check will retry later",
 
   "updates.kicker": "Image Registry",
   "updates.title": "Image Update Check",
@@ -159,6 +161,8 @@
   "updates.status": "Status",
   "updates.currentDigest": "Current Digest",
   "updates.registryDigest": "Registry Digest",
+  "updates.runningTitle": "Update check already running",
+  "updates.runningDesc": "This trigger was merged into the in-flight sweep. Showing the latest cached results until it finishes.",
   "updates.noResults": "No update check results",
 
   "audit.kicker": "Audit Trail",

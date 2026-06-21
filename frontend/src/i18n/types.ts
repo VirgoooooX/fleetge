@@ -158,6 +158,8 @@ export interface I18nSchema {
   "update.status.updatable": string;
   "update.status.needsAuth": string;
   "update.status.checkFailed": string;
+  "update.hint.rateLimited": string;
+  "update.status.rateLimited": string;
   "update.hint.upToDate": string;
   "update.hint.updatable": string;
   "update.hint.needsAuth": string;
@@ -174,6 +176,8 @@ export interface I18nSchema {
   "updates.status": string;
   "updates.currentDigest": string;
   "updates.registryDigest": string;
+  "updates.runningTitle": string;
+  "updates.runningDesc": string;
   "updates.noResults": string;
 
   // ── Audit View ─────────────────────────────────────────────

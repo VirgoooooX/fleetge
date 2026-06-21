@@ -48,7 +48,17 @@ export interface UpdateResult {
   image: string;
   current_digest?: string;
   registry_digest?: string;
+  failure_count?: number;
+  last_failure_status?: string;
+  last_failure_http_status?: number;
+  last_failure_retry_after?: number;
+  last_failure_at?: string;
   status: string;
+}
+
+export interface UpdateCheckRunState {
+  started: boolean;
+  results: UpdateResult[];
 }
 
 export interface StackService {
@@ -116,6 +126,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const updateChecksLoaded = ref(false);
   const loading = ref(false);
   const updateLoading = ref(false);
+  const updateCheckRunning = ref(false);
   const error = ref("");
   const manualLoading = ref(false);
   const hostDetailsById = ref<Record<string, HostDetailCache>>({});
@@ -275,12 +286,15 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
-  async function fetchUpdateChecks() {
+  async function fetchUpdateChecks(includeFailures = false) {
     if (updateLoading.value) return updateResults.value;
     updateLoading.value = true;
     try {
-      const res = await apiClient.get("/api/update-checks");
+      const res = await apiClient.get("/api/update-checks", {
+        params: includeFailures ? { include_failures: true } : undefined,
+      });
       applyUpdateResults(res.data || []);
+      updateCheckRunning.value = res.headers["x-update-check-running"] === "1";
       return updateResults.value;
     } catch {
       return updateResults.value;
@@ -289,12 +303,22 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
-  async function runUpdateCheck() {
+  async function runUpdateCheck(includeFailures = false): Promise<UpdateCheckRunState> {
     updateLoading.value = true;
     try {
-      const res = await apiClient.post("/api/update-checks/run");
+      const res = await apiClient.post(
+        "/api/update-checks/run",
+        undefined,
+        {
+          params: includeFailures ? { include_failures: true } : undefined,
+        },
+      );
       applyUpdateResults(res.data.results || []);
-      return updateResults.value;
+      updateCheckRunning.value = !res.data.started;
+      return {
+        started: Boolean(res.data.started),
+        results: updateResults.value,
+      };
     } finally {
       updateLoading.value = false;
     }
@@ -364,6 +388,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     updateChecksLoaded,
     loading,
     updateLoading,
+    updateCheckRunning,
     manualLoading,
     error,
     onlineCount,

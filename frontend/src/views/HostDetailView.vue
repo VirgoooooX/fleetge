@@ -275,8 +275,8 @@ async function runUpdateCheck() {
   const requestedHostId = hostId.value;
   updateLoading.value = true;
   try {
-    const results = await dashboardStore.runUpdateCheck();
-    applyUpdateResults(results || [], requestedHostId);
+    const runState = await dashboardStore.runUpdateCheck();
+    applyUpdateResults(runState.results || [], requestedHostId);
     if (requestedHostId !== hostId.value) return;
     await fetchDetail({ skipUpdates: true });
   } catch (e) {

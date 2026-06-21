@@ -2,7 +2,7 @@ import asyncio
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
@@ -18,6 +18,7 @@ os.environ.setdefault(
 from app.models import HostConfig, ImageUpdateCache
 from app.schemas import DockerDiskUsage, UpdateCheckResult
 from app.services.snapshot import HostSnapshot, SnapshotManager
+from app.services import update_check as update_check_module
 
 
 
@@ -58,7 +59,7 @@ class SnapshotManagerTests(unittest.TestCase):
 
         self.assertEqual(summary.image_count, 7)
 
-    def test_failed_update_cache_rows_are_hidden_from_snapshot(self):
+    def test_failed_update_cache_rows_are_hidden_from_visible_snapshot_index(self):
         manager = SnapshotManager()
         snap = HostSnapshot()
         rows = [
@@ -72,8 +73,36 @@ class SnapshotManagerTests(unittest.TestCase):
 
         manager._apply_update_cache_rows_to_snapshot(snap, rows)
 
-        self.assertEqual(snap.update_check_results, [])
+        self.assertEqual(len(snap.update_check_results), 1)
+        self.assertEqual(snap.update_check_results[0].status, "check_failed")
+        self.assertEqual(snap.update_results, {})
         self.assertEqual(snap.update_count, 0)
+
+    def test_get_update_check_results_can_include_failures(self):
+        manager = SnapshotManager()
+        snap = HostSnapshot()
+        snap.update_check_results = [
+            UpdateCheckResult(
+                host_id="host-a",
+                image="nginx:latest",
+                status="check_failed",
+            ),
+            UpdateCheckResult(
+                host_id="host-a",
+                image="postgres:16",
+                status="updatable",
+            ),
+        ]
+        manager._snapshots = {"host-a": snap}
+
+        visible = manager.get_update_check_results()
+        all_results = manager.get_update_check_results(include_failures=True)
+
+        self.assertEqual([item.status for item in visible], ["updatable"])
+        self.assertEqual(
+            [item.status for item in all_results],
+            ["check_failed", "updatable"],
+        )
 
     def test_failed_update_check_does_not_overwrite_visible_cache(self):
         manager = SnapshotManager()
@@ -88,7 +117,9 @@ class SnapshotManagerTests(unittest.TestCase):
         result = UpdateCheckResult(
             host_id="host-a",
             image="nginx:latest",
-            status="check_failed",
+            status="rate_limited",
+            http_status=429,
+            retry_after=120,
         )
 
         manager._persist_update_check_result(
@@ -103,7 +134,75 @@ class SnapshotManagerTests(unittest.TestCase):
         self.assertEqual(existing.current_digest, "sha256:old")
         self.assertEqual(existing.registry_digest, "sha256:new")
         self.assertEqual(existing.failure_count, 1)
-        self.assertEqual(existing.last_failure_status, "check_failed")
+        self.assertEqual(existing.last_failure_status, "rate_limited")
+        self.assertEqual(existing.last_failure_http_status, 429)
+        self.assertEqual(existing.last_failure_retry_after, 120)
+
+        snap = HostSnapshot()
+        manager._apply_update_cache_rows_to_snapshot(snap, [existing])
+        self.assertEqual(snap.update_check_results[0].status, "updatable")
+        self.assertEqual(snap.update_check_results[0].last_failure_status, "rate_limited")
+        self.assertEqual(snap.update_check_results[0].last_failure_retry_after, 120)
+
+    def test_rate_limited_cache_rows_respect_retry_after(self):
+        manager = SnapshotManager()
+        now = datetime.now(timezone.utc)
+        row = ImageUpdateCache(
+            host_id="host-a",
+            image="nginx:latest",
+            status="rate_limited",
+            retry_after=120,
+            checked_at=now - timedelta(seconds=119),
+        )
+
+        self.assertFalse(
+            manager._is_update_cache_due(
+                row,
+                now,
+                timedelta(seconds=1),
+                force=False,
+            )
+        )
+        self.assertTrue(
+            manager._is_update_cache_due(
+                row,
+                now + timedelta(seconds=2),
+                timedelta(seconds=1),
+                force=False,
+            )
+        )
+
+    def test_visible_cache_with_recent_failure_respects_retry_after(self):
+        manager = SnapshotManager()
+        now = datetime.now(timezone.utc)
+        row = ImageUpdateCache(
+            host_id="host-a",
+            image="nginx:latest",
+            status="updatable",
+            current_digest="sha256:old",
+            registry_digest="sha256:new",
+            checked_at=now - timedelta(days=1),
+            last_failure_status="rate_limited",
+            last_failure_retry_after=120,
+            last_failure_at=now - timedelta(seconds=119),
+        )
+
+        self.assertFalse(
+            manager._is_update_cache_due(
+                row,
+                now,
+                timedelta(seconds=1),
+                force=False,
+            )
+        )
+        self.assertTrue(
+            manager._is_update_cache_due(
+                row,
+                now + timedelta(seconds=2),
+                timedelta(seconds=1),
+                force=False,
+            )
+        )
 
     def test_match_profile_priority(self):
         manager = SnapshotManager()
@@ -135,6 +234,7 @@ class SnapshotManagerTests(unittest.TestCase):
 class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.manager = SnapshotManager()
+        update_check_module.reset_runtime_state()
         self.host_id = "test-host-b"
         self.config = HostConfig(
             host_id=self.host_id,
@@ -152,6 +252,118 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         with Session(engine) as session:
             session.exec(delete(ImageUpdateCache).where(ImageUpdateCache.host_id == self.host_id))
             session.commit()
+
+    async def test_try_refresh_coalesces_concurrent_manual_runs(self):
+        """A second manual /run while one is in flight returns started=False,
+        and does NOT trigger a second full sweep (no extra registry traffic)."""
+        call_count = {"n": 0}
+        started_event = asyncio.Event()
+
+        original_locked = self.manager._refresh_update_checks_locked
+
+        async def counting_locked(force: bool = False) -> None:
+            call_count["n"] += 1
+            # Hold the sweep open so the second try_ lands while it is running.
+            if force:
+                try:
+                    await asyncio.wait_for(started_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+            await original_locked(force=force)
+
+        self.manager._refresh_update_checks_locked = counting_locked
+
+        async def run_manual():
+            return await self.manager.try_refresh_update_checks_now()
+
+        first = asyncio.create_task(run_manual())
+        # Let the first task reach the in-flight sweep. The running flag is set
+        # before any await inside the sweep, so a short yield is enough.
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(run_manual())
+
+        # The second call must resolve quickly with started=False, without waiting
+        # for the first sweep to finish.
+        try:
+            await asyncio.wait_for(asyncio.shield(second), timeout=0.5)
+        except asyncio.TimeoutError:
+            started_event.set()
+            await first
+            self.fail("Second manual /run queued behind the first instead of coalescing")
+
+        started2, _results2 = second.result()
+        self.assertFalse(started2)
+
+        # Release the first sweep and let it finish.
+        started_event.set()
+        started1, _results1 = await first
+        self.assertTrue(started1)
+
+        # Exactly one full sweep ran — the second trigger did not duplicate work.
+        self.assertEqual(call_count["n"], 1)
+
+    async def test_background_loop_yields_to_in_flight_manual_run(self):
+        """A background poll (force=False) arriving while a manual run is in
+        flight is skipped, so it does not queue a second sweep behind it."""
+        call_count = {"n": 0}
+        started_event = asyncio.Event()
+
+        original_locked = self.manager._refresh_update_checks_locked
+
+        async def counting_locked(force: bool = False) -> None:
+            call_count["n"] += 1
+            if force:
+                try:
+                    await asyncio.wait_for(started_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+            await original_locked(force=force)
+
+        self.manager._refresh_update_checks_locked = counting_locked
+
+        manual = asyncio.create_task(self.manager.try_refresh_update_checks_now())
+        await asyncio.sleep(0.05)
+        # Background tick fires while the manual run holds the flag.
+        await self.manager._refresh_update_checks(force=False)
+
+        started_event.set()
+        started, _ = await manual
+        self.assertTrue(started)
+        # Only the manual (force=True) sweep ran; the background one was skipped.
+        self.assertEqual(call_count["n"], 1)
+
+    async def test_manual_run_yields_to_in_flight_background_run(self):
+        """A manual /run arriving after the background sweep has started returns
+        started=False and does not queue a force=True sweep behind it."""
+        call_count = {"n": 0}
+        release_event = asyncio.Event()
+
+        original_locked = self.manager._refresh_update_checks_locked
+
+        async def counting_locked(force: bool = False) -> None:
+            call_count["n"] += 1
+            if not force:
+                try:
+                    await asyncio.wait_for(release_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
+            await original_locked(force=force)
+
+        self.manager._refresh_update_checks_locked = counting_locked
+
+        background = asyncio.create_task(self.manager._refresh_update_checks(force=False))
+        await asyncio.sleep(0.05)
+
+        started, _ = await asyncio.wait_for(
+            self.manager.try_refresh_update_checks_now(),
+            timeout=0.5,
+        )
+        self.assertFalse(started)
+
+        release_event.set()
+        background_started = await background
+        self.assertTrue(background_started)
+        self.assertEqual(call_count["n"], 1)
 
     async def test_refresh_host_docker_locked_mirrors_cache_without_clearing_tags(self):
         # 1. Setup mock AgentClient responses
@@ -226,20 +438,13 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.snap.update_check_results[0].image, "nginx:latest")
         self.assertEqual(self.snap.update_count, 1)
 
-    async def test_forced_update_check_bypasses_memory_cache(self):
+    async def test_forced_update_check_uses_fresh_registry_lookup(self):
         from app.services import update_check
 
-        async with update_check._cache_lock:
-            update_check._update_cache.clear()
-            update_check._update_cache[f"{self.host_id}:nginx:latest"] = {
-                "local": "sha256:old",
-                "registry": "sha256:old",
-                "status": "up_to_date",
-                "ts": update_check.time.monotonic(),
-            }
-
-        with patch("app.services.update_check._get_manifest_digest_candidates", new_callable=AsyncMock) as mock_digest:
-            mock_digest.return_value = (["sha256:new"], None)
+        with patch("app.services.update_check._lookup_registry_identity", new_callable=AsyncMock) as mock_lookup:
+            mock_lookup.return_value = update_check.RegistryLookupResult(
+                digests=update_check.RegistryDigests(repo_digests=["sha256:new"]),
+            )
             result = await update_check.check_image(
                 self.host_id,
                 "nginx:latest",
@@ -247,9 +452,10 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 force=True,
             )
 
-        mock_digest.assert_called_once()
+        mock_lookup.assert_called_once()
         self.assertEqual(result.status, "updatable")
         self.assertEqual(result.registry_digest, "sha256:new")
+        self.assertEqual(result.matched_field, None)
 
     async def test_update_check_resolves_oci_index_to_platform_config_digest(self):
         """Multi-arch tags compare remote config.digest with local image ID."""
@@ -385,6 +591,76 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.status, "up_to_date")
         self.assertEqual(result.registry_digest, "sha256:manifest-digest")
+        self.assertEqual(result.matched_field, "repo_digest")
+
+    async def test_digest_pinned_image_skips_registry_lookup(self):
+        from app.services import update_check
+
+        with patch("app.services.update_check._lookup_registry_identity", new_callable=AsyncMock) as mock_lookup:
+            result = await update_check.check_image(
+                self.host_id,
+                "ghcr.io/example/app@sha256:pinned-digest",
+                ["ghcr.io/example/app@sha256:pinned-digest"],
+                local_image_id="sha256:local-image-id",
+                force=True,
+            )
+
+        mock_lookup.assert_not_called()
+        self.assertEqual(result.status, "up_to_date")
+        self.assertEqual(result.registry_digest, "sha256:pinned-digest")
+        self.assertEqual(result.matched_field, "pinned_digest")
+
+    async def test_registry_rate_limit_freezes_same_registry(self):
+        from app.services import update_check
+
+        class FakeResponse:
+            def __init__(self, status_code, headers=None, payload=None):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise update_check.httpx.HTTPStatusError(
+                        "error",
+                        request=update_check.httpx.Request("GET", "https://example.invalid"),
+                        response=update_check.httpx.Response(
+                            self.status_code,
+                            headers=self.headers,
+                        ),
+                    )
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+
+            async def get(self, url, headers=None, params=None, timeout=None):
+                self.calls.append(url)
+                if url.startswith("https://auth.docker.io/token"):
+                    return FakeResponse(429, headers={"Retry-After": "120"})
+                return FakeResponse(404)
+
+        fake_client = FakeClient()
+        with patch("app.services.update_check.httpx.AsyncClient", return_value=fake_client):
+            first = await update_check._lookup_registry_identity(
+                "docker.io",
+                "library/nginx",
+                "latest",
+            )
+            second = await update_check._lookup_registry_identity(
+                "docker.io",
+                "library/nginx",
+                "latest",
+            )
+
+        self.assertEqual(first.error_status, "rate_limited")
+        self.assertEqual(first.retry_after, 120)
+        self.assertEqual(second.error_status, "rate_limited")
+        self.assertGreaterEqual(second.retry_after or 0, 1)
+        self.assertEqual(len(fake_client.calls), 1)
 
     async def test_ghcr_public_manifest_follows_bearer_challenge(self):
         from app.services import update_check

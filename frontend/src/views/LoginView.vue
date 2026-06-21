@@ -54,6 +54,7 @@ f6e5d4c3b2a1   postgres:15    Exited (0)
     <div class="tech-decor decor-bottom-right font-mono">ENCRYPTION: FERNET_ENABLED</div>
 
     <div class="login-card">
+      <div class="login-card-glow" aria-hidden="true"></div>
       <!-- HUD Corner Brackets -->
       <div class="hud-corner hud-tl"></div>
       <div class="hud-corner hud-tr"></div>
@@ -329,18 +330,28 @@ async function handleLogin() {
 
 /* Conic Glowing Border Outline */
 @keyframes rotateGlow {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  0% { transform: translate(-50%, -50%) rotate(0deg); }
+  100% { transform: translate(-50%, -50%) rotate(360deg); }
 }
 
-.login-card::before {
-  content: '';
+.login-card-glow {
   position: absolute;
   inset: -1.5px;
   border-radius: 24px;
+  overflow: hidden;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.login-card-glow::before {
+  content: '';
+  position: absolute;
+  width: 200%;
+  aspect-ratio: 1 / 1;
+  top: 50%;
+  left: 50%;
   background: conic-gradient(from 0deg at 50% 50%, transparent 20%, var(--accent-blue), var(--accent-cyan), transparent 60%);
   animation: rotateGlow 8s linear infinite;
-  z-index: -1;
   opacity: 0.75;
 }
 

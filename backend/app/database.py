@@ -49,7 +49,29 @@ def create_engine_and_tables():
         except Exception as exc:
             # Table might not exist yet; create_all will handle it
             pass
-            
+
+        try:
+            cursor = conn.exec_driver_sql("PRAGMA table_info(image_update_cache)")
+            columns = [row[1] for row in cursor.fetchall()]
+            if columns:
+                image_update_cache_columns = {
+                    "registry": "TEXT",
+                    "platform": "TEXT",
+                    "http_status": "INTEGER",
+                    "matched_field": "TEXT",
+                    "retry_after": "INTEGER",
+                    "last_failure_http_status": "INTEGER",
+                    "last_failure_retry_after": "INTEGER",
+                }
+                for column_name, column_ddl in image_update_cache_columns.items():
+                    if column_name not in columns:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE image_update_cache ADD COLUMN {column_name} {column_ddl}"
+                        )
+        except Exception:
+            # Table might not exist yet; create_all will handle it
+            pass
+             
         conn.commit()
 
     # Import models so SQLModel.metadata knows about them before create_all

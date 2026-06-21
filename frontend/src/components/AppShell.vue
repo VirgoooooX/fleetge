@@ -199,13 +199,6 @@ function switchLocale() {
   setStoredLocale(next);
 }
 
-const hostBadgeTone = computed(() => {
-  if (store.hosts.length === 0) return "neutral";
-  if (store.onlineCount === store.hosts.length) return "success";
-  if (store.onlineCount > 0) return "warning";
-  return "danger";
-});
-
 const currentHost = computed(() => {
   if (route.name !== "host-detail") return null;
   return store.hosts.find((item) => item.host_id === route.params.hostId) || null;
@@ -229,14 +222,6 @@ const navItems = computed(() => [
     path: "/settings",
     icon: Settings,
     badge: null,
-  },
-  {
-    id: "hosts",
-    label: t("nav.hosts"),
-    path: "/",
-    icon: Layers,
-    badge: store.hosts.length,
-    badgeTone: hostBadgeTone.value,
   },
 ]);
 
@@ -303,7 +288,6 @@ onUnmounted(() => {
 });
 
 function isActive(id: string, path: string) {
-  if (id === "hosts") return route.name === "host-detail";
   if (path === "/") return route.name === "dashboard";
   return route.path.startsWith(path);
 }

@@ -6,24 +6,20 @@ and compares with the local image digest.
 """
 
 import asyncio
-import hashlib
-import json
+from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 
-from app.config import get_settings
 from app.schemas import UpdateCheckResult
 
 logger = logging.getLogger(__name__)
 
-# Simple in-memory cache: {image_key: {status, digest, timestamp}}
-_update_cache: dict[str, dict] = {}
-_cache_lock = asyncio.Lock()
-FAILURE_STATUSES = {"needs_auth", "check_failed"}
 INDEX_MEDIA_TYPES = {
     "application/vnd.docker.distribution.manifest.list.v2+json",
     "application/vnd.oci.image.index.v1+json",
@@ -38,6 +34,147 @@ REGISTRY_ACCEPT = (
     "application/vnd.oci.image.manifest.v1+json,"
     "application/vnd.oci.image.index.v1+json"
 )
+
+
+# Statuses that mean "we know there is no update info right now, retry later".
+# These are surfaced (not silently dropped) so operators can see how many
+# images failed and why. rate_limited is distinct from check_failed: it carries
+# Retry-After semantics and should trigger registry-level backoff (see P0-b).
+FAILURE_STATUSES = {"needs_auth", "check_failed", "rate_limited"}
+FAILURE_RETRY_DELAYS = (0.0, 2.0, 8.0)
+REGISTRY_FREEZE_SECONDS = 900
+
+_registry_client: httpx.AsyncClient | None = None
+_docker_token_cache: dict[str, dict[str, float | str]] = {}
+_registry_frozen_until: dict[str, float] = {}
+
+
+@dataclass
+class RegistryDigests:
+    repo_digests: list[str]
+    config_digest: Optional[str] = None
+    resolved_platform: Optional[str] = None
+
+
+@dataclass
+class RegistryLookupResult:
+    digests: RegistryDigests
+    error_status: Optional[str] = None
+    http_status: Optional[int] = None
+    retry_after: Optional[int] = None
+
+
+def _classify_http_status(status_code: int) -> Optional[str]:
+    """Map a registry HTTP status to an error_status, or None for non-errors.
+
+    401/403 -> needs_auth    (anonymous/pull denied; auth would help)
+    429/503 -> rate_limited  (registry overloaded or throttling us; Retry-After applies)
+    other 4xx/5xx -> None    (caller falls through to check_failed)
+    """
+    if status_code in (401, 403):
+        return "needs_auth"
+    if status_code in (429, 503):
+        return "rate_limited"
+    return None
+
+
+def _format_platform(platform: dict | None) -> Optional[str]:
+    platform = platform or {}
+    parts = [
+        (platform.get("os") or "").strip().lower(),
+        (platform.get("architecture") or "").strip().lower(),
+        (platform.get("variant") or "").strip().lower(),
+    ]
+    parts = [part for part in parts if part]
+    return "/".join(parts) if parts else None
+
+
+def _parse_retry_after(value: str | None) -> Optional[int]:
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if value.isdigit():
+        return max(1, int(value))
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        delay = int((parsed - datetime.now(timezone.utc)).total_seconds())
+        return max(1, delay)
+    except Exception:
+        return None
+
+
+async def _get_registry_client() -> httpx.AsyncClient:
+    global _registry_client
+    if _registry_client is None:
+        _registry_client = httpx.AsyncClient()
+    return _registry_client
+
+
+def _get_registry_retry_after(registry: str) -> Optional[int]:
+    frozen_until = _registry_frozen_until.get(registry, 0.0)
+    remaining = int(round(frozen_until - time.monotonic()))
+    return remaining if remaining > 0 else None
+
+
+def _freeze_registry(registry: str, retry_after: Optional[int]) -> int:
+    effective_retry_after = max(1, retry_after or REGISTRY_FREEZE_SECONDS)
+    _registry_frozen_until[registry] = max(
+        _registry_frozen_until.get(registry, 0.0),
+        time.monotonic() + effective_retry_after,
+    )
+    return effective_retry_after
+
+
+def _build_error_result(
+    registry: str,
+    status_code: int,
+    *,
+    retry_after: Optional[int] = None,
+) -> RegistryLookupResult:
+    error_status = _classify_http_status(status_code) or "check_failed"
+    if error_status == "rate_limited":
+        retry_after = _freeze_registry(registry, retry_after)
+    return RegistryLookupResult(
+        digests=RegistryDigests(repo_digests=[]),
+        error_status=error_status,
+        http_status=status_code,
+        retry_after=retry_after,
+    )
+
+
+def _error_from_response(registry: str, response: httpx.Response) -> Optional[RegistryLookupResult]:
+    if response.status_code < 400:
+        return None
+    retry_after = _parse_retry_after(response.headers.get("Retry-After"))
+    return _build_error_result(
+        registry,
+        response.status_code,
+        retry_after=retry_after,
+    )
+
+
+def _docker_token_cache_get(repository: str) -> Optional[str]:
+    cached = _docker_token_cache.get(repository)
+    if not cached:
+        return None
+    expires_at = float(cached.get("expires_at", 0.0))
+    if expires_at <= time.monotonic():
+        _docker_token_cache.pop(repository, None)
+        return None
+    token = cached.get("token")
+    return str(token) if token else None
+
+
+def _docker_token_cache_set(repository: str, token: str, expires_in: int) -> None:
+    ttl = max(30, expires_in - 15)
+    _docker_token_cache[repository] = {
+        "token": token,
+        "expires_at": time.monotonic() + ttl,
+    }
 
 
 def _parse_bearer_challenge(header: str) -> tuple[str, dict[str, str]] | None:
@@ -66,28 +203,42 @@ def _parse_bearer_challenge(header: str) -> tuple[str, dict[str, str]] | None:
 
 async def _get_bearer_token_from_challenge(
     client: httpx.AsyncClient,
+    registry: str,
     header: str,
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[RegistryLookupResult]]:
     challenge = _parse_bearer_challenge(header)
     if not challenge:
-        return None, "needs_auth"
+        return None, RegistryLookupResult(
+            digests=RegistryDigests(repo_digests=[]),
+            error_status="needs_auth",
+            http_status=401,
+        )
 
     realm, params = challenge
     try:
         tr = await client.get(realm, params=params, timeout=10)
-        if tr.status_code in (401, 403):
-            return None, "needs_auth"
+        error = _error_from_response(registry, tr)
+        if error is not None:
+            return None, error
         tr.raise_for_status()
         token = tr.json().get("token") or tr.json().get("access_token")
         if not token:
-            return None, "check_failed"
+            return None, RegistryLookupResult(
+                digests=RegistryDigests(repo_digests=[]),
+                error_status="check_failed",
+            )
         return token, None
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code in (401, 403):
-            return None, "needs_auth"
-        return None, "check_failed"
+        return None, _build_error_result(
+            registry,
+            exc.response.status_code,
+            retry_after=_parse_retry_after(exc.response.headers.get("Retry-After")),
+        )
     except Exception:
-        return None, "check_failed"
+        return None, RegistryLookupResult(
+            digests=RegistryDigests(repo_digests=[]),
+            error_status="check_failed",
+        )
 
 
 def _parse_image_ref(image: str) -> dict:
@@ -193,17 +344,17 @@ def _platform_matches(candidate: dict | None, requested: dict[str, str]) -> bool
     return True
 
 
-async def _resolve_registry_digest_candidates_from_response(
+async def _resolve_registry_digests_from_response(
     client: httpx.AsyncClient,
     manifest_url: str,
     response: httpx.Response,
     headers: dict[str, str],
     platform: str | None,
-) -> list[str]:
+) -> RegistryDigests:
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip()
     header_digest = response.headers.get("Docker-Content-Digest")
-    candidates: list[str] = []
-    _append_digest(candidates, header_digest)
+    repo_digests: list[str] = []
+    _append_digest(repo_digests, header_digest)
     try:
         payload = response.json()
     except Exception:
@@ -235,11 +386,14 @@ async def _resolve_registry_digest_candidates_from_response(
                     if (item.get("platform") or {}).get("os") != "unknown"
                 ),
                 None,
-            )
+        )
         child_digest = selected.get("digest") if selected else None
         if not child_digest:
-            return candidates
-        _append_digest(candidates, child_digest)
+            return RegistryDigests(
+                repo_digests=repo_digests,
+                resolved_platform=_format_platform(selected.get("platform") if selected else None),
+            )
+        _append_digest(repo_digests, child_digest)
 
         child_response = await client.get(
             manifest_url.rsplit("/", 1)[0] + f"/{child_digest}",
@@ -247,18 +401,23 @@ async def _resolve_registry_digest_candidates_from_response(
             timeout=15,
         )
         child_response.raise_for_status()
-        _append_digest(candidates, child_response.headers.get("Docker-Content-Digest"))
+        _append_digest(repo_digests, child_response.headers.get("Docker-Content-Digest"))
         try:
             child_payload = child_response.json()
         except Exception:
             child_payload = {}
         config_digest = (child_payload.get("config") or {}).get("digest")
-        _append_digest(candidates, config_digest)
-        return candidates
+        return RegistryDigests(
+            repo_digests=repo_digests,
+            config_digest=_normalize_digest(config_digest),
+            resolved_platform=_format_platform(selected.get("platform") if selected else None),
+        )
 
     config_digest = (payload.get("config") or {}).get("digest")
-    _append_digest(candidates, config_digest)
-    return candidates
+    return RegistryDigests(
+        repo_digests=repo_digests,
+        config_digest=_normalize_digest(config_digest),
+    )
 
 
 async def _resolve_registry_digest_from_response(
@@ -268,128 +427,102 @@ async def _resolve_registry_digest_from_response(
     headers: dict[str, str],
     platform: str | None,
 ) -> Optional[str]:
-    candidates = await _resolve_registry_digest_candidates_from_response(
+    digests = await _resolve_registry_digests_from_response(
         client, manifest_url, response, headers, platform
     )
-    return candidates[-1] if candidates else None
+    return digests.config_digest or (digests.repo_digests[-1] if digests.repo_digests else None)
+
+
+async def _lookup_registry_identity(
+    registry: str,
+    repository: str,
+    reference: str,
+    platform: str | None = None,
+) -> RegistryLookupResult:
+    frozen_retry_after = _get_registry_retry_after(registry)
+    if frozen_retry_after is not None:
+        return RegistryLookupResult(
+            digests=RegistryDigests(repo_digests=[]),
+            error_status="rate_limited",
+            http_status=429,
+            retry_after=frozen_retry_after,
+        )
+
+    client = await _get_registry_client()
+    manifest_url = f"https://{registry}/v2/{repository}/manifests/{reference}"
+    headers = {"Accept": REGISTRY_ACCEPT}
+
+    try:
+        if registry == "docker.io":
+            manifest_url = f"https://registry-1.docker.io/v2/{repository}/manifests/{reference}"
+            token = _docker_token_cache_get(repository)
+            if token is None:
+                token_url = (
+                    "https://auth.docker.io/token"
+                    f"?service=registry.docker.io&scope=repository:{repository}:pull"
+                )
+                token_response = await client.get(token_url, timeout=10)
+                token_error = _error_from_response("docker.io", token_response)
+                if token_error is not None:
+                    return token_error
+                token_response.raise_for_status()
+                token_payload = token_response.json()
+                token = token_payload.get("token", "")
+                if not token:
+                    return RegistryLookupResult(
+                        digests=RegistryDigests(repo_digests=[]),
+                        error_status="check_failed",
+                    )
+                _docker_token_cache_set(
+                    repository,
+                    token,
+                    int(token_payload.get("expires_in") or 300),
+                )
+            headers["Authorization"] = f"Bearer {token}"
+        elif registry == "ghcr.io":
+            manifest_url = f"https://ghcr.io/v2/{repository}/manifests/{reference}"
+
+        response = await client.get(manifest_url, headers=headers, timeout=15)
+        if registry == "ghcr.io" and response.status_code == 401:
+            token, token_error = await _get_bearer_token_from_challenge(
+                client,
+                registry,
+                response.headers.get("WWW-Authenticate", ""),
+            )
+            if token_error is not None:
+                return token_error
+            headers = {**headers, "Authorization": f"Bearer {token}"}
+            response = await client.get(manifest_url, headers=headers, timeout=15)
+
+        error = _error_from_response(registry, response)
+        if error is not None:
+            return error
+
+        response.raise_for_status()
+        digests = await _resolve_registry_digests_from_response(
+            client, manifest_url, response, headers, platform
+        )
+        return RegistryLookupResult(digests=digests)
+    except httpx.HTTPStatusError as exc:
+        return _build_error_result(
+            registry,
+            exc.response.status_code,
+            retry_after=_parse_retry_after(exc.response.headers.get("Retry-After")),
+        )
+    except Exception:
+        return RegistryLookupResult(
+            digests=RegistryDigests(repo_digests=[]),
+            error_status="check_failed",
+        )
 
 
 async def _get_manifest_digest_candidates(
     registry: str, repository: str, tag: str, platform: str | None = None
 ) -> tuple[list[str], Optional[str]]:
-    """Query registry for all useful comparable digests.
-
-    The registry exposes more than one digest for many images:
-    - Docker-Content-Digest: manifest or index digest, comparable with RepoDigests.
-    - config.digest: image config digest, often comparable with Docker image Id.
-
-    Returning all candidates avoids false positives caused by comparing a local
-    RepoDigest with a remote config digest, or a local image Id with a remote
-    manifest/index digest.
-    """
-    # Determine the manifest URL and auth scope
-    if registry == "docker.io":
-        # Docker Hub requires a token
-        manifest_url = f"https://registry-1.docker.io/v2/{repository}/manifests/{tag}"
-        token_url = (
-            f"https://auth.docker.io/token"
-            f"?service=registry.docker.io"
-            f"&scope=repository:{repository}:pull"
-        )
-        try:
-            async with httpx.AsyncClient() as client:
-                # First get a token
-                tr = await client.get(token_url, timeout=10)
-                if tr.status_code == 401:
-                    return [], "needs_auth"
-                tr.raise_for_status()
-                token = tr.json().get("token", "")
-
-                # Then request manifest
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "Accept": REGISTRY_ACCEPT,
-                }
-                mr = await client.get(manifest_url, headers=headers, timeout=15)
-                if mr.status_code == 401:
-                    return [], "needs_auth"
-                mr.raise_for_status()
-                candidates = await _resolve_registry_digest_candidates_from_response(
-                    client, manifest_url, mr, headers, platform
-                )
-                return candidates, None
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 401:
-                return [], "needs_auth"
-            return [], "check_failed"
-        except Exception:
-            return [], "check_failed"
-
-    elif registry == "ghcr.io":
-        # GHCR public packages can still require an anonymous Bearer token.
-        manifest_url = (
-            f"https://ghcr.io/v2/{repository}/manifests/{tag}"
-        )
-        try:
-            async with httpx.AsyncClient() as client:
-                headers = {
-                    "Accept": REGISTRY_ACCEPT,
-                }
-                r = await client.get(manifest_url, headers=headers, timeout=15)
-                if r.status_code == 401:
-                    token, error_status = await _get_bearer_token_from_challenge(
-                        client,
-                        r.headers.get("WWW-Authenticate", ""),
-                    )
-                    if error_status:
-                        return [], error_status
-                    headers = {**headers, "Authorization": f"Bearer {token}"}
-                    r = await client.get(
-                        manifest_url,
-                        headers=headers,
-                        timeout=15,
-                    )
-                if r.status_code in (401, 403):
-                    return [], "needs_auth"
-                r.raise_for_status()
-                candidates = await _resolve_registry_digest_candidates_from_response(
-                    client, manifest_url, r, headers, platform
-                )
-                return candidates, None
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
-                return [], "needs_auth"
-            return [], "check_failed"
-        except Exception:
-            return [], "check_failed"
-
-    else:
-        # Generic registry (assume OCI-compatible)
-        manifest_url = (
-            f"https://{registry}/v2/{repository}/manifests/{tag}"
-        )
-        try:
-            async with httpx.AsyncClient() as client:
-                headers = {
-                    "Accept": REGISTRY_ACCEPT,
-                }
-                r = await client.get(manifest_url, headers=headers, timeout=10)
-                if r.status_code == 401:
-                    return [], "needs_auth"
-                # 403 might mean the registry is accessible but view denied
-                if r.status_code in (401, 403):
-                    return [], "needs_auth"
-                r.raise_for_status()
-                candidates = await _resolve_registry_digest_candidates_from_response(
-                    client, manifest_url, r, headers, platform
-                )
-                return candidates, None
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (401, 403):
-                return [], "needs_auth"
-            return [], "check_failed"
-        except Exception:
-            return [], "check_failed"
+    lookup = await _lookup_registry_identity(registry, repository, tag, platform)
+    candidates = list(lookup.digests.repo_digests)
+    _append_digest(candidates, lookup.digests.config_digest)
+    return candidates, lookup.error_status
 
 
 async def _get_manifest_digest(
@@ -398,7 +531,8 @@ async def _get_manifest_digest(
     """Query registry for the manifest digest.
 
     Returns (digest, error_status).
-    digest is None on error; error_status is one of "needs_auth" | "check_failed".
+    digest is None on error; error_status is one of
+    "needs_auth" | "check_failed" | "rate_limited".
     """
     candidates, error_status = await _get_manifest_digest_candidates(
         registry, repository, tag, platform
@@ -419,15 +553,11 @@ def _extract_local_digest(repo_digests: list[str]) -> Optional[str]:
     return None
 
 
-def _local_digest_candidates(
-    repo_digests: list[str] | None,
-    local_image_id: str | None,
-) -> list[str]:
+def _local_repo_digests(repo_digests: list[str] | None) -> list[str]:
     candidates: list[str] = []
-    _append_digest(candidates, local_image_id)
-    for d in repo_digests or []:
-        if "@" in d:
-            _append_digest(candidates, d.split("@", 1)[1])
+    for digest in repo_digests or []:
+        if "@" in digest:
+            _append_digest(candidates, digest.split("@", 1)[1])
     return candidates
 
 
@@ -441,8 +571,11 @@ async def check_image(
 ) -> UpdateCheckResult:
     """Check if a single image has an update available.
 
-    Uses RepoDigests for local digest comparison. Never uses ImageID
-    (content hash) — that is not comparable with registry manifest digest.
+    Uses typed digest comparison:
+    - RepoDigests are compared with remote manifest/index digests.
+    - image inspect Id is compared only with remote config.digest.
+    Digest-pinned refs (repo@sha256:...) are treated as immutable and do not
+    trigger a registry lookup.
 
     Args:
         host_id: For identifying the source host.
@@ -453,75 +586,77 @@ async def check_image(
         UpdateCheckResult.
     """
     repo_digests = repo_digests or []
-    # Check cache first
-    cache_key = f"{host_id}:{image_ref}"
-    if not force:
-        async with _cache_lock:
-            cached = _update_cache.get(cache_key)
-            cache_ttl = get_settings().UPDATE_CHECK_INTERVAL
-            if (
-                cached
-                and cached.get("status") not in FAILURE_STATUSES
-                and (time.monotonic() - cached.get("ts", 0)) < cache_ttl
-            ):
-                return UpdateCheckResult(
-                    host_id=host_id,
-                    image=image_ref,
-                    current_digest=cached["local"],
-                    registry_digest=cached["registry"],
-                    status=cached["status"],
-                )
-
-    # Parse image reference
     parsed = _parse_image_ref(image_ref)
-
-    # Compare all known local identities against all registry identities.
-    # Docker exposes both image config digests (ImageID) and manifest/index
-    # digests (RepoDigests); registries expose the same split via
-    # config.digest and Docker-Content-Digest. Either pair may be the stable
-    # comparable value depending on registry/image shape.
     local_image_id = _normalize_digest(local_image_id)
-    local_candidates = _local_digest_candidates(repo_digests, local_image_id)
-    effective_local = local_candidates[0] if local_candidates else None
+    local_repo_candidates = _local_repo_digests(repo_digests)
 
-    # Check registry
-    registry_candidates, error_status = await _get_manifest_digest_candidates(
-        parsed["registry"], parsed["repository"], parsed["tag"], platform=platform
-    )
-    matched_registry = next(
-        (digest for digest in registry_candidates if digest in local_candidates),
-        None,
-    )
-    registry_digest = matched_registry or (registry_candidates[0] if registry_candidates else None)
+    if parsed["digest"]:
+        pinned_digest = _normalize_digest(parsed["digest"])
+        matched_pinned = pinned_digest if pinned_digest in local_repo_candidates else None
+        return UpdateCheckResult(
+            host_id=host_id,
+            image=image_ref,
+            current_digest=matched_pinned or (local_repo_candidates[0] if local_repo_candidates else local_image_id),
+            registry_digest=pinned_digest,
+            registry=parsed["registry"],
+            platform=platform,
+            matched_field="pinned_digest",
+            status="up_to_date",
+        )
 
-    # Determine status
-    if error_status:
-        status = error_status  # "needs_auth" | "check_failed"
+    lookup = await _lookup_registry_identity(
+        parsed["registry"],
+        parsed["repository"],
+        parsed["tag"],
+        platform=platform,
+    )
+
+    matched_field: Optional[str] = None
+    matched_local: Optional[str] = None
+    matched_registry: Optional[str] = None
+
+    if local_repo_candidates:
+        matched_registry = next(
+            (digest for digest in lookup.digests.repo_digests if digest in local_repo_candidates),
+            None,
+        )
+        if matched_registry:
+            matched_field = "repo_digest"
+            matched_local = matched_registry
+
+    if matched_field is None and local_image_id and lookup.digests.config_digest:
+        if local_image_id == lookup.digests.config_digest:
+            matched_field = "config_digest"
+            matched_local = local_image_id
+            matched_registry = lookup.digests.config_digest
+
+    effective_local = (
+        matched_local
+        or (local_repo_candidates[0] if local_repo_candidates else local_image_id)
+    )
+    registry_digest = (
+        matched_registry
+        or (lookup.digests.repo_digests[0] if lookup.digests.repo_digests else lookup.digests.config_digest)
+    )
+
+    if lookup.error_status:
+        status = lookup.error_status
         registry_digest = None
-    elif registry_candidates and local_candidates:
-        status = "up_to_date" if matched_registry else "updatable"
-    elif registry_candidates and not local_candidates:
-        # Can't compare — remote digest known but no local digest
-        status = "check_failed"
+    elif registry_digest and effective_local:
+        status = "up_to_date" if matched_field else "updatable"
     else:
         status = "check_failed"
-
-    # Update in-memory cache only for conclusive results. Failed checks should
-    # be retried by the caller instead of being hidden behind a long TTL.
-    if status not in FAILURE_STATUSES:
-        async with _cache_lock:
-            _update_cache[cache_key] = {
-                "local": effective_local,
-                "registry": registry_digest,
-                "status": status,
-                "ts": time.monotonic(),
-            }
 
     return UpdateCheckResult(
         host_id=host_id,
         image=image_ref,
         current_digest=effective_local,
         registry_digest=registry_digest,
+        registry=parsed["registry"],
+        platform=lookup.digests.resolved_platform or platform,
+        http_status=lookup.http_status,
+        matched_field=matched_field,
+        retry_after=lookup.retry_after,
         status=status,
     )
 
@@ -566,9 +701,8 @@ async def run_update_check(
 
     async def check_one(image_ref: str, info: dict) -> UpdateCheckResult:
         async with semaphore:
-            delays = [0.0, 2.0, 8.0]
             last_result: UpdateCheckResult | None = None
-            for delay in delays:
+            for delay in FAILURE_RETRY_DELAYS:
                 if delay:
                     await asyncio.sleep(delay)
                 last_result = await check_image(
@@ -589,6 +723,13 @@ async def run_update_check(
 
 
 def clear_cache() -> None:
-    """Clear the update check cache (forces re-fetch on next check)."""
-    global _update_cache
-    _update_cache = {}
+    """Deprecated compatibility hook for callers expecting a clear step."""
+    _docker_token_cache.clear()
+    _registry_frozen_until.clear()
+
+
+def reset_runtime_state() -> None:
+    """Test helper: reset transient registry lookup state."""
+    global _registry_client
+    _registry_client = None
+    clear_cache()

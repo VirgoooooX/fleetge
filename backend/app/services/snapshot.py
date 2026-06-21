@@ -41,7 +41,8 @@ from app.services.update_check import _extract_local_digest, run_update_check
 logger = logging.getLogger(__name__)
 
 VISIBLE_UPDATE_STATUSES = {"up_to_date", "updatable"}
-FAILED_UPDATE_STATUSES = {"needs_auth", "check_failed"}
+FAILED_UPDATE_STATUSES = {"needs_auth", "check_failed", "rate_limited"}
+FAILED_UPDATE_RECHECK_INTERVAL_SECONDS = 900
 TRANSIENT_AGENT_ERRORS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -176,6 +177,14 @@ class SnapshotManager:
         self._update_check_lock = asyncio.Lock()
         self._stats_tasks: dict[str, asyncio.Task] = {}
         self._realtime_refresh_tasks: dict[str, asyncio.Task] = {}  # coalesce WebSocket-triggered refreshes
+
+        # Update-check gating. Plain bools are the right primitive here:
+        # asyncio is single-threaded and only switches coroutines at await
+        # points, so the check-then-set below has no scheduling gap. The common
+        # running flag covers both manual and background sweeps, preventing any
+        # caller from queuing behind _update_check_lock and then duplicating a
+        # full registry pass.
+        self._update_check_running: bool = False
 
         # Active connection tracking for polling optimization
         self._active_connections = 0
@@ -404,13 +413,20 @@ class SnapshotManager:
             key=lambda s: (s.host_config.sort_order if s.host_config else 0, s.host_config.id if s.host_config else 0),
         )
 
-    def get_update_check_results(self) -> list[UpdateCheckResult]:
-        """Return visible cached update check results without hitting registries."""
+    def get_update_check_results(self, *, include_failures: bool = False) -> list[UpdateCheckResult]:
+        """Return cached update check results without hitting registries.
+
+        When *include_failures* is True, failure statuses (needs_auth,
+        check_failed, rate_limited) are included. This is intended for the
+        dedicated updates / diagnostic page. The host/app views never pass
+        this flag, so they remain unaffected.
+        """
+        allowed = VISIBLE_UPDATE_STATUSES | FAILED_UPDATE_STATUSES if include_failures else VISIBLE_UPDATE_STATUSES
         results: list[UpdateCheckResult] = []
         for snap in self._snapshots.values():
             results.extend(
                 r for r in snap.update_check_results
-                if r.status in VISIBLE_UPDATE_STATUSES
+                if r.status in allowed
             )
         return results
 
@@ -435,7 +451,17 @@ class SnapshotManager:
         rows: list[ImageUpdateCache],
         current_images: set[str] | None = None,
     ) -> None:
-        """Apply persisted conclusive update results to one snapshot."""
+        """Apply persisted update-check rows to one snapshot.
+
+        snap.update_check_results keeps the full per-image state so the
+        dedicated updates page can show failures. snap.update_results remains
+        a visible-status index for host/app surfaces that only care about
+        actionable update badges.
+        """
+        scoped_rows = [
+            row for row in rows
+            if current_images is None or row.image in current_images
+        ]
         visible_rows = [
             row for row in rows
             if row.status in VISIBLE_UPDATE_STATUSES
@@ -448,11 +474,38 @@ class SnapshotManager:
                 image=row.image,
                 current_digest=row.current_digest,
                 registry_digest=row.registry_digest,
+                registry=row.registry,
+                platform=row.platform,
+                http_status=row.http_status,
+                matched_field=row.matched_field,
+                retry_after=row.retry_after,
+                failure_count=row.failure_count,
+                last_failure_status=row.last_failure_status,
+                last_failure_http_status=row.last_failure_http_status,
+                last_failure_retry_after=row.last_failure_retry_after,
+                last_failure_at=row.last_failure_at,
                 status=row.status,
             )
-            for row in visible_rows
+            for row in scoped_rows
         ]
-        for result in snap.update_check_results:
+        for row in visible_rows:
+            result = UpdateCheckResult(
+                host_id=row.host_id,
+                image=row.image,
+                current_digest=row.current_digest,
+                registry_digest=row.registry_digest,
+                registry=row.registry,
+                platform=row.platform,
+                http_status=row.http_status,
+                matched_field=row.matched_field,
+                retry_after=row.retry_after,
+                failure_count=row.failure_count,
+                last_failure_status=row.last_failure_status,
+                last_failure_http_status=row.last_failure_http_status,
+                last_failure_retry_after=row.last_failure_retry_after,
+                last_failure_at=row.last_failure_at,
+                status=row.status,
+            )
             snap.update_results[result.image] = result.status
         snap.update_count = sum(
             1 for row in visible_rows if row.status == "updatable"
@@ -695,6 +748,8 @@ class SnapshotManager:
             row.current_digest = local_digest
             row.failure_count = 0
             row.last_failure_status = None
+            row.last_failure_http_status = None
+            row.last_failure_retry_after = None
             row.last_failure_at = None
             row.updated_at = now
             session.add(row)
@@ -755,9 +810,35 @@ class SnapshotManager:
         return matched
 
     async def refresh_update_checks_now(self) -> list[UpdateCheckResult]:
-        """Run update checks immediately and return the refreshed cache."""
+        """Run update checks immediately and return the refreshed cache.
+
+        Prefer try_refresh_update_checks_now() from request handlers so callers
+        can tell whether this trigger actually started or was coalesced.
+        """
         await self._refresh_update_checks(force=True)
         return self.get_update_check_results()
+
+    def is_update_check_running(self) -> bool:
+        return self._update_check_running
+
+    async def try_refresh_update_checks_now(
+        self,
+        *,
+        include_failures: bool = False,
+    ) -> tuple[bool, list[UpdateCheckResult]]:
+        """Run a manual force=True update check, unless one is already running.
+
+        Returns (started, results):
+          - started=True, results=<fresh>  : this call ran the sweep.
+          - started=False, results=<cache> : another sweep is already in flight;
+            the caller should surface cached results rather than wait or trigger
+            another full registry pass.
+
+        The common running flag is set without an await in between, so under the
+        single-threaded asyncio loop the check-then-set cannot be preempted.
+        """
+        started = await self._refresh_update_checks(force=True)
+        return started, self.get_update_check_results(include_failures=include_failures)
 
     async def refresh_metrics_now(self) -> list[HostSummary]:
         """Refresh host metrics immediately and return current host summaries."""
@@ -833,7 +914,10 @@ class SnapshotManager:
                     break
             else:
                 try:
-                    await asyncio.sleep(interval)
+                    if name == "update_checks":
+                        await asyncio.sleep(self._next_update_check_interval(interval))
+                    else:
+                        await asyncio.sleep(interval)
                 except asyncio.CancelledError:
                     break
 
@@ -1674,28 +1758,57 @@ class SnapshotManager:
 
     # ── Update checks ─────────────────────────────────────────────
 
-    async def _refresh_update_checks(self, force: bool = False) -> None:
+    async def _refresh_update_checks(self, force: bool = False) -> bool:
         """Query registry digests for all container images across all hosts.
 
         Runs every configured interval. Results are persisted in SQLite and
         hydrated into memory for fast API responses.
+
+        If any sweep is already running, this call is skipped rather than queued
+        behind _update_check_lock. That avoids duplicate registry passes for
+        both "manual after background" and "background after manual" races.
         """
-        async with self._update_check_lock:
-            await self.refresh_hosts()
-            await self._refresh_docker(trigger_initial_update_check=False)
-            semaphore = asyncio.Semaphore(3)
-
-            async def refresh_one(snap: HostSnapshot) -> None:
-                async with semaphore:
-                    await self._refresh_update_checks_for_snapshot(snap, force=force)
-
-            results = await asyncio.gather(
-                *(refresh_one(snap) for snap in list(self._snapshots.values())),
-                return_exceptions=True,
+        if self._update_check_running:
+            logger.debug(
+                "Skipping %s update check: another sweep is in progress",
+                "manual" if force else "background",
             )
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.warning("Update check task failed: %s", result)
+            return False
+        self._update_check_running = True
+        try:
+            async with self._update_check_lock:
+                await self._refresh_update_checks_locked(force=force)
+            return True
+        finally:
+            self._update_check_running = False
+
+    async def _refresh_update_checks_locked(self, force: bool = False) -> None:
+        """Update-check sweep body, expected to run under _update_check_lock."""
+        await self.refresh_hosts()
+        await self._refresh_docker(trigger_initial_update_check=False)
+        semaphore = asyncio.Semaphore(3)
+
+        async def refresh_one(snap: HostSnapshot) -> None:
+            async with semaphore:
+                await self._refresh_update_checks_for_snapshot(snap, force=force)
+
+        results = await asyncio.gather(
+            *(refresh_one(snap) for snap in list(self._snapshots.values())),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("Update check task failed: %s", result)
+
+    def _next_update_check_interval(self, interval: int) -> int:
+        if any(
+            result.status in FAILED_UPDATE_STATUSES
+            or result.last_failure_status in FAILED_UPDATE_STATUSES
+            for snap in self._snapshots.values()
+            for result in snap.update_check_results
+        ):
+            return min(interval, FAILED_UPDATE_RECHECK_INTERVAL_SECONDS)
+        return interval
 
     def _is_update_cache_due(
         self,
@@ -1706,8 +1819,25 @@ class SnapshotManager:
     ) -> bool:
         if force or row is None:
             return True
+        last_failure_at = _as_utc(row.last_failure_at)
+        if row.last_failure_status in FAILED_UPDATE_STATUSES and last_failure_at is not None:
+            retry_seconds = (
+                row.last_failure_retry_after
+                if row.last_failure_status == "rate_limited" and row.last_failure_retry_after
+                else min(get_settings().UPDATE_CHECK_INTERVAL, FAILED_UPDATE_RECHECK_INTERVAL_SECONDS)
+            )
+            return last_failure_at + timedelta(seconds=retry_seconds) <= now
         if row.status in FAILED_UPDATE_STATUSES:
-            return True
+            checked_at = _as_utc(row.checked_at)
+            if checked_at is None:
+                return True
+            retry_seconds = (
+                row.retry_after
+                if row.status == "rate_limited" and row.retry_after
+                else min(get_settings().UPDATE_CHECK_INTERVAL, FAILED_UPDATE_RECHECK_INTERVAL_SECONDS)
+            )
+            retry_interval = timedelta(seconds=retry_seconds)
+            return checked_at + retry_interval <= now
         checked_at = _as_utc(row.checked_at)
         if checked_at is None:
             return True
@@ -1728,6 +1858,11 @@ class SnapshotManager:
                 status=result.status,
                 current_digest=result.current_digest,
                 registry_digest=result.registry_digest,
+                registry=result.registry,
+                platform=result.platform,
+                http_status=result.http_status,
+                matched_field=result.matched_field,
+                retry_after=result.retry_after,
                 checked_at=now,
             )
             session.add(existing)
@@ -1735,6 +1870,8 @@ class SnapshotManager:
         if result.status in FAILED_UPDATE_STATUSES:
             existing.failure_count += 1
             existing.last_failure_status = result.status
+            existing.last_failure_http_status = result.http_status
+            existing.last_failure_retry_after = result.retry_after
             existing.last_failure_at = now
             existing.updated_at = now
 
@@ -1744,15 +1881,27 @@ class SnapshotManager:
                 existing.status = result.status
                 existing.current_digest = result.current_digest
                 existing.registry_digest = result.registry_digest
+                existing.registry = result.registry
+                existing.platform = result.platform
+                existing.http_status = result.http_status
+                existing.matched_field = result.matched_field
+                existing.retry_after = result.retry_after
                 existing.checked_at = now
             return existing
 
         existing.status = result.status
         existing.current_digest = result.current_digest
         existing.registry_digest = result.registry_digest
+        existing.registry = result.registry
+        existing.platform = result.platform
+        existing.http_status = result.http_status
+        existing.matched_field = result.matched_field
+        existing.retry_after = result.retry_after
         existing.checked_at = now
         existing.failure_count = 0
         existing.last_failure_status = None
+        existing.last_failure_http_status = None
+        existing.last_failure_retry_after = None
         existing.last_failure_at = None
         existing.updated_at = now
         return existing

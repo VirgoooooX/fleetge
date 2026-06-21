@@ -65,10 +65,17 @@ class ImageUpdateCache(SQLModel, table=True):
     image: str = Field(sa_column=Column(Text, nullable=False))
     current_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     registry_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    registry: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    platform: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    http_status: Optional[int] = None
+    matched_field: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    retry_after: Optional[int] = None
     status: str = Field(index=True)
     checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     failure_count: int = 0
     last_failure_status: Optional[str] = None
+    last_failure_http_status: Optional[int] = None
+    last_failure_retry_after: Optional[int] = None
     last_failure_at: Optional[datetime] = None
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -85,4 +92,3 @@ class Setting(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
     )
-
