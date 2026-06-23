@@ -118,6 +118,7 @@
     :stack-name="currentComposeStack"
     @close="composeDrawerVisible = false"
     @saved="$emit('refresh')"
+    @deploy="handleComposeDeploy"
   />
 </template>
 
@@ -129,8 +130,10 @@ import StatusIcon from "./StatusIcon.vue";
 import StackActions from "./StackActions.vue";
 import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import LogDrawer from "./LogDrawer.vue";
-import ComposeDrawer from "./ComposeDrawer.vue";
+import ComposeDrawer, { type ComposeDeployPayload } from "./ComposeDrawer.vue";
 import TerminalDrawer from "./TerminalDrawer.vue";
+import { streamSse } from "@/api/sse";
+import { ElMessage } from "element-plus";
 import { sortStacks } from "@/utils/stackSorting";
 
 export interface StackService {
@@ -156,7 +159,7 @@ const props = defineProps<{
   hostId: string;
 }>();
 
-defineEmits<{ refresh: [] }>();
+const emit = defineEmits<{ refresh: [] }>();
 
 const sortedStacks = computed(() => sortStacks(props.stacks));
 
@@ -222,6 +225,125 @@ function onOperationComplete(stackName: string, state: OperationState) {
         delete operationStates[stackName];
       }
     }, 8000);
+  }
+}
+
+async function handleComposeDeploy(payload: ComposeDeployPayload) {
+  const stackName = payload.stackName;
+  const action = "deploy";
+  const label = t("stackOp.deploying");
+  const startedAt = Date.now();
+  const controller = new AbortController();
+
+  const runningState: OperationState = {
+    action,
+    status: "running",
+    message: t("stack.confirm.running", { action: label }),
+    updatedAt: startedAt,
+    abort: () => controller.abort(),
+  };
+
+  onOperationStart(stackName, runningState);
+
+  let completed = false;
+
+  try {
+    const cols = 110;
+    const rows = 24;
+    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}/compose/deploy?cols=${cols}&rows=${rows}`;
+
+    await streamSse({
+      url,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      timeoutMs: 300000,
+      signal: controller.signal,
+      body: JSON.stringify({
+        compose_yaml: payload.composeYaml,
+        compose_env: payload.composeEnv,
+        compose_file_name: payload.composeFileName,
+        is_add: payload.isAdd,
+      }),
+      onTimeout: () => {
+        if (completed) return;
+        completed = true;
+        onOperationComplete(stackName, {
+          action,
+          status: "timeout",
+          message: t("compose.deployTimeout"),
+          updatedAt: Date.now(),
+        });
+      },
+      onEvent: (ev) => {
+        if (ev.event === "chunk") {
+          onTerminalChunk(stackName, { action, chunk: ev.data?.raw ?? ev.rawData });
+        } else if (ev.event === "line") {
+          onTerminalChunk(stackName, { action, chunk: ev.data?.text ?? ev.rawData });
+        } else if (ev.event === "complete") {
+          completed = true;
+          const data = ev.data || {};
+          const success = data.status === "success";
+
+          onOperationComplete(stackName, {
+            action,
+            status: success ? "success" : "error",
+            message: data.message || (success ? t("compose.deploySuccess") : t("compose.deployFailed", { detail: "" })),
+            updatedAt: Date.now(),
+          });
+
+          if (success) {
+            ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
+            emit("refresh");
+          } else {
+            ElMessage.error(t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }));
+          }
+        } else if (ev.event === "error") {
+          completed = true;
+          const data = ev.data || {};
+          onOperationComplete(stackName, {
+            action,
+            status: "error",
+            message: t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }),
+            updatedAt: Date.now(),
+          });
+          ElMessage.error(t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }));
+        }
+      },
+    });
+
+    if (!completed) {
+      completed = true;
+      if (controller.signal.aborted) {
+        onOperationComplete(stackName, {
+          action,
+          status: "error",
+          message: t("stack.confirm.cancelled"),
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+      onOperationComplete(stackName, {
+        action,
+        status: "success",
+        message: t("compose.deployCompleted"),
+        updatedAt: Date.now(),
+      });
+      ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
+      emit("refresh");
+    }
+  } catch (e: any) {
+    if (completed) return;
+    completed = true;
+    const detail = e.message || t("compose.unknownError");
+    onOperationComplete(stackName, {
+      action,
+      status: "error",
+      message: t("compose.deployFailed", { detail }),
+      updatedAt: Date.now(),
+    });
+    ElMessage.error(t("compose.deployFailed", { detail }));
   }
 }
 

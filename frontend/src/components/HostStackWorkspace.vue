@@ -795,6 +795,7 @@
       :create-mode="composeDrawerMode === 'create'"
       @close="composeDrawerVisible = false"
       @saved="onComposeSaved"
+      @deploy="handleComposeDeploy"
     />
 
     <!-- Docker Clean Dialog -->
@@ -816,6 +817,28 @@
         :message="operationPanelMessage"
         @close="handleDockClose('__prune__')"
         @cancel="cancelOperation('__prune__')"
+      />
+    </el-dialog>
+
+    <!-- Global Operation Dialog (for new stacks being deployed) -->
+    <el-dialog
+      v-model="showGlobalOperationDialog"
+      :title="t('compose.deployOutput')"
+      width="700px"
+      :close-on-click-modal="false"
+      destroy-on-close
+      append-to-body
+      class="operation-dialog"
+    >
+      <StackOperationDock
+        class="global-terminal"
+        :stack-name="operationPanelStack"
+        :action="operationPanelAction"
+        :lines="terminalOutputs[operationPanelStack] || []"
+        :status="operationPanelStatus"
+        :message="operationPanelMessage"
+        @close="handleDockClose(operationPanelStack)"
+        @cancel="cancelOperation(operationPanelStack)"
       />
     </el-dialog>
   </section>
@@ -854,7 +877,7 @@ import StatusIcon from "./StatusIcon.vue";
 import StackActions from "./StackActions.vue";
 import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import StackOperationDock from "./StackOperationDock.vue";
-import ComposeDrawer from "./ComposeDrawer.vue";
+import ComposeDrawer, { type ComposeDeployPayload } from "./ComposeDrawer.vue";
 import MonacoEditor from "@/components/MonacoEditor.vue";
 import UpdateBadge from "./UpdateBadge.vue";
 import { sortStacks } from "@/utils/stackSorting";
@@ -1068,6 +1091,22 @@ let operationAutoCloseTimer: ReturnType<typeof setTimeout> | null = null;
 const pruneDialogVisible = computed({
   get() {
     return operationPanelVisible.value && operationPanelStack.value === "__prune__";
+  },
+  set(val) {
+    if (!val) {
+      closeOperationDock();
+    }
+  }
+});
+
+const showGlobalOperationDialog = computed({
+  get() {
+    if (!operationPanelVisible.value) return false;
+    const name = operationPanelStack.value;
+    if (!name || name === "__prune__") return false;
+    if (selectedStackName.value === name) return false;
+    const exists = props.stacks.some((s) => s.name === name);
+    return !exists;
   },
   set(val) {
     if (!val) {
@@ -1702,6 +1741,131 @@ async function runStackUpdate(
 
 function onComposeSaved() {
   emit("refresh");
+}
+
+async function handleComposeDeploy(payload: ComposeDeployPayload) {
+  const stackName = payload.stackName;
+  const action = "deploy";
+  const label = t("stackOp.deploying");
+  const startedAt = Date.now();
+  const controller = new AbortController();
+
+  const runningState: OperationState = {
+    action,
+    status: "running",
+    message: t("stack.confirm.running", { action: label }),
+    updatedAt: startedAt,
+    abort: () => controller.abort(),
+  };
+
+  onOperationStart(stackName, runningState);
+  runningOperations[stackName] = {
+    abort: () => controller.abort(),
+    action,
+  };
+
+  let completed = false;
+
+  try {
+    const cols = 110;
+    const rows = 24;
+    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}/compose/deploy?cols=${cols}&rows=${rows}`;
+
+    await streamSse({
+      url,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      timeoutMs: 300000,
+      signal: controller.signal,
+      body: JSON.stringify({
+        compose_yaml: payload.composeYaml,
+        compose_env: payload.composeEnv,
+        compose_file_name: payload.composeFileName,
+        is_add: payload.isAdd,
+      }),
+      onTimeout: () => {
+        if (completed) return;
+        completed = true;
+        onOperationComplete(stackName, {
+          action,
+          status: "timeout",
+          message: t("compose.deployTimeout"),
+          updatedAt: Date.now(),
+        });
+      },
+      onEvent: (ev) => {
+        if (ev.event === "chunk") {
+          onTerminalChunk(stackName, { action, chunk: ev.data?.raw ?? ev.rawData });
+        } else if (ev.event === "line") {
+          onTerminalChunk(stackName, { action, chunk: ev.data?.text ?? ev.rawData });
+        } else if (ev.event === "complete") {
+          completed = true;
+          const data = ev.data || {};
+          const success = data.status === "success";
+
+          onOperationComplete(stackName, {
+            action,
+            status: success ? "success" : "error",
+            message: data.message || (success ? t("compose.deploySuccess") : t("compose.deployFailed", { detail: "" })),
+            updatedAt: Date.now(),
+          });
+
+          if (success) {
+            ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
+            emit("refresh");
+          } else {
+            ElMessage.error(t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }));
+          }
+        } else if (ev.event === "error") {
+          completed = true;
+          const data = ev.data || {};
+          onOperationComplete(stackName, {
+            action,
+            status: "error",
+            message: t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }),
+            updatedAt: Date.now(),
+          });
+          ElMessage.error(t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }));
+        }
+      },
+    });
+
+    if (!completed) {
+      completed = true;
+      if (controller.signal.aborted) {
+        onOperationComplete(stackName, {
+          action,
+          status: "error",
+          message: t("stack.confirm.cancelled"),
+          updatedAt: Date.now(),
+        });
+        return;
+      }
+      onOperationComplete(stackName, {
+        action,
+        status: "success",
+        message: t("compose.deployCompleted"),
+        updatedAt: Date.now(),
+      });
+      ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
+      emit("refresh");
+    }
+  } catch (e: any) {
+    if (completed) return;
+    completed = true;
+    const detail = e.message || t("compose.unknownError");
+    onOperationComplete(stackName, {
+      action,
+      status: "error",
+      message: t("compose.deployFailed", { detail }),
+      updatedAt: Date.now(),
+    });
+    ElMessage.error(t("compose.deployFailed", { detail }));
+  } finally {
+    delete runningOperations[stackName];
+  }
 }
 
 function isOperationDockVisible(stackName: string): boolean {

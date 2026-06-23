@@ -62,16 +62,7 @@
         <el-icon class="is-loading" :size="28"><Loading /></el-icon>
       </div>
 
-      <StackOperationDock
-        v-if="showDeployTerminal"
-        class="compose-deploy-dock"
-        :stack-name="targetStackName"
-        action="deploy"
-        :lines="deployChunks"
-        :status="deployDockStatus"
-        :message="operationStatus?.message || ''"
-        @close="clearDeployOutput"
-      />
+
 
       <el-tabs
         v-if="!loading"
@@ -118,7 +109,6 @@ import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
 import { Loading, SuccessFilled, WarningFilled } from "@element-plus/icons-vue";
 import { apiClient } from "@/api/client";
-import { streamSse } from "@/api/sse";
 import { useConfirm } from "@/composables/useConfirm";
 
 const props = defineProps<{
@@ -128,7 +118,19 @@ const props = defineProps<{
   createMode?: boolean;
 }>();
 
-const emit = defineEmits<{ close: []; saved: [] }>();
+export interface ComposeDeployPayload {
+  stackName: string;
+  composeYaml: string;
+  composeEnv: string;
+  composeFileName: string;
+  isAdd: boolean;
+}
+
+const emit = defineEmits<{
+  close: [];
+  saved: [];
+  deploy: [payload: ComposeDeployPayload];
+}>();
 
 const { t } = useI18n();
 const { confirm } = useConfirm();
@@ -223,13 +225,7 @@ const operationStatus = ref<{
   logTail?: string;
 } | null>(null);
 
-const deployChunks = ref<string[]>([]);
-const deployStreamActive = ref(false);
-const showDeployTerminal = computed(() => deployStreamActive.value || deployChunks.value.length > 0);
-const deployDockStatus = computed<"running" | "success" | "error" | "idle">(() => {
-  if (deployStreamActive.value) return "running";
-  return operationStatus.value?.status || "idle";
-});
+
 
 const DEFAULT_COMPOSE_YAML = `services:
   app:
@@ -265,8 +261,6 @@ watch(
   (visible) => {
     if (visible) {
       operationStatus.value = null;
-      deployChunks.value = [];
-      deployStreamActive.value = false;
       if (createMode.value) {
         initializeCreateCompose();
       } else {
@@ -391,121 +385,16 @@ async function save(deploy: boolean) {
     return;
   }
 
-  saving.value = "deploy";
-  deployChunks.value = [];
-  deployStreamActive.value = true;
-
-  operationStatus.value = {
-    status: "running",
-    message: t("compose.deploying"),
-  };
-
-  // Pass cols/rows so the agent's PTY (and thus `docker compose`'s progress
-  // formatter) wraps at a width close to what the dock can actually render.
-  // The backend default is cols=160, which overflows the dock's ~90-125 col
-  // surface → xterm soft-wraps each progress line, and `\r` refreshes then
-  // only reset to column 0 of the *current* visual line, leaving the wrapped
-  // tail behind as stray "extra lines". Matching the stack page's cols=110
-  // (proven not to wrap inside StackOperationDock) avoids this.
-  const cols = 110;
-  const rows = 24;
-  const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackNameForRequest)}/compose/deploy?cols=${cols}&rows=${rows}`;
-  let completed = false;
-
-  try {
-    await streamSse({
-      url,
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      timeoutMs: 300000,
-      body: JSON.stringify({
-        compose_yaml: composeYaml.value,
-        compose_env: composeEnv.value,
-        compose_file_name: composeFileName.value,
-        is_add: createMode.value,
-      }),
-      onTimeout: () => {
-        completed = true;
-        deployStreamActive.value = false;
-        operationStatus.value = {
-          status: "error",
-          message: t("compose.deployTimeout"),
-        };
-        ElMessage.warning(operationStatus.value.message);
-      },
-      onEvent: (ev) => {
-        if (ev.event === "chunk") {
-          deployChunks.value.push(normalizeDeployChunk(ev.data?.raw ?? ev.rawData));
-        } else if (ev.event === "line") {
-          // Backward compatibility for old SSE protocol
-          deployChunks.value.push(normalizeDeployChunk(ev.data?.text ?? ev.rawData));
-        } else if (ev.event === "complete") {
-          completed = true;
-          deployStreamActive.value = false;
-          const data = ev.data || {};
-          const success = data.status === "success";
-
-          operationStatus.value = {
-            status: success ? "success" : "error",
-            message: data.message || (success ? t("compose.deploySuccess") : t("compose.deployFailed", { detail: "" })),
-          };
-
-          if (success) {
-            ElMessage.success(createMode.value ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
-            emit("saved");
-          } else {
-            ElMessage.error(t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }));
-          }
-        } else if (ev.event === "error") {
-          completed = true;
-          deployStreamActive.value = false;
-          const data = ev.data || {};
-          operationStatus.value = {
-            status: "error",
-            message: t("compose.deployFailed", { detail: data.message || t("compose.unknownError") }),
-          };
-          ElMessage.error(operationStatus.value.message);
-        }
-      },
+  if (deploy) {
+    emit("deploy", {
+      stackName: stackNameForRequest,
+      composeYaml: composeYaml.value,
+      composeEnv: composeEnv.value,
+      composeFileName: composeFileName.value,
+      isAdd: createMode.value,
     });
-
-    if (!completed && deployStreamActive.value) {
-      deployStreamActive.value = false;
-      operationStatus.value = {
-        status: "success",
-        message: t("compose.deployCompleted"),
-      };
-      ElMessage.success(createMode.value ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
-      emit("saved");
-    }
-  } catch (e: any) {
-    if (completed) return;
-    deployStreamActive.value = false;
-    const detail = e.message || t("compose.unknownError");
-    operationStatus.value = {
-      status: "error",
-      message: t("compose.deployFailed", { detail }),
-    };
-    ElMessage.error(t("compose.deployFailed", { detail }));
-  } finally {
-    saving.value = null;
+    emit("close");
   }
-}
-
-onUnmounted(() => {
-  deployChunks.value = [];
-  deployStreamActive.value = false;
-});
-
-function normalizeDeployChunk(value: string): string {
-  return String(value || "").replace(/\r(?!\n)/g, "\r\x1b[2K");
-}
-
-function clearDeployOutput() {
-  if (deployStreamActive.value) return;
-  deployChunks.value = [];
 }
 </script>
 
