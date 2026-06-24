@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 VISIBLE_UPDATE_STATUSES = {"up_to_date", "updatable"}
 FAILED_UPDATE_STATUSES = {"needs_auth", "check_failed", "rate_limited"}
 FAILED_UPDATE_RECHECK_INTERVAL_SECONDS = 900
+PENDING_UPDATE_STATUS = "pending_update"
+PENDING_UPDATE_CONFIRM_INTERVAL_SECONDS = 3600
 TRANSIENT_AGENT_ERRORS = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
@@ -54,6 +56,10 @@ TRANSIENT_AGENT_ERRORS = (
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _same_digest(left: str | None, right: str | None) -> bool:
+    return (left or "").strip().lower() == (right or "").strip().lower()
 
 
 @dataclass
@@ -1802,6 +1808,12 @@ class SnapshotManager:
 
     def _next_update_check_interval(self, interval: int) -> int:
         if any(
+            getattr(result, "status", "") == PENDING_UPDATE_STATUS
+            for snap in self._snapshots.values()
+            for result in snap.update_check_results
+        ):
+            return min(interval, PENDING_UPDATE_CONFIRM_INTERVAL_SECONDS)
+        if any(
             result.status in FAILED_UPDATE_STATUSES
             or result.last_failure_status in FAILED_UPDATE_STATUSES
             for snap in self._snapshots.values()
@@ -1819,6 +1831,13 @@ class SnapshotManager:
     ) -> bool:
         if force or row is None:
             return True
+        pending_detected_at = _as_utc(row.pending_detected_at)
+        if row.pending_registry_digest and pending_detected_at is not None:
+            return (
+                pending_detected_at
+                + timedelta(seconds=PENDING_UPDATE_CONFIRM_INTERVAL_SECONDS)
+                <= now
+            )
         last_failure_at = _as_utc(row.last_failure_at)
         if row.last_failure_status in FAILED_UPDATE_STATUSES and last_failure_at is not None:
             retry_seconds = (
@@ -1851,11 +1870,25 @@ class SnapshotManager:
         existing: ImageUpdateCache | None,
         now: datetime,
     ) -> ImageUpdateCache:
+        def clear_pending(row: ImageUpdateCache) -> None:
+            row.pending_current_digest = None
+            row.pending_registry_digest = None
+            row.pending_platform = None
+            row.pending_matched_field = None
+            row.pending_detected_at = None
+
+        def pending_matches(row: ImageUpdateCache) -> bool:
+            return (
+                _same_digest(row.pending_current_digest, result.current_digest)
+                and _same_digest(row.pending_registry_digest, result.registry_digest)
+                and (row.pending_platform or "") == (result.platform or "")
+            )
+
         if existing is None:
             existing = ImageUpdateCache(
                 host_id=host_id,
                 image=result.image,
-                status=result.status,
+                status=PENDING_UPDATE_STATUS if result.status == "updatable" else result.status,
                 current_digest=result.current_digest,
                 registry_digest=result.registry_digest,
                 registry=result.registry,
@@ -1867,6 +1900,30 @@ class SnapshotManager:
             )
             session.add(existing)
 
+        if result.status == "updatable" and not pending_matches(existing):
+            existing.pending_current_digest = result.current_digest
+            existing.pending_registry_digest = result.registry_digest
+            existing.pending_platform = result.platform
+            existing.pending_matched_field = result.matched_field
+            existing.pending_detected_at = now
+            existing.registry = result.registry
+            existing.http_status = result.http_status
+            existing.retry_after = result.retry_after
+            existing.checked_at = now
+            existing.updated_at = now
+            existing.failure_count = 0
+            existing.last_failure_status = None
+            existing.last_failure_http_status = None
+            existing.last_failure_retry_after = None
+            existing.last_failure_at = None
+            if existing.status != "updatable":
+                existing.status = PENDING_UPDATE_STATUS
+                existing.current_digest = result.current_digest
+                existing.registry_digest = result.registry_digest
+                existing.platform = result.platform
+                existing.matched_field = result.matched_field
+            return existing
+
         if result.status in FAILED_UPDATE_STATUSES:
             existing.failure_count += 1
             existing.last_failure_status = result.status
@@ -1877,7 +1934,7 @@ class SnapshotManager:
 
             # Preserve the last conclusive result when we have one, so a
             # transient registry failure does not erase useful UI state.
-            if existing.status not in VISIBLE_UPDATE_STATUSES:
+            if existing.status not in VISIBLE_UPDATE_STATUSES and existing.status != PENDING_UPDATE_STATUS:
                 existing.status = result.status
                 existing.current_digest = result.current_digest
                 existing.registry_digest = result.registry_digest
@@ -1903,6 +1960,7 @@ class SnapshotManager:
         existing.last_failure_http_status = None
         existing.last_failure_retry_after = None
         existing.last_failure_at = None
+        clear_pending(existing)
         existing.updated_at = now
         return existing
 

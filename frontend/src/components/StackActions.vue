@@ -1,5 +1,5 @@
 <template>
-  <div class="rect-dock">
+  <div class="rect-dock" :class="{ 'is-large': size === 'large' }">
     <!-- Action Controls Subgroup -->
     <div class="capsule-subgroup">
       <el-tooltip :content="t('stack.action.start')" placement="top">
@@ -158,12 +158,14 @@ const props = withDefaults(
     showLogs?: boolean;
     showDetail?: boolean;
     canEditCompose?: boolean;
+    size?: "default" | "large";
   }>(),
   {
     showCompose: false,
     showLogs: false,
     showDetail: false,
     canEditCompose: true,
+    size: "default",
   }
 );
 
@@ -495,9 +497,9 @@ async function confirmAndDelete() {
   align-items: center;
   background: rgba(15, 23, 42, 0.25);
   border: 1px solid var(--border-subtle);
-  border-radius: 7px;
-  padding: 3px 5px;
-  gap: 2px;
+  border-radius: 8px;
+  padding: 1.5px 5px;
+  gap: 3px;
   transition: border-color 200ms ease, background 200ms ease;
   line-height: 1;
 }
@@ -519,9 +521,9 @@ async function confirmAndDelete() {
 
 .capsule-divider {
   width: 1px;
-  height: 12px;
+  height: 14px;
   background: rgba(148, 163, 184, 0.2);
-  margin: 0 4px;
+  margin: 0 5px;
 }
 
 .rect-btn, .rect-text-btn {
@@ -538,18 +540,18 @@ async function confirmAndDelete() {
 }
 
 .rect-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 5px;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
 }
 
 .rect-text-btn {
-  height: 26px;
-  padding: 0 8px;
-  border-radius: 5px;
-  font-size: 11px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
   font-weight: 700;
-  gap: 4px;
+  gap: 5px;
 }
 
 .rect-btn:disabled, .rect-text-btn:disabled {
@@ -560,10 +562,10 @@ async function confirmAndDelete() {
 }
 
 /* Color definition for Icons in passive state */
-.color-online { color: rgba(52, 211, 153, 0.85); }
-.color-danger { color: rgba(248, 113, 113, 0.85); }
-.color-primary { color: rgba(96, 165, 250, 0.85); }
-.color-warning { color: rgba(251, 191, 36, 0.85); }
+.color-online { color: rgba(52, 211, 153, 0.95); }
+.color-danger { color: rgba(248, 113, 113, 0.95); }
+.color-primary { color: rgba(96, 165, 250, 0.95); }
+.color-warning { color: rgba(251, 191, 36, 0.95); }
 .danger-trash { color: var(--text-muted); }
 
 /* Hover effects with scale & soft box-shadow glow */
@@ -617,6 +619,37 @@ async function confirmAndDelete() {
 
 .rect-btn :deep(.el-icon),
 .rect-text-btn :deep(.el-icon) {
-  font-size: 14px;
+  font-size: 18px;
+}
+
+/* Large size variations */
+.rect-dock.is-large {
+  padding: 2.5px 6px;
+  border-radius: 10px;
+  gap: 4px;
+}
+
+.rect-dock.is-large .rect-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+}
+
+.rect-dock.is-large .rect-text-btn {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.rect-dock.is-large .capsule-divider {
+  height: 18px;
+  margin: 0 6px;
+}
+
+.rect-dock.is-large .rect-btn :deep(.el-icon),
+.rect-dock.is-large .rect-text-btn :deep(.el-icon) {
+  font-size: 22px;
 }
 </style>

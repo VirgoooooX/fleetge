@@ -70,6 +70,11 @@ class ImageUpdateCache(SQLModel, table=True):
     http_status: Optional[int] = None
     matched_field: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     retry_after: Optional[int] = None
+    pending_current_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    pending_registry_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    pending_platform: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    pending_matched_field: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    pending_detected_at: Optional[datetime] = None
     status: str = Field(index=True)
     checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     failure_count: int = 0

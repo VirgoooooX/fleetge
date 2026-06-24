@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from starlette.responses import StreamingResponse
@@ -15,6 +16,55 @@ from app.services.snapshot import snapshot_manager
 router = APIRouter(prefix="/api", tags=["hosts"], dependencies=[Depends(get_current_user)])
 
 
+def _configured_app_placeholders(cfg) -> list[dict[str, Any]]:
+    """Return app-profile placeholders used when a host has no live stack snapshot."""
+    if not cfg.app_profiles:
+        return []
+    try:
+        profiles = json.loads(cfg.app_profiles)
+    except Exception:
+        return []
+    if not isinstance(profiles, list):
+        return []
+
+    stack_icons: dict[str, str] = {}
+    if cfg.stack_icons:
+        try:
+            parsed_icons = json.loads(cfg.stack_icons)
+            if isinstance(parsed_icons, dict):
+                stack_icons = parsed_icons
+        except Exception:
+            stack_icons = {}
+
+    def resolve_icon_url(icon_value: Any) -> str | None:
+        if not isinstance(icon_value, str) or not icon_value:
+            return None
+        if icon_value.startswith(("http://", "https://", "/")):
+            return icon_value
+        return f"/api/static/icons/{icon_value.lstrip('/')}"
+
+    placeholders: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        stack_pattern = str(profile.get("stack_pattern") or "").strip()
+        if not stack_pattern or stack_pattern in seen:
+            continue
+        seen.add(stack_pattern)
+        icon_url = resolve_icon_url(profile.get("icon_value"))
+        if icon_url is None:
+            icon_url = resolve_icon_url(snapshot_manager._match_icon(stack_pattern, stack_icons))
+        placeholders.append({
+            "stack_name": stack_pattern,
+            "title": profile.get("title") or stack_pattern,
+            "app_url": profile.get("app_url"),
+            "group": profile.get("group") or "未分组",
+            "icon_url": icon_url,
+        })
+    return placeholders
+
+
 @router.get("/apps", response_model=list[AppSummary])
 async def list_apps():
     """Aggregate all stacks from all host snapshots, enriched with app profile metadata."""
@@ -24,8 +74,31 @@ async def list_apps():
         cfg = snap.host_config
         if not cfg or not cfg.enabled:
             continue
-        
-        for stack in snap.stacks:
+
+        stacks = list(snap.stacks)
+        if not stacks:
+            for app in _configured_app_placeholders(cfg):
+                apps.append(
+                    AppSummary(
+                        host_id=cfg.host_id,
+                        host_name=cfg.display_name or cfg.host_id,
+                        host_status=snap.status,
+                        stack_name=app["stack_name"],
+                        status="unknown",
+                        service_count=0,
+                        running_count=0,
+                        management_status="file-only",
+                        title=app["title"],
+                        app_url=app["app_url"],
+                        group=app["group"],
+                        icon_url=app["icon_url"],
+                        services=[],
+                        update_status="up_to_date",
+                    )
+                )
+            continue
+
+        for stack in stacks:
             # Determine update_status
             update_status = "up_to_date"
             stack_containers = [

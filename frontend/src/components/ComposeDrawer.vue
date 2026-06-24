@@ -128,7 +128,7 @@ export interface ComposeDeployPayload {
 
 const emit = defineEmits<{
   close: [];
-  saved: [];
+  saved: [payload: ComposeDeployPayload];
   deploy: [payload: ComposeDeployPayload];
 }>();
 
@@ -368,7 +368,13 @@ async function save(deploy: boolean) {
       };
 
       ElMessage.success(createMode.value ? t("compose.draftCreated") : t("compose.draftSaved"));
-      emit("saved");
+      emit("saved", {
+        stackName: stackNameForRequest,
+        composeYaml: composeYaml.value,
+        composeEnv: composeEnv.value,
+        composeFileName: composeFileName.value,
+        isAdd: createMode.value,
+      });
     } catch (e: any) {
       const detail = e.response?.data?.detail || e.message;
 

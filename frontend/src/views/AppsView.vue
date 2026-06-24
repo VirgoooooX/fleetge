@@ -110,10 +110,13 @@
               <div class="app-info">
                 <span class="app-title">{{ app.title || app.stack_name }}</span>
                 <span class="app-meta">
-                  <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
-                  <span class="meta-text">
+                  <span class="meta-pair meta-pair--host">
+                    <span class="host-connection-dot" :class="`host-${hostStatusType(app.host_status)}`" :title="app.host_status" />
                     <span class="host-text">{{ app.host_name }}</span>
-                    <span class="divider-dot">·</span>
+                  </span>
+                  <span class="meta-spacer" aria-hidden="true" />
+                  <span class="meta-pair">
+                    <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
                     <span class="count-text">{{ app.running_count }}/{{ app.service_count }}</span>
                   </span>
                 </span>
@@ -151,10 +154,13 @@
               <div class="app-info">
                 <span class="app-title">{{ app.title || app.stack_name }}</span>
                 <span class="app-meta">
-                  <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
-                  <span class="meta-text">
+                  <span class="meta-pair meta-pair--host">
+                    <span class="host-connection-dot" :class="`host-${hostStatusType(app.host_status)}`" :title="app.host_status" />
                     <span class="host-text">{{ app.host_name }}</span>
-                    <span class="divider-dot">·</span>
+                  </span>
+                  <span class="meta-spacer" aria-hidden="true" />
+                  <span class="meta-pair">
+                    <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
                     <span class="count-text">{{ app.running_count }}/{{ app.service_count }}</span>
                   </span>
                 </span>
@@ -186,10 +192,13 @@
             <div class="app-info">
               <span class="app-title">{{ app.title || app.stack_name }}</span>
               <span class="app-meta">
-                <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
-                <span class="meta-text">
+                <span class="meta-pair meta-pair--host">
+                  <span class="host-connection-dot" :class="`host-${hostStatusType(app.host_status)}`" :title="app.host_status" />
                   <span class="host-text">{{ app.host_name }}</span>
-                  <span class="divider-dot">·</span>
+                </span>
+                <span class="meta-spacer" aria-hidden="true" />
+                <span class="meta-pair">
+                  <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
                   <span class="count-text">{{ app.running_count }}/{{ app.service_count }}</span>
                 </span>
               </span>
@@ -482,10 +491,30 @@ async function fetchApps(options: { silent?: boolean } = {}) {
   }
 }
 
+const liveHostsById = computed(() => {
+  const map = new Map<string, any>();
+  dashboardStore.hosts.forEach((host) => {
+    map.set(host.host_id, host);
+  });
+  return map;
+});
+
+const appsWithLiveHostState = computed(() =>
+  rawApps.value.map((app) => {
+    const host = liveHostsById.value.get(app.host_id);
+    if (!host) return app;
+    return {
+      ...app,
+      host_name: host.display_name || app.host_name,
+      host_status: host.status || app.host_status,
+    };
+  })
+);
+
 // Compute Host options from loaded apps
 const uniqueHosts = computed(() => {
   const map = new Map<string, string>();
-  rawApps.value.forEach(app => {
+  appsWithLiveHostState.value.forEach(app => {
     if (app.host_id && app.host_name) {
       map.set(app.host_id, app.host_name);
     }
@@ -495,7 +524,7 @@ const uniqueHosts = computed(() => {
 
 // Compute Status counts for filter chips
 const statusChips = computed(() => {
-  const apps = rawApps.value;
+  const apps = appsWithLiveHostState.value;
   return [
     { value: "", label: t("apps.chip.all"), count: apps.length },
     { value: "running", label: t("apps.chip.running"), count: apps.filter(a => isRunning(a.status)).length },
@@ -507,7 +536,7 @@ const statusChips = computed(() => {
 
 // Primary filtering logic
 const filteredApps = computed(() => {
-  return rawApps.value.filter(app => {
+  return appsWithLiveHostState.value.filter(app => {
     // Search filter (title, stack name, group)
     if (searchQuery.value.trim()) {
       const q = searchQuery.value.toLowerCase().trim();
@@ -594,7 +623,11 @@ function stackStatusType(status: string): string {
   return "partial";
 }
 
-
+function hostStatusType(status: string): string {
+  if (status === "online") return "online";
+  if (status === "offline" || status === "unknown") return "offline";
+  return "degraded";
+}
 
 function getIconUrl(value: string | null) {
   if (!value) return "";
@@ -1172,30 +1205,71 @@ onUnmounted(() => {
   color: var(--text-muted);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   overflow: visible;
-}
-
-.meta-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
   min-width: 0;
 }
 
-.divider-dot {
-  color: var(--text-muted);
-  font-weight: bold;
+.meta-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.meta-pair--host {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.meta-spacer {
+  flex: 0 0 14px;
+  width: 14px;
+}
+
+.host-text,
+.count-text {
+  line-height: 16px;
+}
+
+.host-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-connection-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: 0 0 8px;
+}
+
+.host-online {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+
+.host-degraded {
+  background: var(--warning);
+  box-shadow: 0 0 6px var(--warning);
+}
+
+.host-offline {
+  background: var(--text-muted);
 }
 
 .dot-state {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  flex-shrink: 0;
-  margin-left: 2px;
-  margin-right: 2px;
+  flex: 0 0 8px;
 }
 
 .dot-running {

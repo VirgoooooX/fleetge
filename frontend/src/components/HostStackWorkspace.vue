@@ -257,6 +257,7 @@
               :host-id="hostId"
               :stack-name="selectedStack.name"
               show-compose
+              size="large"
               :can-edit-compose="selectedStack.management_status !== 'unmanaged'"
               @refresh="$emit('refresh')"
               @operation-start="onOperationStart"
@@ -1739,7 +1740,16 @@ async function runStackUpdate(
   return succeeded;
 }
 
-function onComposeSaved() {
+function applyComposeToPreview(payload: ComposeDeployPayload) {
+  if (selectedStackName.value !== payload.stackName) return;
+  composeYaml.value = payload.composeYaml;
+  composeFileName.value = payload.composeFileName || "compose.yaml";
+  composeError.value = "";
+  composeLoading.value = false;
+}
+
+function onComposeSaved(payload: ComposeDeployPayload) {
+  applyComposeToPreview(payload);
   emit("refresh");
 }
 
@@ -1813,6 +1823,7 @@ async function handleComposeDeploy(payload: ComposeDeployPayload) {
           });
 
           if (success) {
+            applyComposeToPreview(payload);
             ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
             emit("refresh");
           } else {
@@ -1849,6 +1860,7 @@ async function handleComposeDeploy(payload: ComposeDeployPayload) {
         message: t("compose.deployCompleted"),
         updatedAt: Date.now(),
       });
+      applyComposeToPreview(payload);
       ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
       emit("refresh");
     }
@@ -2539,7 +2551,7 @@ onUnmounted(() => {
 }
 
 .stack-card {
-  padding: 16px;
+  padding: 12px;
   cursor: pointer;
 }
 
@@ -2638,8 +2650,8 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 10px;
+  padding-top: 10px;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -2787,7 +2799,6 @@ onUnmounted(() => {
 }
 
 .detail-hero {
-  align-items: flex-start;
   margin-bottom: 12px;
 }
 

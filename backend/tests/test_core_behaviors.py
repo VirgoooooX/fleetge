@@ -104,6 +104,105 @@ class SnapshotManagerTests(unittest.TestCase):
             ["check_failed", "updatable"],
         )
 
+    def test_first_updatable_result_is_pending_and_hidden(self):
+        manager = SnapshotManager()
+        session = MagicMock()
+        now = datetime.now(timezone.utc)
+        result = UpdateCheckResult(
+            host_id="host-a",
+            image="nginx:latest",
+            status="updatable",
+            current_digest="sha256:old",
+            registry_digest="sha256:new",
+        )
+
+        row = manager._persist_update_check_result(
+            session,
+            "host-a",
+            result,
+            None,
+            now,
+        )
+
+        self.assertEqual(row.status, "pending_update")
+        self.assertEqual(row.pending_current_digest, "sha256:old")
+        self.assertEqual(row.pending_registry_digest, "sha256:new")
+
+        snap = HostSnapshot()
+        manager._apply_update_cache_rows_to_snapshot(snap, [row])
+        self.assertEqual(snap.update_results, {})
+        self.assertEqual(snap.update_count, 0)
+
+    def test_matching_second_updatable_result_is_published(self):
+        manager = SnapshotManager()
+        now = datetime.now(timezone.utc)
+        existing = ImageUpdateCache(
+            host_id="host-a",
+            image="nginx:latest",
+            status="pending_update",
+            current_digest="sha256:old",
+            registry_digest="sha256:new",
+            pending_current_digest="sha256:old",
+            pending_registry_digest="sha256:new",
+            pending_detected_at=now - timedelta(hours=1),
+            checked_at=now - timedelta(hours=1),
+        )
+        result = UpdateCheckResult(
+            host_id="host-a",
+            image="nginx:latest",
+            status="updatable",
+            current_digest="sha256:old",
+            registry_digest="sha256:new",
+        )
+
+        row = manager._persist_update_check_result(
+            MagicMock(),
+            "host-a",
+            result,
+            existing,
+            now,
+        )
+
+        self.assertEqual(row.status, "updatable")
+        self.assertIsNone(row.pending_registry_digest)
+
+        snap = HostSnapshot()
+        manager._apply_update_cache_rows_to_snapshot(snap, [row])
+        self.assertEqual(snap.update_results, {"nginx:latest": "updatable"})
+        self.assertEqual(snap.update_count, 1)
+
+    def test_pending_update_rows_are_due_after_confirmation_interval(self):
+        manager = SnapshotManager()
+        now = datetime.now(timezone.utc)
+        row = ImageUpdateCache(
+            host_id="host-a",
+            image="nginx:latest",
+            status="pending_update",
+            current_digest="sha256:old",
+            registry_digest="sha256:new",
+            pending_current_digest="sha256:old",
+            pending_registry_digest="sha256:new",
+            pending_detected_at=now - timedelta(seconds=3599),
+            checked_at=now,
+        )
+
+        self.assertFalse(
+            manager._is_update_cache_due(
+                row,
+                now,
+                timedelta(hours=6),
+                force=False,
+            )
+        )
+        self.assertTrue(
+            manager._is_update_cache_due(
+                row,
+                now + timedelta(seconds=2),
+                timedelta(hours=6),
+                force=False,
+            )
+        )
+
     def test_failed_update_check_does_not_overwrite_visible_cache(self):
         manager = SnapshotManager()
         existing = ImageUpdateCache(

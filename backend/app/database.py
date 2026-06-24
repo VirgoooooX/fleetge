@@ -60,6 +60,11 @@ def create_engine_and_tables():
                     "http_status": "INTEGER",
                     "matched_field": "TEXT",
                     "retry_after": "INTEGER",
+                    "pending_current_digest": "TEXT",
+                    "pending_registry_digest": "TEXT",
+                    "pending_platform": "TEXT",
+                    "pending_matched_field": "TEXT",
+                    "pending_detected_at": "TIMESTAMP",
                     "last_failure_http_status": "INTEGER",
                     "last_failure_retry_after": "INTEGER",
                 }
