@@ -332,14 +332,14 @@ def _parse_platform(platform: str | None) -> dict[str, str]:
     return parsed
 
 
-def _platform_matches(candidate: dict | None, requested: dict[str, str]) -> bool:
+def _platform_matches(candidate: dict | None, requested: dict[str, str], exact_variant: bool = True) -> bool:
     candidate = candidate or {}
     if (candidate.get("os") or "").lower() != requested.get("os"):
         return False
     if (candidate.get("architecture") or "").lower() != requested.get("architecture"):
         return False
     requested_variant = requested.get("variant")
-    if requested_variant:
+    if exact_variant and requested_variant:
         return (candidate.get("variant") or "").lower() == requested_variant
     return True
 
@@ -367,10 +367,19 @@ async def _resolve_registry_digests_from_response(
         selected = next(
             (
                 item for item in manifests
-                if _platform_matches(item.get("platform"), requested_platform)
+                if _platform_matches(item.get("platform"), requested_platform, exact_variant=True)
             ),
             None,
         )
+        if selected is None and requested_platform.get("variant"):
+            # Fallback: match architecture without exact variant (e.g. arm64/v8 matches arm64)
+            selected = next(
+                (
+                    item for item in manifests
+                    if _platform_matches(item.get("platform"), requested_platform, exact_variant=False)
+                ),
+                None,
+            )
         if selected is None:
             selected = next(
                 (

@@ -650,7 +650,7 @@ class SnapshotManager:
                 primary_container.tag_image_id or primary_container.image_id
             ) or None
             local_candidates = [
-                digest for digest in (local_image_digest, local_repo_digest) if digest
+                digest for digest in (local_repo_digest, local_image_digest) if digest
             ]
             if not local_candidates:
                 summaries.append(FinalizeSummary(

@@ -632,6 +632,82 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.current_digest, "sha256:local-config")
         self.assertEqual(result.registry_digest, "sha256:local-config")
 
+    async def test_update_check_resolves_oci_index_with_platform_variant_fallback(self):
+        """Multi-arch OCI indices match ignoring platform variant (e.g. arm64/v8 matches arm64)."""
+        from app.services import update_check
+
+        class FakeResponse:
+            def __init__(self, status_code, headers=None, payload=None):
+                self.status_code = status_code
+                self.headers = headers or {}
+                self._payload = payload or {}
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    raise update_check.httpx.HTTPStatusError(
+                        "error",
+                        request=update_check.httpx.Request("GET", "https://example.invalid"),
+                        response=update_check.httpx.Response(self.status_code),
+                    )
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, headers=None, params=None, timeout=None):
+                if url.startswith("https://auth.docker.io/token"):
+                    return FakeResponse(200, payload={"token": "token"})
+                if url == "https://registry-1.docker.io/v2/library/postgres/manifests/15-alpine":
+                    return FakeResponse(
+                        200,
+                        {
+                            "Content-Type": "application/vnd.oci.image.index.v1+json",
+                            "Docker-Content-Digest": "sha256:index",
+                        },
+                        {
+                            "mediaType": "application/vnd.oci.image.index.v1+json",
+                            "manifests": [
+                                {
+                                    "digest": "sha256:amd64-manifest",
+                                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                    "platform": {"os": "linux", "architecture": "amd64"},
+                                },
+                                {
+                                    "digest": "sha256:arm64-manifest",
+                                    "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                                    "platform": {"os": "linux", "architecture": "arm64"},
+                                },
+                            ],
+                        },
+                    )
+                if url == "https://registry-1.docker.io/v2/library/postgres/manifests/sha256:arm64-manifest":
+                    return FakeResponse(
+                        200,
+                        {"Docker-Content-Digest": "sha256:arm64-manifest"},
+                        {"config": {"digest": "sha256:local-arm64-config"}},
+                    )
+                return FakeResponse(404)
+
+        with patch("app.services.update_check.httpx.AsyncClient", return_value=FakeClient()):
+            result = await update_check.check_image(
+                self.host_id,
+                "postgres:15-alpine",
+                ["postgres@sha256:old-repodigest"],
+                local_image_id="sha256:local-arm64-config",
+                platform="linux/arm64/v8",
+                force=True,
+            )
+
+        self.assertEqual(result.status, "up_to_date")
+        self.assertEqual(result.current_digest, "sha256:local-arm64-config")
+        self.assertEqual(result.registry_digest, "sha256:local-arm64-config")
+
     async def test_update_check_accepts_single_manifest_repodigest_match(self):
         """Single-manifest tags may only match Docker-Content-Digest via RepoDigest."""
         from app.services import update_check
