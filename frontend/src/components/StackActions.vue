@@ -79,10 +79,20 @@
     </el-tooltip>
 
     <!-- Additional Workspace Controls -->
-    <template v-if="showCompose || showLogs || showDetail">
+    <template v-if="showCompose || showLogs || showDetail || appUrl">
       <span class="capsule-divider" />
 
       <div class="capsule-subgroup">
+        <el-tooltip v-if="appUrl" :content="t('stackGroup.openApp')" placement="top">
+          <button
+            class="rect-btn"
+            :disabled="loading !== null || deleting"
+            @click="openApp"
+          >
+            <el-icon><Link /></el-icon>
+          </button>
+        </el-tooltip>
+
         <el-tooltip v-if="showCompose" :content="t('stackGroup.editCompose')" placement="top">
           <button
             class="rect-text-btn"
@@ -131,7 +141,8 @@ import {
   SwitchButton,
   EditPen,
   Document,
-  Loading
+  Loading,
+  Link
 } from "@element-plus/icons-vue";
 import { streamSse } from "@/api/sse";
 import { useConfirm, STACK_TONE_MAP } from "@/composables/useConfirm";
@@ -159,6 +170,7 @@ const props = withDefaults(
     showDetail?: boolean;
     canEditCompose?: boolean;
     size?: "default" | "large";
+    appUrl?: string;
   }>(),
   {
     showCompose: false,
@@ -166,6 +178,7 @@ const props = withDefaults(
     showDetail: false,
     canEditCompose: true,
     size: "default",
+    appUrl: "",
   }
 );
 
@@ -183,6 +196,12 @@ const loading = ref<string | null>(null);
 const deleting = ref(false);
 const { t } = useI18n();
 const { confirm } = useConfirm();
+
+function openApp() {
+  if (props.appUrl) {
+    window.open(props.appUrl, "_blank");
+  }
+}
 
 let sseAbortController: AbortController | null = null;
 

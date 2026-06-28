@@ -26,6 +26,7 @@
           <StackActions
             :host-id="hostId"
             :stack-name="stack.name"
+            :app-url="stack.app_url"
             show-compose
             show-logs
             @refresh="$emit('refresh')"
@@ -152,6 +153,7 @@ export interface StackSummary {
   services: StackService[];
   icon_url?: string;  // 自定义图标
   management_status?: string;
+  app_url?: string;
 }
 
 const props = defineProps<{

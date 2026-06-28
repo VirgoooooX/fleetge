@@ -77,6 +77,7 @@ export interface StackSummary {
   services: StackService[];
   icon_url?: string;
   management_status?: string;
+  app_url?: string;
 }
 
 export interface ContainerPort {

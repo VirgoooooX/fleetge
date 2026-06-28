@@ -306,6 +306,7 @@
   "terminal.copyFailed": "复制失败",
 
   "stackGroup.running": "{running} / {total} 运行",
+  "stackGroup.openApp": "打开应用",
   "stackGroup.editCompose": "编辑 Compose",
   "stackGroup.viewLogs": "查看日志",
   "stackGroup.viewOutput": "查看输出",

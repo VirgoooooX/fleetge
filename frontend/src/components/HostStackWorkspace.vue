@@ -148,6 +148,7 @@
                 <StackActions
                   :host-id="hostId"
                   :stack-name="stack.name"
+                  :app-url="stack.app_url"
                   show-compose
                   show-detail
                   :can-edit-compose="stack.management_status !== 'unmanaged'"
@@ -261,6 +262,7 @@
             <StackActions
               :host-id="hostId"
               :stack-name="selectedStack.name"
+              :app-url="selectedStack.app_url"
               show-compose
               size="large"
               :can-edit-compose="selectedStack.management_status !== 'unmanaged'"
@@ -904,6 +906,7 @@ export interface StackSummary {
   services: StackService[];
   icon_url?: string;  // 自定义图标（网络 URL 或 /api/static/icons/...）
   management_status?: string;
+  app_url?: string;
 }
 
 export interface ContainerPort {

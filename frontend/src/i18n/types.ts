@@ -321,6 +321,7 @@ export interface I18nSchema {
 
   // ── Stack Group ────────────────────────────────────────────
   "stackGroup.running": string;
+  "stackGroup.openApp": string;
   "stackGroup.editCompose": string;
   "stackGroup.viewLogs": string;
   "stackGroup.viewOutput": string;
