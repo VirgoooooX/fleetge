@@ -232,4 +232,4 @@ docker compose up -d --build
 
 ## License
 
-MIT License
+[MIT License](LICENSE)
