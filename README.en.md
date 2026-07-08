@@ -1,18 +1,22 @@
 <div align="center">
 
-# <img src="frontend/public/app-logo.svg" width="40" height="40" alt="Fleetge" style="vertical-align: middle;" /> Fleetge
+<img src="frontend/public/app-logo.svg" width="96" height="96" alt="Fleetge" />
 
-**A lightweight, real-time Docker fleet and Compose Stack operations console for multiple hosts.**
+# Fleetge Docker Fleet Console
 
-English | [简体中文](README.md)
+<a href="README.md"><img src="https://img.shields.io/badge/LANGUAGE-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-2f3b4a?style=for-the-badge" alt="Simplified Chinese" /></a>
+<img src="https://img.shields.io/badge/PLATFORM-DOCKER%20%7C%20LINUX-0f766e?style=for-the-badge" alt="Platform" />
+<img src="https://img.shields.io/badge/ARCHITECTURE-DASHBOARD%20%7C%20AGENT-0284c7?style=for-the-badge" alt="Architecture" />
+<img src="https://img.shields.io/badge/STACK-COMPOSE-475569?style=for-the-badge" alt="Docker Compose" />
+<img src="https://img.shields.io/badge/LICENSE-MIT-65a30d?style=for-the-badge" alt="MIT License" />
 
 </div>
 
 ---
 
-Fleetge is built for multi-host Docker environments. It gives you one web console for host metrics, containers, Compose stacks, image and system update checks, and operational audit logs.
-
-By deploying the lightweight `fleetge-agent` on managed nodes, Fleetge aggregates Docker runtime status, CPU/memory/disk/network metrics, Compose lifecycle actions, and streaming logs from different servers into a single interface.
+> **Fleetge** is a lightweight, real-time, self-hosted operations console for multi-host Docker environments.
+>
+> By deploying `fleetge-agent` on managed nodes, it brings host metrics, container status, Compose Stack lifecycle actions, image update checks, and audit logs from different servers into one modern web interface.
 
 Fleetge's product shape and parts of its interaction model are inspired by and acknowledge [Dockge](https://github.com/louislam/dockge). This project is not a Dockge fork; it is an independent implementation for multi-host Docker operations.
 
@@ -30,17 +34,19 @@ Fleetge's product shape and parts of its interaction model are inspired by and a
 | :---: | :---: |
 | <img src="assets/updates.png" alt="Image Updates" /> | <img src="assets/settings.png" alt="Settings" /> |
 
-## Features
+## Capabilities
 
-- **Multi-host dashboard**: View online status, CPU, memory, disk, network throughput, and container counts across all managed hosts.
-- **Real-time metrics**: Stream host metrics over SSE with second-level refresh intervals.
-- **App Launchpad**: Aggregate service entry points by host or custom group, filter by runtime/update status, and jump to external app URLs.
-- **Compose Stack management**: Start, stop, restart, update, and delete stacks remotely with live terminal output.
-- **Built-in Compose editor**: Create, edit, and deploy Compose files directly from the web UI.
-- **Image update detection**: Compare local images with remote registry digests and classify up-to-date, updatable, needs-auth, rate-limited, and failed checks.
-- **Host OS update checks**: Detect package updates from agent hosts, including apt/yum-based systems.
-- **Host customization**: Manage `global.env`, stack icon matching rules, app profiles, custom groups, uploaded icons, and external URLs.
-- **Security and auditing**: Encrypt sensitive credentials with Fernet, verify admin passwords with Argon2, and record critical write actions in audit logs.
+| Capability | Description |
+| :--- | :--- |
+| Multi-host dashboard | View online status, CPU, memory, disk, network throughput, and container counts across all managed hosts. |
+| Real-time metrics | Stream host metrics over SSE with second-level refresh intervals. |
+| App Launchpad | Aggregate service entry points by host or custom group, filter by runtime/update status, and open external app URLs quickly. |
+| Compose Stack management | Start, stop, restart, update, and delete stacks remotely with live terminal output. |
+| Built-in Compose editor | Create, edit, and deploy Compose files directly from the web UI. |
+| Image update detection | Compare local images with remote registry digests and classify up-to-date, updatable, needs-auth, rate-limited, and failed checks. |
+| Host OS update checks | Detect package updates from agent hosts, including apt/yum-based systems. |
+| Host customization | Manage `global.env`, stack icon matching rules, app profiles, custom groups, uploaded icons, and external URLs. |
+| Security and auditing | Encrypt sensitive credentials with Fernet, verify admin passwords with Argon2, and record critical write actions in audit logs. |
 
 ## Architecture
 
@@ -49,7 +55,7 @@ Browser
   |
   v
 Fleetge Dashboard
-  |-- SQLite/PostgreSQL
+  |-- SQLite / PostgreSQL
   |-- hosts.yaml
   |
   +-- fleetge-agent on Host A -- Docker Engine / Compose stacks
@@ -66,7 +72,7 @@ mkdir -p data
 cp hosts.yaml.example data/hosts.yaml
 ```
 
-Edit `data/hosts.yaml` and add your managed hosts:
+Edit `data/hosts.yaml`:
 
 ```yaml
 hosts:
@@ -79,7 +85,7 @@ hosts:
       token: "replace-with-a-long-random-token"
 ```
 
-### 2. Generate required secrets
+### 2. Generate secrets
 
 ```bash
 # JWT signing secret
@@ -107,8 +113,6 @@ LOG_LEVEL=info
 ```
 
 ### 4. Start the dashboard
-
-Use the prebuilt image:
 
 ```yaml
 services:
@@ -206,8 +210,6 @@ If `AGENT_SECRET_PATH` is set, include it in the dashboard-side `agent.url`, for
 | `AGENT_LOG_LEVEL` | `INFO` | Agent log level. |
 
 ## Build From Source
-
-The repository-level `docker-compose.yml` builds the image from the local `Dockerfile`, which is useful for development or custom builds:
 
 ```bash
 mkdir -p data

@@ -1,18 +1,22 @@
 <div align="center">
 
-# <img src="frontend/public/app-logo.svg" width="40" height="40" alt="Fleetge" style="vertical-align: middle;" /> Fleetge
+<img src="frontend/public/app-logo.svg" width="96" height="96" alt="Fleetge" />
 
-**轻量级、实时的多主机 Docker Fleet 与 Compose Stack 运维控制台。**
+# Fleetge Docker Fleet 运维控制台
 
-[English](README.en.md) | 简体中文
+<a href="README.en.md"><img src="https://img.shields.io/badge/LANGUAGE-ENGLISH-2f3b4a?style=for-the-badge" alt="English" /></a>
+<img src="https://img.shields.io/badge/PLATFORM-DOCKER%20%7C%20LINUX-0f766e?style=for-the-badge" alt="Platform" />
+<img src="https://img.shields.io/badge/ARCHITECTURE-DASHBOARD%20%7C%20AGENT-0284c7?style=for-the-badge" alt="Architecture" />
+<img src="https://img.shields.io/badge/STACK-COMPOSE-475569?style=for-the-badge" alt="Docker Compose" />
+<img src="https://img.shields.io/badge/LICENSE-MIT-65a30d?style=for-the-badge" alt="MIT License" />
 
 </div>
 
 ---
 
-Fleetge 面向多主机 Docker 环境，提供统一的 Web 控制台来查看主机指标、管理容器与 Compose Stack、检测镜像/系统更新，并审计关键操作。
-
-通过在受管节点部署轻量级 `fleetge-agent`，Fleetge 可以把分散在不同服务器上的 Docker 运行状态、CPU/内存/磁盘/网络指标、Compose 生命周期操作和日志输出集中到一个界面中。
+> **Fleetge** 是一款面向多主机 Docker 环境的轻量级、实时化、可自托管运维控制台。
+>
+> 它通过在受管节点部署 `fleetge-agent`，把分散在不同服务器上的主机指标、容器状态、Compose Stack 生命周期、镜像更新检测和操作审计集中到一个现代化 Web 界面中。
 
 Fleetge 的产品形态与部分交互体验参考并致谢 [Dockge](https://github.com/louislam/dockge)。本项目不是 Dockge 的 fork，而是面向多主机 Docker 运维场景的独立实现。
 
@@ -30,26 +34,28 @@ Fleetge 的产品形态与部分交互体验参考并致谢 [Dockge](https://git
 | :---: | :---: |
 | <img src="assets/updates.png" alt="Image Updates" /> | <img src="assets/settings.png" alt="Settings" /> |
 
-## 功能特性
+## 核心能力
 
-- **多主机总览**：集中查看所有受管节点的在线状态、CPU、内存、磁盘、网络吞吐与容器数量。
-- **实时指标曲线**：通过 SSE 推送秒级性能数据，适合轻量运维看板和日常巡检。
-- **应用启动台**：按主机或自定义分组聚合服务入口，支持运行状态、更新状态筛选和快速跳转。
-- **Compose Stack 管理**：远程启动、停止、重启、更新、删除 Stack，并查看实时终端输出。
-- **在线 Compose 编辑器**：直接在 Web 界面中创建、编辑和部署 Compose 文件。
-- **镜像更新检测**：对比本地镜像与远端 Registry digest，区分最新、可更新、需认证、被限流和检查失败等状态。
-- **主机系统更新检测**：通过 Agent 检测 apt/yum 等系统包更新，并在主机卡片和总览中展示。
-- **节点定制能力**：支持 `global.env`、Stack 图标匹配规则、应用资料、自定义分组、本地图标上传和外部访问地址。
-- **安全与审计**：Fernet 加密保存敏感凭证，Argon2 校验管理员密码，关键写操作写入审计日志。
+| 能力 | 说明 |
+| :--- | :--- |
+| 多主机总览 | 集中查看所有受管节点的在线状态、CPU、内存、磁盘、网络吞吐与容器数量。 |
+| 实时指标曲线 | 通过 SSE 推送秒级性能数据，适合轻量运维看板和日常巡检。 |
+| 应用启动台 | 按主机或自定义分组聚合服务入口，支持运行状态、更新状态筛选和快速跳转。 |
+| Compose Stack 管理 | 远程启动、停止、重启、更新、删除 Stack，并查看实时终端输出。 |
+| 在线 Compose 编辑器 | 直接在 Web 界面中创建、编辑和部署 Compose 文件。 |
+| 镜像更新检测 | 对比本地镜像与远端 Registry digest，区分最新、可更新、需认证、被限流和检查失败等状态。 |
+| 主机系统更新检测 | 通过 Agent 检测 apt/yum 等系统包更新，并在主机卡片和总览中展示。 |
+| 节点定制 | 支持 `global.env`、Stack 图标匹配规则、应用资料、自定义分组、本地图标上传和外部访问地址。 |
+| 安全与审计 | Fernet 加密保存敏感凭证，Argon2 校验管理员密码，关键写操作写入审计日志。 |
 
-## 架构概览
+## 架构
 
 ```text
 Browser
   |
   v
 Fleetge Dashboard
-  |-- SQLite/PostgreSQL
+  |-- SQLite / PostgreSQL
   |-- hosts.yaml
   |
   +-- fleetge-agent on Host A -- Docker Engine / Compose stacks
@@ -66,7 +72,7 @@ mkdir -p data
 cp hosts.yaml.example data/hosts.yaml
 ```
 
-编辑 `data/hosts.yaml`，填入受管主机的 Agent 地址与 Token：
+编辑 `data/hosts.yaml`：
 
 ```yaml
 hosts:
@@ -79,7 +85,7 @@ hosts:
       token: "replace-with-a-long-random-token"
 ```
 
-### 2. 生成必要密钥
+### 2. 生成密钥
 
 ```bash
 # JWT 签名密钥
@@ -106,9 +112,7 @@ UPDATE_CHECK_INTERVAL=43200
 LOG_LEVEL=info
 ```
 
-### 4. 启动控制台
-
-使用预构建镜像：
+### 4. 启动 Dashboard
 
 ```yaml
 services:
@@ -127,7 +131,7 @@ services:
 docker compose up -d
 ```
 
-启动后访问 `http://<server-ip>`，默认管理员用户名为 `admin`，密码为 `.env` 中的 `ADMIN_PASSWORD`。
+访问 `http://<server-ip>`，默认管理员用户名为 `admin`，密码为 `.env` 中的 `ADMIN_PASSWORD`。
 
 ## 部署 Agent
 
@@ -206,8 +210,6 @@ docker compose up -d
 | `AGENT_LOG_LEVEL` | `INFO` | Agent 日志级别。 |
 
 ## 从源码构建
-
-仓库根目录的 `docker-compose.yml` 使用本地 `Dockerfile` 构建镜像，适合开发或自定义构建：
 
 ```bash
 mkdir -p data
