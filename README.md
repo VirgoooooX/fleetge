@@ -1,3 +1,8 @@
+> [!IMPORTANT]
+> **Vibe Coding 说明 / Disclaimer**
+>
+> 本仓库是作者在 AI 辅助下以 **vibe coding** 方式完成的个人作品：主要通过自然语言描述需求、由 AI 生成和修改代码，作者负责产品想法、体验验证和方向取舍。作者不是专业开发者，也不具备系统的代码审计能力；代码按现状提供，请在使用、部署或二次开发前自行审查、测试并承担相应风险。
+
 <div align="center">
 
 <img src="frontend/public/app-logo.svg" width="96" height="96" alt="Fleetge" />
@@ -13,10 +18,6 @@
 </div>
 
 
-> [!IMPORTANT]
-> **Vibe Coding 说明 / Disclaimer**
->
-> 本仓库是作者在 AI 辅助下以 **vibe coding** 方式完成的个人作品：主要通过自然语言描述需求、由 AI 生成和修改代码，作者负责产品想法、体验验证和方向取舍。作者不是专业开发者，也不具备系统的代码审计能力；代码按现状提供，请在使用、部署或二次开发前自行审查、测试并承担相应风险。
 ---
 > **Fleetge** 是一款面向多主机 Docker 环境的轻量级、实时化、可自托管运维控制台。
 >
