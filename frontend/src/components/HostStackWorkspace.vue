@@ -130,9 +130,25 @@
               <div class="stack-title-row">
                 <img v-if="stack.icon_url" :src="stack.icon_url" class="stack-icon-img" @error="onIconError" />
                 <el-icon v-else class="stack-title-icon"><FolderOpened /></el-icon>
-                <span class="stack-name">{{ stack.name }}</span>
+                <span class="stack-name" :title="stack.name">{{ stack.name }}</span>
                 <span class="dot-state" :class="`dot-${stackStatusType(stack.status)}`" />
                 <span class="stack-state-text">{{ statusLabel(stack.status) }}</span>
+                <el-tooltip
+                  v-if="stack.app_url"
+                  :content="isStackStopped(stack.status) ? t('stackGroup.appUnavailable') : t('stackGroup.openApp')"
+                  placement="top"
+                >
+                  <button
+                    type="button"
+                    class="app-launch-button app-launch-button--compact"
+                    :disabled="isStackStopped(stack.status)"
+                    :aria-label="`${t('stackGroup.openApp')}: ${stack.name}`"
+                    @click.stop="openStackApp(stack)"
+                  >
+                    <el-icon><TopRight /></el-icon>
+                    <span>{{ t('stackGroup.openApp') }}</span>
+                  </button>
+                </el-tooltip>
                 <span
                   v-if="stack.management_status === 'unmanaged'"
                   class="management-pill management-unmanaged"
@@ -148,7 +164,6 @@
                 <StackActions
                   :host-id="hostId"
                   :stack-name="stack.name"
-                  :app-url="stack.app_url"
                   show-compose
                   show-detail
                   :can-edit-compose="stack.management_status !== 'unmanaged'"
@@ -252,10 +267,10 @@
               >
                 <button
                   type="button"
-                  class="detail-open-app"
+                  class="app-launch-button"
                   :disabled="isStackStopped(selectedStack.status)"
                   :aria-label="`${t('stackGroup.openApp')}: ${selectedStack.name}`"
-                  @click="openStackApp(selectedStack.app_url)"
+                  @click="openStackApp(selectedStack)"
                 >
                   <el-icon><TopRight /></el-icon>
                   <span>{{ t('stackGroup.openApp') }}</span>
@@ -1287,9 +1302,9 @@ function isStackStopped(status: string): boolean {
   return status === "stopped" || status === "inactive" || status === "exited";
 }
 
-function openStackApp(url?: string) {
-  if (!url || !selectedStack.value || isStackStopped(selectedStack.value.status)) return;
-  window.open(url, "_blank", "noopener,noreferrer");
+function openStackApp(stack: StackSummary) {
+  if (!stack.app_url || isStackStopped(stack.status)) return;
+  window.open(stack.app_url, "_blank", "noopener,noreferrer");
 }
 
 function onIconError(event: Event) {
@@ -2710,9 +2725,10 @@ onUnmounted(() => {
 }
 
 .stack-title-row {
-  display: flex;
+  display: grid;
   align-items: center;
-  gap: 8px;
+  grid-template-columns: 20px 168px 9px 56px max-content;
+  column-gap: 8px;
   min-width: 0;
 }
 
@@ -2965,7 +2981,7 @@ onUnmounted(() => {
   transform: translateY(-2px);
 }
 
-.detail-open-app {
+.app-launch-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2987,26 +3003,33 @@ onUnmounted(() => {
   transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
-.detail-open-app:not(:disabled):hover {
+.app-launch-button:not(:disabled):hover {
   border-color: color-mix(in srgb, var(--accent-blue) 62%, var(--border-subtle));
   background: color-mix(in srgb, var(--accent-blue) 13%, transparent);
   color: var(--text-primary);
   transform: translateY(-1px);
 }
 
-.detail-open-app:focus-visible {
+.app-launch-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent-blue) 72%, white);
   outline-offset: 2px;
 }
 
-.detail-open-app:disabled {
+.app-launch-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
   transform: none;
 }
 
-.detail-open-app :deep(.el-icon) {
+.app-launch-button :deep(.el-icon) {
   font-size: 15px;
+}
+
+.app-launch-button--compact {
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 11px;
 }
 
 .detail-status-dot {
@@ -4157,17 +4180,26 @@ onUnmounted(() => {
     justify-content: flex-start;
   }
 
+  .stack-title-row {
+    width: 100%;
+    grid-template-columns: 20px minmax(0, 1fr) 9px 56px max-content;
+  }
+
   .detail-title-row {
     flex-wrap: wrap;
   }
 
-  .detail-open-app span {
+  .app-launch-button span {
     display: none;
   }
 
-  .detail-open-app {
+  .app-launch-button {
     width: 32px;
     padding: 0;
+  }
+
+  .app-launch-button--compact {
+    width: 26px;
   }
 
   .container-row {
