@@ -307,6 +307,8 @@
 
   "stackGroup.running": "{running} / {total} running",
   "stackGroup.openApp": "Open App",
+  "stackGroup.appUnavailable": "The app is not running and cannot be opened",
+  "stackGroup.moreActions": "More management actions",
   "stackGroup.editCompose": "Edit Compose",
   "stackGroup.viewLogs": "View logs",
   "stackGroup.viewOutput": "View output",

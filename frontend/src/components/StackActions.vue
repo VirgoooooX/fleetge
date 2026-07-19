@@ -66,7 +66,7 @@
     <span class="capsule-divider" />
 
     <!-- Delete Control -->
-    <el-tooltip :content="t('stack.action.delete')" placement="top">
+    <el-tooltip v-if="!managementMenu" :content="t('stack.action.delete')" placement="top">
       <button
         class="rect-btn danger-trash"
         :disabled="loading !== null || deleting"
@@ -79,7 +79,7 @@
     </el-tooltip>
 
     <!-- Additional Workspace Controls -->
-    <template v-if="showCompose || showLogs || showDetail || appUrl">
+    <template v-if="showCompose || showLogs || showDetail || appUrl || managementMenu">
       <span class="capsule-divider" />
 
       <div class="capsule-subgroup">
@@ -93,7 +93,7 @@
           </button>
         </el-tooltip>
 
-        <el-tooltip v-if="showCompose" :content="t('stackGroup.editCompose')" placement="top">
+        <el-tooltip v-if="showCompose && !managementMenu" :content="t('stackGroup.editCompose')" placement="top">
           <button
             class="rect-text-btn"
             :disabled="loading !== null || deleting || !canEditCompose"
@@ -123,6 +123,40 @@
             <el-icon><Document /></el-icon>
           </button>
         </el-tooltip>
+
+        <el-dropdown
+          v-if="managementMenu"
+          trigger="click"
+          placement="bottom-end"
+          popper-class="stack-management-menu"
+          :disabled="loading !== null || deleting"
+          @command="handleManagementCommand"
+        >
+          <button
+            class="rect-btn"
+            :disabled="loading !== null || deleting"
+            :aria-label="t('stackGroup.moreActions')"
+            :title="t('stackGroup.moreActions')"
+          >
+            <el-icon><MoreFilled /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-if="showCompose"
+                command="compose"
+                :disabled="!canEditCompose"
+              >
+                <el-icon><EditPen /></el-icon>
+                {{ t('stackGroup.editCompose') }}
+              </el-dropdown-item>
+              <el-dropdown-item class="management-delete-item" command="delete" divided>
+                <el-icon><Delete /></el-icon>
+                {{ t('stack.action.delete') }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </template>
   </div>
@@ -142,7 +176,8 @@ import {
   EditPen,
   Document,
   Loading,
-  Link
+  Link,
+  MoreFilled
 } from "@element-plus/icons-vue";
 import { streamSse } from "@/api/sse";
 import { useConfirm, STACK_TONE_MAP } from "@/composables/useConfirm";
@@ -171,6 +206,7 @@ const props = withDefaults(
     canEditCompose?: boolean;
     size?: "default" | "large";
     appUrl?: string;
+    managementMenu?: boolean;
   }>(),
   {
     showCompose: false,
@@ -179,6 +215,7 @@ const props = withDefaults(
     canEditCompose: true,
     size: "default",
     appUrl: "",
+    managementMenu: false,
   }
 );
 
@@ -199,7 +236,17 @@ const { confirm } = useConfirm();
 
 function openApp() {
   if (props.appUrl) {
-    window.open(props.appUrl, "_blank");
+    window.open(props.appUrl, "_blank", "noopener,noreferrer");
+  }
+}
+
+function handleManagementCommand(command: string) {
+  if (command === "compose") {
+    emit("compose");
+    return;
+  }
+  if (command === "delete") {
+    void confirmAndDelete();
   }
 }
 
@@ -670,5 +717,9 @@ async function confirmAndDelete() {
 .rect-dock.is-large .rect-btn :deep(.el-icon),
 .rect-dock.is-large .rect-text-btn :deep(.el-icon) {
   font-size: 22px;
+}
+
+:global(.stack-management-menu .management-delete-item) {
+  color: var(--danger);
 }
 </style>

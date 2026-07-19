@@ -307,6 +307,8 @@
 
   "stackGroup.running": "{running} / {total} 运行",
   "stackGroup.openApp": "打开应用",
+  "stackGroup.appUnavailable": "应用未运行，暂时无法打开",
+  "stackGroup.moreActions": "更多管理操作",
   "stackGroup.editCompose": "编辑 Compose",
   "stackGroup.viewLogs": "查看日志",
   "stackGroup.viewOutput": "查看输出",

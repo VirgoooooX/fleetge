@@ -245,6 +245,22 @@
               />
               <el-icon v-else class="stack-title-icon detail-stack-icon"><FolderOpened /></el-icon>
               <h2>{{ selectedStack.name }}</h2>
+              <el-tooltip
+                v-if="selectedStack.app_url"
+                :content="isStackStopped(selectedStack.status) ? t('stackGroup.appUnavailable') : t('stackGroup.openApp')"
+                placement="top"
+              >
+                <button
+                  type="button"
+                  class="detail-open-app"
+                  :disabled="isStackStopped(selectedStack.status)"
+                  :aria-label="`${t('stackGroup.openApp')}: ${selectedStack.name}`"
+                  @click="openStackApp(selectedStack.app_url)"
+                >
+                  <el-icon><TopRight /></el-icon>
+                  <span>{{ t('stackGroup.openApp') }}</span>
+                </button>
+              </el-tooltip>
               <UpdateBadge
                 v-if="stackUpdateStatus(selectedStack)"
                 class="detail-update-badge"
@@ -262,8 +278,8 @@
             <StackActions
               :host-id="hostId"
               :stack-name="selectedStack.name"
-              :app-url="selectedStack.app_url"
               show-compose
+              management-menu
               size="large"
               :can-edit-compose="selectedStack.management_status !== 'unmanaged'"
               @refresh="$emit('refresh')"
@@ -875,6 +891,7 @@ import {
   Brush,
   VideoPause,
   VideoPlay,
+  TopRight,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
@@ -1264,6 +1281,15 @@ function stackStatusType(status: string): string {
   if (status === "exited") return "exited";
   if (status === "stopped" || status === "inactive") return "stopped";
   return "partial";
+}
+
+function isStackStopped(status: string): boolean {
+  return status === "stopped" || status === "inactive" || status === "exited";
+}
+
+function openStackApp(url?: string) {
+  if (!url || !selectedStack.value || isStackStopped(selectedStack.value.status)) return;
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function onIconError(event: Event) {
@@ -2903,6 +2929,15 @@ onUnmounted(() => {
   margin-bottom: 12px;
 }
 
+.detail-title-block {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.detail-actions {
+  flex: 0 0 auto;
+}
+
 .detail-hero.is-stopped .detail-stack-icon {
   color: var(--text-muted) !important;
   filter: grayscale(100%);
@@ -2928,6 +2963,50 @@ onUnmounted(() => {
   line-height: 28px;
   overflow-wrap: anywhere;
   transform: translateY(-2px);
+}
+
+.detail-open-app {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 36%, var(--border-subtle));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-blue) 7%, transparent);
+  color: var(--accent-blue);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.detail-open-app:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--accent-blue) 62%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent-blue) 13%, transparent);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+
+.detail-open-app:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 72%, white);
+  outline-offset: 2px;
+}
+
+.detail-open-app:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+}
+
+.detail-open-app :deep(.el-icon) {
+  font-size: 15px;
 }
 
 .detail-status-dot {
@@ -4080,6 +4159,15 @@ onUnmounted(() => {
 
   .detail-title-row {
     flex-wrap: wrap;
+  }
+
+  .detail-open-app span {
+    display: none;
+  }
+
+  .detail-open-app {
+    width: 32px;
+    padding: 0;
   }
 
   .container-row {
