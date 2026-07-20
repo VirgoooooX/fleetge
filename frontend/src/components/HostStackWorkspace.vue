@@ -13,11 +13,12 @@
           <el-button
             class="ui-icon-button ui-icon-button--danger sidebar-icon-button"
             size="small"
-            :loading="pruneLoading"
+            :disabled="pruneLoading"
             :aria-label="t('workspace.pruneDocker')"
             @click="confirmPrune"
           >
-            <el-icon v-if="!pruneLoading"><Brush /></el-icon>
+            <el-icon v-if="pruneLoading" class="is-loading"><Loading /></el-icon>
+            <el-icon v-else><Brush /></el-icon>
           </el-button>
         </el-tooltip>
         <el-tooltip :content="t('workspace.updateAll')" placement="top">
@@ -29,12 +30,12 @@
             <el-button
               class="ui-icon-button ui-icon-button--warning sidebar-icon-button"
               size="small"
-              :loading="bulkUpdateLoading"
               :disabled="updatableStacks.length === 0 || bulkUpdateLoading"
               :aria-label="t('workspace.updateAll')"
               @click="confirmUpdateAll"
             >
-              <el-icon v-if="!bulkUpdateLoading"><Top /></el-icon>
+              <el-icon v-if="bulkUpdateLoading" class="is-loading"><Loading /></el-icon>
+              <el-icon v-else><Top /></el-icon>
             </el-button>
           </el-badge>
         </el-tooltip>
@@ -133,29 +134,33 @@
                 <span class="stack-name" :title="stack.name">{{ stack.name }}</span>
                 <span class="dot-state" :class="`dot-${stackStatusType(stack.status)}`" />
                 <span class="stack-state-text">{{ statusLabel(stack.status) }}</span>
-                <el-tooltip
-                  v-if="stack.app_url"
-                  :content="isStackStopped(stack.status) ? t('stackGroup.appUnavailable') : t('stackGroup.openApp')"
-                  placement="top"
-                >
-                  <button
-                    type="button"
-                    class="app-launch-button app-launch-button--compact"
-                    :disabled="isStackStopped(stack.status)"
-                    :aria-label="`${t('stackGroup.openApp')}: ${stack.name}`"
-                    @click.stop="openStackApp(stack)"
+                <span class="stack-launch-slot" @click.stop>
+                  <el-tooltip
+                    v-if="stack.app_url"
+                    :content="isStackStopped(stack.status) ? t('stackGroup.appUnavailable') : t('stackGroup.openApp')"
+                    placement="top"
                   >
-                    <el-icon><TopRight /></el-icon>
-                    <span>{{ t('stackGroup.openApp') }}</span>
-                  </button>
-                </el-tooltip>
-                <span
-                  v-if="stack.management_status === 'unmanaged'"
-                  class="management-pill management-unmanaged"
-                >
-                  {{ managementStatusLabel(stack.management_status) }}
+                    <button
+                      type="button"
+                      class="app-launch-button app-launch-button--compact"
+                      :disabled="isStackStopped(stack.status)"
+                      :aria-label="`${t('stackGroup.openApp')}: ${stack.name}`"
+                      @click="openStackApp(stack)"
+                    >
+                      <el-icon><TopRight /></el-icon>
+                      <span>{{ t('stackGroup.openApp') }}</span>
+                    </button>
+                  </el-tooltip>
                 </span>
-                <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
+                <span class="stack-badges">
+                  <span
+                    v-if="stack.management_status === 'unmanaged'"
+                    class="management-pill management-unmanaged"
+                  >
+                    {{ managementStatusLabel(stack.management_status) }}
+                  </span>
+                  <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
+                </span>
               </div>
               <div class="stack-card-actions" @click.stop>
                 <span class="stack-running-count">
@@ -907,6 +912,7 @@ import {
   VideoPause,
   VideoPlay,
   TopRight,
+  Loading,
 } from "@element-plus/icons-vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
@@ -2727,9 +2733,20 @@ onUnmounted(() => {
 .stack-title-row {
   display: grid;
   align-items: center;
-  grid-template-columns: 20px 168px 9px 56px max-content;
+  grid-template-columns: 20px 168px 9px 56px 86px max-content;
   column-gap: 8px;
   min-width: 0;
+}
+
+.stack-launch-slot,
+.stack-badges {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.stack-badges {
+  gap: 6px;
 }
 
 .stack-icon-img {
@@ -4182,7 +4199,7 @@ onUnmounted(() => {
 
   .stack-title-row {
     width: 100%;
-    grid-template-columns: 20px minmax(0, 1fr) 9px 56px max-content;
+    grid-template-columns: 20px minmax(0, 1fr) 9px 56px 26px max-content;
   }
 
   .detail-title-row {
