@@ -55,6 +55,7 @@ def load_hosts_from_yaml() -> int:
                 continue
 
             agent = entry.get("agent", {})
+            location = entry.get("location", {}) or {}
 
             # 1. Fetch existing host config first
             existing = session.exec(
@@ -82,6 +83,16 @@ def load_hosts_from_yaml() -> int:
                 existing.sort_order = entry.get("sort_order", 0)
                 existing.agent_url = agent_url
                 existing.agent_token_encrypted = agent_token_encrypted
+                existing.agent_instance_id = agent.get("instance_id") or existing.agent_instance_id
+                if location:
+                    existing.location_latitude = location.get("latitude")
+                    existing.location_longitude = location.get("longitude")
+                    existing.location_city = location.get("city") or None
+                    existing.location_region = location.get("region") or None
+                    existing.location_country = location.get("country") or None
+                    existing.location_country_code = location.get("country_code") or None
+                    existing.location_source = location.get("source") or "manual"
+                    existing.location_confirmed = bool(location.get("confirmed", False))
                 # Stack icons
                 stack_icons = entry.get("stack_icons")
                 existing.stack_icons = json.dumps(stack_icons, ensure_ascii=False) if stack_icons else None
@@ -96,6 +107,15 @@ def load_hosts_from_yaml() -> int:
                     sort_order=entry.get("sort_order", 0),
                     agent_url=agent_url,
                     agent_token_encrypted=agent_token_encrypted,
+                    agent_instance_id=agent.get("instance_id") or None,
+                    location_latitude=location.get("latitude"),
+                    location_longitude=location.get("longitude"),
+                    location_city=location.get("city") or None,
+                    location_region=location.get("region") or None,
+                    location_country=location.get("country") or None,
+                    location_country_code=location.get("country_code") or None,
+                    location_source=location.get("source") or None,
+                    location_confirmed=bool(location.get("confirmed", False)),
                     stack_icons=json.dumps(stack_icons, ensure_ascii=False) if (stack_icons := entry.get("stack_icons")) else None,
                     app_profiles=json.dumps(app_profiles, ensure_ascii=False) if (app_profiles := entry.get("app_profiles")) else None,
                 )

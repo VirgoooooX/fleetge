@@ -37,10 +37,21 @@ def write_hosts_to_yaml() -> None:
         if h.agent_url:
             host_entry["agent"] = {
                 "url": h.agent_url,
-                "token": "[ENCRYPTED]" if h.agent_token_encrypted else ""
+                "token": "[ENCRYPTED]" if h.agent_token_encrypted else "",
+                "instance_id": h.agent_instance_id or "",
             }
 
-
+        if h.location_latitude is not None and h.location_longitude is not None:
+            host_entry["location"] = {
+                "latitude": h.location_latitude,
+                "longitude": h.location_longitude,
+                "city": h.location_city or "",
+                "region": h.location_region or "",
+                "country": h.location_country or "",
+                "country_code": h.location_country_code or "",
+                "source": h.location_source or "manual",
+                "confirmed": bool(h.location_confirmed),
+            }
 
         # Stack icons
         try:

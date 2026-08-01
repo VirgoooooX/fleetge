@@ -1,6 +1,7 @@
 """Settings API router — view and update system configurations."""
 
 import logging
+import re
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
@@ -103,6 +104,16 @@ async def get_settings_list():
             "min_value": 1.0,
             "max_value": 720.0,
             "unit": "小时",
+        },
+        {
+            "key": "ENROLLMENT_AGENT_IMAGE",
+            "type": "string",
+            "description": "一键入网使用的 Agent 镜像",
+        },
+        {
+            "key": "ENROLLMENT_PROXY_IMAGE",
+            "type": "string",
+            "description": "一键入网使用的 Caddy 反代镜像",
         },
     ]
 
@@ -210,6 +221,14 @@ async def update_settings(
                     "ADMIN_USERNAME must be at least 3 characters", ip
                 )
                 raise HTTPException(status_code=400, detail="ADMIN_USERNAME must be at least 3 characters")
+        elif key in {"ENROLLMENT_AGENT_IMAGE", "ENROLLMENT_PROXY_IMAGE"}:
+            image = str(val).strip()
+            if not image or len(image) > 255 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:-]*", image):
+                message = f"{key} must be a valid Docker image reference"
+                _write_audit_log(
+                    session, username, "settings.update", "", "error", message, ip
+                )
+                raise HTTPException(status_code=400, detail=message)
 
     # 2. Perform updates
     changes = []

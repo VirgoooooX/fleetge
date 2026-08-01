@@ -22,6 +22,8 @@ SYSTEM_DEFAULTS = {
     "UPDATE_CHECK_INTERVAL": "43200",
     "ADMIN_USERNAME": "admin",
     "JWT_EXPIRE_HOURS": "24",
+    "ENROLLMENT_AGENT_IMAGE": "ghcr.io/virgooooox/fleetge-agent:latest",
+    "ENROLLMENT_PROXY_IMAGE": "caddy:2-alpine",
 }
 
 WRITABLE_KEYS = set(SYSTEM_DEFAULTS.keys())
@@ -90,16 +92,19 @@ def clear_cache() -> None:
 
 
 def populate_defaults_if_empty() -> None:
-    """Seed settings table on first startup. Prefers env vars over hardcoded."""
+    """Seed missing settings on startup. Prefers env vars over hardcoded defaults."""
     from app.database import engine
     from app.models import Setting
 
     with Session(engine) as session:
-        existing = session.exec(select(Setting)).all()
-        if len(existing) == 0:
-            logger.info("Seeding settings table with defaults...")
-            for key, val in SYSTEM_DEFAULTS.items():
-                initial_val = os.environ.get(key, val)
+        existing_keys = {
+            record.setting_key for record in session.exec(select(Setting)).all()
+        }
+        missing = [key for key in SYSTEM_DEFAULTS if key not in existing_keys]
+        if missing:
+            logger.info("Seeding %d missing settings defaults...", len(missing))
+            for key in missing:
+                initial_val = os.environ.get(key, SYSTEM_DEFAULTS[key])
                 session.add(Setting(setting_key=key, setting_value=str(initial_val)))
             session.commit()
             _SETTINGS_CACHE.clear()

@@ -387,7 +387,20 @@ class SnapshotManager:
                     snap.host_config = h
                     self._snapshots[h.host_id] = snap
                 else:
-                    self._snapshots[h.host_id].host_config = h
+                    snap = self._snapshots[h.host_id]
+                    previous = snap.host_config
+                    connection_changed = bool(
+                        previous
+                        and (
+                            previous.agent_url != h.agent_url
+                            or previous.agent_token_encrypted != h.agent_token_encrypted
+                        )
+                    )
+                    snap.host_config = h
+                    if connection_changed:
+                        stale_client = self._agent_clients.pop(h.host_id, None)
+                        if stale_client is not None:
+                            await stale_client.close()
 
             # Spin up new loops
             self._running = True
@@ -887,7 +900,20 @@ class SnapshotManager:
                     snap.host_config = h
                     self._snapshots[h.host_id] = snap
                 else:
-                    self._snapshots[h.host_id].host_config = h
+                    snap = self._snapshots[h.host_id]
+                    previous = snap.host_config
+                    connection_changed = bool(
+                        previous
+                        and (
+                            previous.agent_url != h.agent_url
+                            or previous.agent_token_encrypted != h.agent_token_encrypted
+                        )
+                    )
+                    snap.host_config = h
+                    if connection_changed:
+                        stale_client = self._agent_clients.pop(h.host_id, None)
+                        if stale_client is not None:
+                            await stale_client.close()
 
     # ── Poll helpers ───────────────────────────────────────────────
 

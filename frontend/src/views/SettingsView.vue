@@ -113,6 +113,27 @@
                 </el-form-item>
               </div>
             </div>
+
+            <div class="form-cluster form-cluster--enrollment">
+              <div class="cluster-title">{{ t("settings.params.group.enrollment") }}</div>
+              <div class="settings-field-list">
+                <el-form-item prop="ENROLLMENT_AGENT_IMAGE" class="settings-field-row">
+                  <template #label>
+                    <span class="settings-field-label">{{ t("settings.params.agentImage") }}</span>
+                    <span class="settings-field-help">{{ t("settings.params.help.agentImage") }}</span>
+                  </template>
+                  <el-input v-model="paramsForm.ENROLLMENT_AGENT_IMAGE" class="mono-input" spellcheck="false" />
+                </el-form-item>
+
+                <el-form-item prop="ENROLLMENT_PROXY_IMAGE" class="settings-field-row">
+                  <template #label>
+                    <span class="settings-field-label">{{ t("settings.params.proxyImage") }}</span>
+                    <span class="settings-field-help">{{ t("settings.params.help.proxyImage") }}</span>
+                  </template>
+                  <el-input v-model="paramsForm.ENROLLMENT_PROXY_IMAGE" class="mono-input" spellcheck="false" />
+                </el-form-item>
+              </div>
+            </div>
           </el-form>
 
           <details class="settings-inline-details">
@@ -147,9 +168,14 @@
               <h3>{{ t("settings.sections.hosts") }}</h3>
               <p>{{ t("settings.hosts.count", { count: store.hosts.length }) }}</p>
             </div>
-            <el-button type="primary" class="ui-button ui-button--primary" :icon="Plus" @click="openCreateHostDialog">
-              {{ t("settings.hosts.add") }}
-            </el-button>
+            <div class="section-actions">
+              <el-button class="ui-button enrollment-launch" @click="openEnrollmentDialog">
+                <Rocket :size="16" />一键入网
+              </el-button>
+              <el-button type="primary" class="ui-button ui-button--primary" :icon="Plus" @click="openCreateHostDialog">
+                {{ t("settings.hosts.add") }}
+              </el-button>
+            </div>
           </div>
 
           <div class="table-frame">
@@ -414,6 +440,84 @@
     </div>
 
     <el-dialog
+      v-model="enrollmentDialogVisible"
+      title="Agent 一键入网"
+      width="min(760px, calc(100vw - 28px))"
+      custom-class="ui-dialog enrollment-dialog"
+      @closed="currentInstallCommand = ''"
+    >
+      <div class="enrollment-intro">
+        <div class="enrollment-intro-icon"><Rocket :size="24" /></div>
+        <div>
+          <strong>一条命令，把 Linux Host 加入 Fleetge</strong>
+          <p>先把下方子域名解析到目标 VPS。脚本会自动部署 Agent、Caddy、HTTPS 反代并等待主控完成配对。</p>
+        </div>
+      </div>
+
+      <el-form label-position="top" class="enrollment-form">
+        <el-form-item label="Agent 公网子域名">
+          <el-input v-model="enrollmentForm.agent_public_host" class="mono-input" placeholder="agent-vps-01.example.com" />
+          <div class="form-help">填写具体子域名，不要包含 https://、端口或路径；执行命令前需解析到目标 VPS。</div>
+        </el-form-item>
+        <el-form-item label="Dashboard URL">
+          <el-input v-model="enrollmentForm.dashboard_url" class="mono-input" placeholder="https://fleetge.example.com" />
+          <div v-if="enrollmentHttpWarning" class="enrollment-warning">公网 Dashboard 应使用 HTTPS；私网或本机 HTTP 可以继续。</div>
+        </el-form-item>
+        <el-collapse class="enrollment-advanced">
+          <el-collapse-item title="高级选项" name="advanced">
+            <div class="enrollment-option-grid">
+              <el-form-item label="Stack 根目录">
+                <el-input v-model="enrollmentForm.stack_root" class="mono-input" />
+              </el-form-item>
+              <el-form-item label="Agent 端口">
+                <el-input-number v-model="enrollmentForm.agent_port" :min="1" :max="65535" controls-position="right" />
+              </el-form-item>
+              <el-form-item label="Agent 镜像">
+                <el-input v-model="enrollmentForm.agent_image" class="mono-input" placeholder="使用服务端 ENROLLMENT_AGENT_IMAGE" />
+              </el-form-item>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+      </el-form>
+
+      <div v-if="currentInstallCommand" class="install-command-card">
+        <div class="install-command-head">
+          <span><ShieldCheck :size="16" />专属安装命令</span>
+          <strong><Clock3 :size="15" />{{ currentInvite ? remainingTime(currentInvite.expires_at) : '--:--' }}</strong>
+        </div>
+        <code>{{ currentInstallCommand }}</code>
+        <div class="install-command-actions">
+          <el-button type="primary" @click="copyInstallCommand"><Copy :size="15" />复制命令</el-button>
+          <el-button v-if="currentInvite && ['issued','downloaded','verifying','needs_url'].includes(currentInvite.status)" type="danger" plain @click="revokeInvite(currentInvite.invite_id)">撤销</el-button>
+        </div>
+      </div>
+
+      <div v-if="store.enrollmentInvites.length" class="invite-list">
+        <div class="invite-list-title">最近邀请</div>
+        <article v-for="invite in store.enrollmentInvites.slice(0, 6)" :key="invite.invite_id" class="invite-row">
+          <span class="invite-state" :class="invite.status"></span>
+          <div>
+            <strong>{{ enrollmentStatusLabel(invite.status) }}</strong>
+            <small>{{ invite.agent_public_url || invite.agent_public_host }} · {{ remainingTime(invite.expires_at) }}</small>
+            <p v-if="invite.failure_reason">{{ invite.failure_reason }}</p>
+          </div>
+          <div v-if="['needs_url','failed'].includes(invite.status)" class="invite-retry">
+            <el-button size="small" :loading="retryingInviteId === invite.invite_id" @click="retryInvite(invite.invite_id)">
+              <RotateCcw :size="14" />重新验证
+            </el-button>
+          </div>
+          <span v-else-if="invite.status === 'verifying'" class="invite-verifying"><LoaderCircle class="spin" :size="14" />持续验证中</span>
+          <el-button v-else-if="['issued','downloaded','verifying'].includes(invite.status)" size="small" type="danger" plain @click="revokeInvite(invite.invite_id)">撤销</el-button>
+        </article>
+      </div>
+
+      <template #footer>
+        <el-button @click="enrollmentDialogVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="creatingInvite" @click="generateEnrollmentInvite">生成邀请</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="hostDialogVisible"
       :title="hostFormMode === 'create' ? t('settings.hosts.create') : t('settings.hosts.edit')"
       width="640px"
@@ -673,7 +777,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, computed, watch } from "vue";
+import { ref, reactive, onMounted, onBeforeUnmount, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
@@ -699,10 +803,16 @@ import {
   Server,
   SlidersHorizontal,
   Wrench,
+  Clock3,
+  Copy,
+  Rocket,
+  RotateCcw,
+  ShieldCheck,
+  LoaderCircle,
 } from "@lucide/vue";
 import dayjs from "dayjs";
 import { apiClient } from "@/api/client";
-import { useSettingsStore, type HostConfigResponse, type AppProfileEntry } from "@/stores/settings";
+import { useSettingsStore, type HostConfigResponse, type AppProfileEntry, type EnrollmentStatus } from "@/stores/settings";
 import { useDashboardStore, type UpdateResult } from "@/stores/dashboard";
 import { useMobile } from "@/composables/useMobile";
 import UpdateBadge from "@/components/UpdateBadge.vue";
@@ -729,6 +839,127 @@ const dashboardStore = useDashboardStore();
 const { confirm, alert: confirmAlert } = useConfirm();
 const { isMobile } = useMobile();
 const appVersion = __APP_VERSION__;
+
+const enrollmentDialogVisible = ref(false);
+const creatingInvite = ref(false);
+const currentInviteId = ref("");
+const currentInstallCommand = ref("");
+const retryingInviteId = ref("");
+const enrollmentClock = ref(Date.now());
+let enrollmentClockTimer: ReturnType<typeof setInterval> | null = null;
+let enrollmentPollTimer: ReturnType<typeof setInterval> | null = null;
+const enrollmentForm = reactive({
+  dashboard_url: typeof window === "undefined" ? "" : window.location.origin,
+  agent_public_host: "",
+  stack_root: "/opt/stacks",
+  agent_port: 8080,
+  agent_image: "",
+});
+
+const currentInvite = computed(() =>
+  store.enrollmentInvites.find((item) => item.invite_id === currentInviteId.value) || null,
+);
+
+const enrollmentHttpWarning = computed(() => {
+  try {
+    const url = new URL(enrollmentForm.dashboard_url);
+    return url.protocol === "http:" && !["localhost", "127.0.0.1", "::1"].includes(url.hostname)
+      && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(url.hostname);
+  } catch {
+    return false;
+  }
+});
+
+function remainingTime(expiresAt: string) {
+  void enrollmentClock.value;
+  const left = Math.max(0, new Date(expiresAt).getTime() - Date.now());
+  if (!left) return "已过期";
+  const seconds = Math.ceil(left / 1000);
+  return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0");
+}
+
+function enrollmentStatusLabel(status: EnrollmentStatus) {
+  return ({
+    issued: "等待下载", downloaded: "正在安装", verifying: "验证 DNS / HTTPS", active: "已启用",
+    needs_url: "等待迁移", failed: "验证失败", expired: "已过期", revoked: "已撤销",
+  } as Record<EnrollmentStatus, string>)[status];
+}
+
+async function openEnrollmentDialog() {
+  enrollmentDialogVisible.value = true;
+  enrollmentForm.dashboard_url = window.location.origin;
+  try {
+    await store.fetchEnrollmentInvites();
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || error.message || "邀请列表加载失败");
+  }
+}
+
+async function generateEnrollmentInvite() {
+  if (!/^https?:\/\//.test(enrollmentForm.dashboard_url)) {
+    ElMessage.error("Dashboard URL 必须以 http:// 或 https:// 开头");
+    return;
+  }
+  if (!enrollmentForm.stack_root.startsWith("/")) {
+    ElMessage.error("Stack 根目录必须是 Linux 绝对路径");
+    return;
+  }
+  const publicHost = enrollmentForm.agent_public_host.trim().toLowerCase().replace(/\.$/, "");
+  if (!/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(publicHost)) {
+    ElMessage.error("请填写具体的 Agent 公网子域名，不要包含协议、端口或路径");
+    return;
+  }
+  creatingInvite.value = true;
+  try {
+    const invite = await store.createEnrollmentInvite({
+      dashboard_url: enrollmentForm.dashboard_url,
+      agent_public_host: publicHost,
+      stack_root: enrollmentForm.stack_root,
+      agent_port: enrollmentForm.agent_port,
+      agent_image: enrollmentForm.agent_image || undefined,
+    });
+    currentInviteId.value = invite.invite_id;
+    currentInstallCommand.value = invite.install_command || "";
+    ElMessage.success("一次性邀请已生成");
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || error.message || "生成邀请失败");
+  } finally {
+    creatingInvite.value = false;
+  }
+}
+
+async function copyInstallCommand() {
+  if (!currentInstallCommand.value) return;
+  try {
+    await navigator.clipboard.writeText(currentInstallCommand.value);
+    ElMessage.success("安装命令已复制");
+  } catch {
+    ElMessage.error("复制失败，请手动选择命令");
+  }
+}
+
+async function revokeInvite(inviteId: string) {
+  try {
+    await store.revokeEnrollmentInvite(inviteId);
+    if (currentInviteId.value === inviteId) currentInstallCommand.value = "";
+    ElMessage.success("邀请已撤销");
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || error.message || "撤销失败");
+  }
+}
+
+async function retryInvite(inviteId: string) {
+  retryingInviteId.value = inviteId;
+  try {
+    const result = await store.retryEnrollmentInvite(inviteId);
+    if (result.status === "active") ElMessage.success("Agent 已验证并启用");
+    else ElMessage.info(result.message || "主控已重新开始验证");
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || error.message || "重试失败");
+  } finally {
+    retryingInviteId.value = "";
+  }
+}
 
 const activeSection = ref<SettingsSectionId>("params");
 const validSections: SettingsSectionId[] = ["params", "hosts", "maintenance", "audit", "about"];
@@ -807,6 +1038,8 @@ const paramsForm = reactive<Record<string, any>>({
   UPDATE_CHECK_INTERVAL: 43200,
   ADMIN_USERNAME: "admin",
   JWT_EXPIRE_HOURS: 24,
+  ENROLLMENT_AGENT_IMAGE: "ghcr.io/virgooooox/fleetge-agent:latest",
+  ENROLLMENT_PROXY_IMAGE: "caddy:2-alpine",
 });
 
 const paramsFormRef = ref<FormInstance>();
@@ -820,6 +1053,8 @@ const paramsRules = reactive<FormRules>({
     { min: 3, message: t("settings.hosts.form.required.id"), trigger: "blur" },
   ],
   JWT_EXPIRE_HOURS: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+  ENROLLMENT_AGENT_IMAGE: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
+  ENROLLMENT_PROXY_IMAGE: [{ required: true, message: t("settings.hosts.form.required.id"), trigger: "blur" }],
 });
 
 const readonlyForm = reactive({
@@ -1507,6 +1742,15 @@ onMounted(() => {
   void store.fetchHosts();
   void fetchUpdateResults();
   void fetchLogs();
+  enrollmentClockTimer = setInterval(() => { enrollmentClock.value = Date.now(); }, 1000);
+  enrollmentPollTimer = setInterval(() => {
+    if (enrollmentDialogVisible.value) void store.fetchEnrollmentInvites().catch(() => undefined);
+  }, 5000);
+});
+
+onBeforeUnmount(() => {
+  if (enrollmentClockTimer) clearInterval(enrollmentClockTimer);
+  if (enrollmentPollTimer) clearInterval(enrollmentPollTimer);
 });
 </script>
 
@@ -2176,6 +2420,71 @@ onMounted(() => {
   word-break: break-all;
 }
 
+.enrollment-launch {
+  border-color: rgba(96, 165, 250, 0.38);
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.enrollment-intro {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 13px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid rgba(96, 165, 250, 0.18);
+  border-radius: 10px;
+  background: linear-gradient(120deg, rgba(59, 130, 246, 0.11), rgba(34, 211, 238, 0.035));
+}
+
+.enrollment-intro-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  color: #7dd3fc;
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.enrollment-intro strong { color: var(--text-primary); }
+.enrollment-intro p { margin: 5px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
+.enrollment-warning { margin-top: 6px; color: #fbbf24; font-size: 11px; }
+.enrollment-option-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(120px, .55fr); gap: 10px 14px; }
+.enrollment-option-grid > :last-child { grid-column: 1 / -1; }
+
+.install-command-card {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid rgba(34, 211, 238, 0.24);
+  border-radius: 10px;
+  background: #07111e;
+}
+
+.install-command-head,
+.install-command-head span,
+.install-command-head strong {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.install-command-head { justify-content: space-between; margin-bottom: 11px; color: #a5f3fc; font-size: 12px; }
+.install-command-head strong { color: #67e8f9; font-family: var(--font-mono); }
+.install-command-card code { display: block; max-height: 125px; overflow: auto; padding: 12px; border-radius: 7px; color: #dbeafe; background: #030712; font: 11px/1.65 var(--font-mono); word-break: break-all; }
+.install-command-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 11px; }
+
+.invite-list { display: grid; gap: 7px; margin-top: 18px; }
+.invite-list-title { margin-bottom: 2px; color: var(--text-muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.invite-row { display: grid; grid-template-columns: auto minmax(130px, 1fr) minmax(150px, auto); align-items: center; gap: 10px; padding: 10px 11px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-panel-raised); }
+.invite-state { width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
+.invite-state.issued,.invite-state.downloaded,.invite-state.verifying { background: #60a5fa; box-shadow: 0 0 9px rgba(96,165,250,.75); }
+.invite-state.active { background: #22d3ee; }.invite-state.needs_url { background: #fbbf24; }.invite-state.failed,.invite-state.expired,.invite-state.revoked { background: #f87171; }
+.invite-row strong,.invite-row small,.invite-row p { display: block; }.invite-row strong { color: var(--text-primary); font-size: 12px; }.invite-row small { margin-top: 3px; color: var(--text-muted); font: 10px var(--font-mono); }.invite-row p { margin: 4px 0 0; color: #fbbf24; font-size: 10px; }
+.invite-retry { display: flex; gap: 6px; min-width: 270px; }
+.invite-verifying { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; color: #93c5fd; font-size: 11px; white-space: nowrap; }
+
 @media (max-width: 1100px) {
   .settings-tabs {
     scrollbar-width: thin;
@@ -2204,6 +2513,12 @@ onMounted(() => {
   .settings-section {
     padding: 14px;
   }
+
+  .enrollment-option-grid,
+  .invite-row { grid-template-columns: 1fr; }
+  .enrollment-option-grid > :last-child { grid-column: auto; }
+  .invite-state { display: none; }
+  .invite-retry { min-width: 0; }
 
   :deep(.mobile-hidden) {
     display: none !important;

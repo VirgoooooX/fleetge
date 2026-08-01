@@ -20,8 +20,38 @@ export interface HostConfigResponse {
   sort_order: number;
   agent_url?: string;
   has_agent_token: boolean;
+  agent_instance_id?: string;
+  location_latitude?: number;
+  location_longitude?: number;
+  location_city?: string;
+  location_region?: string;
+  location_country?: string;
+  location_country_code?: string;
+  location_source?: string;
+  location_confirmed: boolean;
   stack_icons?: Record<string, string>;
   app_profiles?: AppProfileEntry[];
+}
+
+export type EnrollmentStatus =
+  | "issued" | "downloaded" | "verifying" | "active" | "needs_url"
+  | "failed" | "expired" | "revoked";
+
+export interface EnrollmentInvite {
+  invite_id: string;
+  status: EnrollmentStatus;
+  expires_at: string;
+  downloaded_at?: string;
+  completed_at?: string;
+  host_id?: string;
+  agent_instance_id: string;
+  agent_port: number;
+  stack_root: string;
+  agent_image: string;
+  agent_public_host: string;
+  agent_public_url: string;
+  failure_reason?: string;
+  install_command?: string;
 }
 
 export interface StackIconEntry {
@@ -49,6 +79,7 @@ export const useSettingsStore = defineStore("settings", () => {
   const loading = ref(false);
   const saving = ref(false);
   const error = ref("");
+  const enrollmentInvites = ref<EnrollmentInvite[]>([]);
 
   async function fetchSettings() {
     loading.value = true;
@@ -243,6 +274,36 @@ export const useSettingsStore = defineStore("settings", () => {
     }
   }
 
+  async function fetchEnrollmentInvites() {
+    const res = await apiClient.get("/api/admin/enrollment-invites");
+    enrollmentInvites.value = res.data || [];
+    return enrollmentInvites.value;
+  }
+
+  async function createEnrollmentInvite(data: {
+    dashboard_url: string;
+    agent_public_host: string;
+    stack_root: string;
+    agent_port: number;
+    agent_image?: string;
+  }): Promise<EnrollmentInvite> {
+    const res = await apiClient.post("/api/admin/enrollment-invites", data);
+    enrollmentInvites.value = [res.data, ...enrollmentInvites.value];
+    return res.data;
+  }
+
+  async function revokeEnrollmentInvite(inviteId: string): Promise<EnrollmentInvite> {
+    const res = await apiClient.delete(`/api/admin/enrollment-invites/${inviteId}`);
+    await fetchEnrollmentInvites();
+    return res.data;
+  }
+
+  async function retryEnrollmentInvite(inviteId: string) {
+    const res = await apiClient.post(`/api/admin/enrollment-invites/${inviteId}/retry`, {});
+    await Promise.all([fetchEnrollmentInvites(), fetchHosts()]);
+    return res.data;
+  }
+
   async function fetchAppProfiles(hostId: string): Promise<{ profiles: AppProfileEntry[]; available_files: string[] }> {
     try {
       const res = await apiClient.get(`/api/admin/hosts/${hostId}/app-profiles`);
@@ -269,6 +330,7 @@ export const useSettingsStore = defineStore("settings", () => {
     loading,
     saving,
     error,
+    enrollmentInvites,
     fetchSettings,
     saveSettings,
     fetchHosts,
@@ -284,5 +346,9 @@ export const useSettingsStore = defineStore("settings", () => {
     uploadIcon,
     fetchGlobalEnv,
     saveGlobalEnv,
+    fetchEnrollmentInvites,
+    createEnrollmentInvite,
+    revokeEnrollmentInvite,
+    retryEnrollmentInvite,
   };
 });

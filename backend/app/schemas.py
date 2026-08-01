@@ -313,6 +313,15 @@ class HostConfigResponse(BaseModel):
     sort_order: int
     agent_url: Optional[str] = None
     has_agent_token: bool = False     # masked: only show whether token exists
+    agent_instance_id: Optional[str] = None
+    location_latitude: Optional[float] = None
+    location_longitude: Optional[float] = None
+    location_city: Optional[str] = None
+    location_region: Optional[str] = None
+    location_country: Optional[str] = None
+    location_country_code: Optional[str] = None
+    location_source: Optional[str] = None
+    location_confirmed: bool = False
     stack_icons: Optional[dict[str, str]] = None  # parsed JSON mapping
     app_profiles: Optional[list[AppProfileEntry]] = None
 
@@ -321,6 +330,76 @@ class ConnectionTestResponse(BaseModel):
     success: bool
     response_time_ms: int
     message: str
+
+
+# ── Enrollment ──────────────────────────────────────────────────────────
+
+class EnrollmentInviteCreateRequest(BaseModel):
+    dashboard_url: Optional[str] = None
+    agent_public_host: str
+    stack_root: str = "/opt/stacks"
+    agent_port: int = 8080
+    agent_image: Optional[str] = None
+
+
+class EnrollmentInviteResponse(BaseModel):
+    invite_id: str
+    status: str
+    expires_at: datetime
+    downloaded_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    host_id: Optional[str] = None
+    agent_instance_id: str
+    agent_port: int
+    stack_root: str
+    agent_image: str
+    agent_public_host: str
+    agent_public_url: str
+    failure_reason: Optional[str] = None
+    install_command: Optional[str] = None
+
+
+class EnrollmentClaimRequest(BaseModel):
+    claim_token: str
+    hostname: str
+    instance_id: str
+    agent_public_host: str
+    geolocation: Optional[dict] = None
+
+
+class EnrollmentClaimResponse(BaseModel):
+    status: str
+    host_id: Optional[str] = None
+    agent_url: Optional[str] = None
+    agent_public_url: Optional[str] = None
+    location: Optional[dict] = None
+    message: str = ""
+
+
+class EnrollmentRetryRequest(BaseModel):
+    pass
+
+
+class HostLocationRequest(BaseModel):
+    city: Optional[str] = None
+    region: Optional[str] = None
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    source: str = "manual"
+    confirmed: bool = True
+
+
+class FleetMapSettingsRequest(BaseModel):
+    name: str = "Fleetge Control Center"
+    city: Optional[str] = None
+    region: Optional[str] = None
+    country: Optional[str] = None
+    country_code: Optional[str] = None
+    latitude: float
+    longitude: float
+    confirmed: bool = True
 
 
 # ── Stack Icons ─────────────────────────────────────────────────────────

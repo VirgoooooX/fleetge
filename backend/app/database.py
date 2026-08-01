@@ -46,6 +46,26 @@ def create_engine_and_tables():
                     conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN agent_token_encrypted TEXT")
                 if "app_profiles" not in columns:
                     conn.exec_driver_sql("ALTER TABLE host_config ADD COLUMN app_profiles TEXT")
+                host_config_columns = {
+                    "agent_instance_id": "TEXT",
+                    "location_latitude": "REAL",
+                    "location_longitude": "REAL",
+                    "location_city": "TEXT",
+                    "location_region": "TEXT",
+                    "location_country": "TEXT",
+                    "location_country_code": "TEXT",
+                    "location_source": "TEXT",
+                    "location_confirmed": "BOOLEAN DEFAULT 0",
+                }
+                for column_name, column_ddl in host_config_columns.items():
+                    if column_name not in columns:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE host_config ADD COLUMN {column_name} {column_ddl}"
+                        )
+                conn.exec_driver_sql(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_host_config_agent_instance_id "
+                    "ON host_config(agent_instance_id) WHERE agent_instance_id IS NOT NULL"
+                )
         except Exception as exc:
             # Table might not exist yet; create_all will handle it
             pass
@@ -80,9 +100,23 @@ def create_engine_and_tables():
         conn.commit()
 
     # Import models so SQLModel.metadata knows about them before create_all
-    from app.models import HostConfig, AuditLog, ImageUpdateCache, Setting  # noqa: F401
+    from app.models import HostConfig, AuditLog, ImageUpdateCache, Setting, EnrollmentInvite  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
+    with engine.connect() as conn:
+        invite_columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(enrollment_invite)").fetchall()]
+        if invite_columns:
+            if "agent_public_host" not in invite_columns:
+                conn.exec_driver_sql("ALTER TABLE enrollment_invite ADD COLUMN agent_public_host TEXT DEFAULT ''")
+            if "location_payload" not in invite_columns:
+                conn.exec_driver_sql("ALTER TABLE enrollment_invite ADD COLUMN location_payload TEXT")
+            conn.commit()
+    with engine.connect() as conn:
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_host_config_agent_instance_id "
+            "ON host_config(agent_instance_id) WHERE agent_instance_id IS NOT NULL"
+        )
+        conn.commit()
     return engine
 
 

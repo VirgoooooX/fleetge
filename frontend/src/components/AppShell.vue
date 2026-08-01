@@ -162,13 +162,15 @@
             @click="store.refreshAll"
           />
           <el-button
-            class="ops-control ui-icon-button ops-settings-topbar-btn"
+            class="ops-control ui-button ui-button--compact ops-settings-topbar-btn"
             :class="{ active: route.name === 'settings' }"
             size="small"
-            :icon="Settings"
             :aria-label="t('nav.settings')"
             @click="router.push({ name: 'settings' })"
-          />
+          >
+            <el-icon><Settings /></el-icon>
+            {{ t('nav.settings') }}
+          </el-button>
           <el-button class="ops-control ui-button ui-button--compact ui-button--muted ops-desktop-tool" size="small" @click="logout">
             <el-icon><LogOut /></el-icon>
             {{ t('shell.logout') }}
@@ -200,6 +202,7 @@ import {
   Grid,
   Plus,
   Server,
+  Map as MapIcon,
 } from "@lucide/vue";
 import AppLogo from "@/components/AppLogo.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
@@ -243,6 +246,7 @@ const currentHost = computed(() => {
 
 const navItems = computed(() => [
   { id: "dashboard", label: t("nav.dashboard"), path: "/", icon: Home, badge: null, badgeTone: null },
+  { id: "fleet-map", label: t("nav.map"), path: "/map", icon: MapIcon, badge: null, badgeTone: null },
   { id: "apps", label: t("nav.apps"), path: "/apps", icon: Grid, badge: null, badgeTone: null },
 ]);
 
@@ -252,6 +256,7 @@ const pageTitle = computed(() => {
   }
   if (route.name === "settings") return t("nav.settings");
   if (route.name === "apps") return t("apps.title");
+  if (route.name === "fleet-map") return t("nav.map");
   return t("nav.dashboard");
 });
 
@@ -589,10 +594,23 @@ function logout() {
 }
 
 .ops-settings-topbar-btn.active {
-  border-color: var(--nav-active-border);
-  background: var(--nav-active-bg);
-  color: var(--text-primary);
+  border-color: var(--nav-active-border) !important;
+  background: var(--nav-active-bg) !important;
+  color: var(--accent-blue) !important;
   box-shadow: var(--nav-active-shadow);
+}
+
+.ops-settings-topbar-btn {
+  border-color: color-mix(in srgb, var(--accent-blue) 28%, transparent) !important;
+  background: color-mix(in srgb, var(--accent-blue) 9%, var(--pill-bg)) !important;
+  color: color-mix(in srgb, var(--accent-blue) 82%, var(--text-secondary)) !important;
+}
+
+.ops-settings-topbar-btn:hover,
+.ops-settings-topbar-btn:focus-visible {
+  border-color: color-mix(in srgb, var(--accent-blue) 46%, transparent) !important;
+  background: color-mix(in srgb, var(--accent-blue) 15%, var(--pill-bg)) !important;
+  color: var(--accent-blue) !important;
 }
 
 .ops-control {

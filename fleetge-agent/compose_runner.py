@@ -4,6 +4,7 @@ import shutil
 import asyncio
 import json
 import uuid
+import socket
 from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -13,6 +14,8 @@ STACKS_BASE_DIR = os.environ.get("STACKS_BASE_DIR", "/opt/stacks")
 FLEETGE_STACK_NAME = os.environ.get("FLEETGE_STACK_NAME", "").strip()
 FLEETGE_AGENT_SERVICE = os.environ.get("FLEETGE_AGENT_SERVICE", "").strip()
 FLEETGE_UPDATER_IMAGE = os.environ.get("FLEETGE_UPDATER_IMAGE", "").strip()
+AGENT_INSTANCE_ID = os.environ.get("AGENT_INSTANCE_ID", "").strip()
+AGENT_VERSION = os.environ.get("AGENT_VERSION", "").strip()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -328,12 +331,14 @@ async def _get_agent_self_info() -> dict:
     stacks_host_path, stacks_container_path = _host_mount_for_path(inspect, STACKS_BASE_DIR)
 
     return {
+        "instance_id": AGENT_INSTANCE_ID,
+        "hostname": socket.gethostname(),
         "container_id": container_id[:12] if container_id else "",
         "stack_name": stack_name,
         "service_name": service_name,
         "stack_path": stack_path,
         "image": image,
-        "version": labels.get("org.opencontainers.image.version") or "",
+        "version": AGENT_VERSION or labels.get("org.opencontainers.image.version") or "",
         "revision": labels.get("org.opencontainers.image.revision") or "",
         "stacks_base_dir": os.path.realpath(STACKS_BASE_DIR),
         "stacks_host_path": stacks_host_path,

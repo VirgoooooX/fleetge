@@ -5,6 +5,7 @@ import DashboardView from "@/views/DashboardView.vue";
 import HostDetailView from "@/views/HostDetailView.vue";
 import SettingsView from "@/views/SettingsView.vue";
 import AppsView from "@/views/AppsView.vue";
+const FleetMapView = () => import("@/views/FleetMapView.vue");
 
 const router = createRouter({
   history: createWebHistory(),
@@ -16,6 +17,7 @@ const router = createRouter({
     { path: "/audit", redirect: { name: "settings", query: { section: "audit" } } },
     { path: "/settings", name: "settings", component: SettingsView, meta: { requiresAuth: true } },
     { path: "/apps", name: "apps", component: AppsView, meta: { requiresAuth: true } },
+    { path: "/map", name: "fleet-map", component: FleetMapView, meta: { requiresAuth: true } },
     { path: "/:pathMatch(.*)*", redirect: "/" },
   ],
 });

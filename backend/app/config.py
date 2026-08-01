@@ -54,6 +54,26 @@ class Settings:
         "HOST_CONFIG_PATH", str(_ROOT / "data" / "hosts.yaml")
     )
 
+    # Images used by generated one-command enrollment scripts.  These are
+    # DB-backed runtime settings so administrators can change them without
+    # editing the Dashboard compose file. Environment variables remain a
+    # bootstrap fallback for existing deployments.
+    @property
+    def ENROLLMENT_AGENT_IMAGE(self) -> str:
+        from app.services.settings_service import get_setting_value
+        return get_setting_value(
+            "ENROLLMENT_AGENT_IMAGE",
+            os.environ.get("ENROLLMENT_AGENT_IMAGE", "ghcr.io/virgooooox/fleetge-agent:latest"),
+        )
+
+    @property
+    def ENROLLMENT_PROXY_IMAGE(self) -> str:
+        from app.services.settings_service import get_setting_value
+        return get_setting_value(
+            "ENROLLMENT_PROXY_IMAGE",
+            os.environ.get("ENROLLMENT_PROXY_IMAGE", "caddy:2-alpine"),
+        )
+
     # ── Poll intervals (seconds) ──────────────────────────────────────
     @property
     def METRICS_STREAM_INTERVAL(self) -> float:

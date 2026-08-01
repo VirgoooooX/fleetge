@@ -1,4 +1,4 @@
-"""SQLModel ORM models for HostConfig and AuditLog."""
+"""SQLModel ORM models for Fleetge configuration and audit data."""
 
 from datetime import datetime, timezone
 from typing import Optional
@@ -20,6 +20,18 @@ class HostConfig(SQLModel, table=True):
     # Fleetge Agent fields (primary)
     agent_url: Optional[str] = Field(default=None)
     agent_token_encrypted: Optional[str] = Field(default=None)
+    # Stable identity reported by the agent. Nullable for legacy/manual hosts.
+    agent_instance_id: Optional[str] = Field(default=None, index=True)
+
+    # Normalized, user-confirmable geographic location used by Fleet Map.
+    location_latitude: Optional[float] = Field(default=None)
+    location_longitude: Optional[float] = Field(default=None)
+    location_city: Optional[str] = Field(default=None)
+    location_region: Optional[str] = Field(default=None)
+    location_country: Optional[str] = Field(default=None)
+    location_country_code: Optional[str] = Field(default=None)
+    location_source: Optional[str] = Field(default=None)  # ipwho.is | manual | dashboard
+    location_confirmed: bool = False
 
     # Stack icon mapping — JSON string: {"stack_name": "icon_url_or_path"}
     stack_icons: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
@@ -93,6 +105,39 @@ class Setting(SQLModel, table=True):
 
     setting_key: str = Field(primary_key=True, max_length=255)
     setting_value: str = Field(default="", sa_column=Column(Text, nullable=False))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+    )
+
+
+class EnrollmentInvite(SQLModel, table=True):
+    """Single-use, short-lived enrollment invitation state."""
+
+    __tablename__ = "enrollment_invite"
+
+    id: int = Field(primary_key=True, default=None)
+    invite_id: str = Field(unique=True, index=True)
+    install_token_hash: str = Field(index=True)
+    claim_token_hash: str = Field(index=True)
+    agent_token_encrypted: Optional[str] = Field(default=None)
+    secret_path: Optional[str] = Field(default=None)
+    agent_public_host: str = ""
+    agent_instance_id: str = Field(index=True)
+    hostname: Optional[str] = None
+    location_payload: Optional[str] = None
+    agent_port: int = 8080
+    stack_root: str = "/opt/stacks"
+    agent_image: str = ""
+    dashboard_url: str = ""
+    status: str = "issued"  # issued/downloaded/verifying/active/needs_url/failed/expired/revoked
+    expires_at: datetime
+    downloaded_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    host_id: Optional[str] = None
+    failure_reason: Optional[str] = None
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
