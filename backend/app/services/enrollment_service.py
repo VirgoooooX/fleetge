@@ -99,6 +99,63 @@ def normalize_geolocation(raw: object) -> dict | None:
     }
 
 
+def resolve_request_source_ip(request) -> str | None:
+    """Honor forwarded client IPs only from explicitly trusted proxy peers."""
+    peer = request.client.host if request.client else None
+    if not peer:
+        return None
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+    except ValueError:
+        return peer
+    trusted = []
+    for raw in get_settings().TRUSTED_PROXY_CIDRS.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            trusted.append(ipaddress.ip_network(raw, strict=False))
+        except ValueError:
+            continue
+    if not any(peer_ip in network for network in trusted):
+        return peer_ip.compressed
+    candidates = []
+    forwarded = request.headers.get("forwarded", "")
+    for group in forwarded.split(","):
+        for token in group.split(";"):
+            if token.strip().lower().startswith("for="):
+                candidates.append(token.split("=", 1)[1].strip().strip('"'))
+    candidates.extend(part.strip() for part in request.headers.get("x-forwarded-for", "").split(",") if part.strip())
+
+    parsed_chain = []
+    for candidate in candidates:
+        try:
+            candidate = candidate.strip().strip('"')
+            if candidate.startswith("[") and "]" in candidate:
+                candidate = candidate[1:candidate.index("]")]
+            elif candidate.count(":") == 1 and candidate.rsplit(":", 1)[1].isdigit():
+                candidate = candidate.rsplit(":", 1)[0]
+            parsed_chain.append(ipaddress.ip_address(candidate))
+        except ValueError:
+            continue
+
+    # Walk from the nearest hop towards the original client. A spoofed
+    # left-most value cannot win unless every proxy to its right is trusted.
+    for address in reversed([*parsed_chain, peer_ip]):
+        if any(address in network for network in trusted):
+            continue
+        return address.compressed
+
+    # CF-Connecting-IP is accepted only when the immediate trusted peer is a
+    # public CDN address, never merely because a local reverse proxy is trusted.
+    if peer_ip.is_global and request.headers.get("cf-connecting-ip"):
+        try:
+            return ipaddress.ip_address(request.headers["cf-connecting-ip"].strip()).compressed
+        except ValueError:
+            pass
+    return peer_ip.compressed
+
+
 def _envelope(invite_id: str, claim_token: str) -> str:
     payload = json.dumps(
         {"invite_id": invite_id, "claim_token": claim_token, "issued_at": utc_now().isoformat()},
@@ -131,8 +188,7 @@ def _compose_text() -> str:
   fleetge-agent:
     image: $ENROLLMENT_AGENT_IMAGE
     restart: unless-stopped
-    ports:
-      - "127.0.0.1:$AGENT_PORT:8080"
+    network_mode: host
     env_file:
       - .env
     environment:
@@ -141,6 +197,13 @@ def _compose_text() -> str:
       AGENT_INSTANCE_ID: $AGENT_INSTANCE_ID
       STACKS_BASE_DIR: /opt/stacks
       AGENT_VERSION: $AGENT_VERSION
+      PORT: $AGENT_PORT
+      AGENT_BIND_HOST: 127.0.0.1
+      METRICS_ACTIVE_INTERVAL: 2
+      METRICS_IDLE_TIMEOUT: 15
+      TRAFFIC_IDLE_INTERVAL: 60
+      TRAFFIC_INTERFACES: auto
+      AGENT_STATE_DIR: /opt/stacks/.fleetge
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - $STACK_ROOT:/opt/stacks
@@ -149,9 +212,7 @@ def _compose_text() -> str:
     restart: unless-stopped
     depends_on:
       - fleetge-agent
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -166,7 +227,7 @@ volumes:
 def _caddyfile_text(invite: EnrollmentInvite) -> str:
     return f"""{invite.agent_public_host} {{
     encode gzip
-    reverse_proxy fleetge-agent:8080
+    reverse_proxy 127.0.0.1:{invite.agent_port}
 }}
 """
 
@@ -257,7 +318,8 @@ docker compose --env-file "$INSTALL_DIR/.env" -f "$INSTALL_DIR/compose.yaml" up 
 AGENT_TOKEN_VALUE=$(sed -n 's/^AGENT_TOKEN=//p' "$INSTALL_DIR/.env")
 i=0
 while [ "$i" -lt 30 ]; do
-  if curl -fsSL --max-time 2 -H "Authorization: Bearer $AGENT_TOKEN_VALUE" "$AGENT_HEALTH_URL" >/dev/null 2>&1; then break; fi
+  if env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+    curl --noproxy '*' -fsSL --max-time 2 -H "Authorization: Bearer $AGENT_TOKEN_VALUE" "$AGENT_HEALTH_URL" >/dev/null 2>&1; then break; fi
   i=$((i + 1)); sleep 1
 done
 [ "$i" -lt 30 ] || fail "Agent 健康检查超时"
@@ -265,13 +327,22 @@ done
 HOSTNAME_VALUE=$(hostname 2>/dev/null || uname -n)
 INSTANCE_ID=$(sed -n 's/^AGENT_INSTANCE_ID=//p' "$INSTALL_DIR/.env")
 AGENT_PUBLIC_HOST=$(sed -n 's/^AGENT_PUBLIC_HOST=//p' "$INSTALL_DIR/.env")
-GEO=$(curl -fsSL --max-time 8 'https://ipwho.is/?fields=success,city,region,country,country_code,latitude,longitude' 2>/dev/null || true)
-CLAIM_RESULT=$(curl -fsSL --max-time 20 -X POST "$CLAIM_URL" \
+if CLAIM_RESULT=$(env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  curl --noproxy '*' -fsSL --max-time 20 -X POST "$CLAIM_URL" \
   -F "claim_token=$CLAIM_TOKEN" \
   -F "hostname=$HOSTNAME_VALUE" \
   -F "instance_id=$INSTANCE_ID" \
   -F "agent_public_host=$AGENT_PUBLIC_HOST" \
-  --form-string "geolocation=$GEO") || fail "Dashboard 回连失败；请检查 Dashboard URL 和网络"
+  -F "callback_mode=direct"); then
+  :
+else
+  CLAIM_RESULT=$(curl -fsSL --max-time 20 -X POST "$CLAIM_URL" \
+    -F "claim_token=$CLAIM_TOKEN" \
+    -F "hostname=$HOSTNAME_VALUE" \
+    -F "instance_id=$INSTANCE_ID" \
+    -F "agent_public_host=$AGENT_PUBLIC_HOST" \
+    -F "callback_mode=proxy_fallback") || fail "Dashboard 回连失败；请检查 Dashboard URL 和网络"
+fi
 STATE=$(printf '%s' "$CLAIM_RESULT" | sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p')
 [ -n "$STATE" ] || fail "Dashboard 未返回入网状态"
 if [ "$STATE" = "active" ]; then log "Agent 已启动并完成入网"; exit 0; fi
@@ -475,6 +546,7 @@ def location_for_host(host: HostConfig) -> dict | None:
         "country_code": host.location_country_code,
         "source": host.location_source,
         "confirmed": bool(host.location_confirmed),
+        "confidence": host.location_confidence,
     }
 
 
@@ -498,15 +570,8 @@ async def activate_or_update_host(
     existing.agent_url = agent_url.rstrip("/") + "/" + (invite.secret_path or "").strip("/")
     existing.agent_token_encrypted = invite.agent_token_encrypted
     existing.agent_instance_id = instance_id
-    if location:
-        existing.location_latitude = location.get("latitude")
-        existing.location_longitude = location.get("longitude")
-        existing.location_city = location.get("city")
-        existing.location_region = location.get("region")
-        existing.location_country = location.get("country")
-        existing.location_country_code = location.get("country_code")
-        existing.location_source = location.get("source") or "ipwho.is"
-        existing.location_confirmed = bool(location.get("confirmed", False))
+    existing.enrollment_callback_ip = invite.callback_ip
+    existing.enrollment_callback_mode = invite.callback_mode
     invite.host_id = existing.host_id
     invite.status = "active"
     invite.completed_at = utc_now()

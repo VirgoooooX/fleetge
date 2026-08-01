@@ -225,6 +225,21 @@ const sidebarOpen = ref(false);
 watch(isMobile, (val) => { if (!val) sidebarOpen.value = false; });
 watch(() => route.fullPath, () => { sidebarOpen.value = false; });
 
+function applyRouteDemand() {
+  if (route.name === "dashboard") {
+    store.startPolling({ metrics: true, structureInterval: 30 });
+  } else if (route.name === "host-detail") {
+    store.startPolling({ metrics: true, structureInterval: 10 });
+  } else if (route.name === "apps") {
+    store.startPolling({ metrics: false, structureInterval: 10 });
+  } else {
+    store.stopPolling();
+    void store.fetchHosts();
+  }
+}
+
+watch(() => route.name, applyRouteDemand);
+
 const { t, locale } = useI18n();
 
 const themeIcon = computed(() => (theme.current.value === "dark" ? Sun : Moon));
@@ -303,7 +318,7 @@ function startResize(e: MouseEvent) {
 let trackerMouseMove: ((e: MouseEvent) => void) | null = null;
 
 onMounted(() => {
-  store.startPolling(15000);
+  applyRouteDemand();
   
   const shell = document.querySelector(".ops-shell") as HTMLElement;
   trackerMouseMove = (e: MouseEvent) => {

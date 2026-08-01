@@ -17,7 +17,7 @@ _SETTINGS_CACHE: dict[str, str] = {}
 
 SYSTEM_DEFAULTS = {
     "DOCKER_POLL_INTERVAL": "10",
-    "METRICS_STREAM_INTERVAL": "1",
+    "METRICS_STREAM_INTERVAL": "2",
     "BACKGROUND_STRUCTURE_REFRESH_INTERVAL": "3600",
     "UPDATE_CHECK_INTERVAL": "43200",
     "ADMIN_USERNAME": "admin",
@@ -97,14 +97,24 @@ def populate_defaults_if_empty() -> None:
     from app.models import Setting
 
     with Session(engine) as session:
-        existing_keys = {
-            record.setting_key for record in session.exec(select(Setting)).all()
-        }
+        existing_records = {record.setting_key: record for record in session.exec(select(Setting)).all()}
+        existing_keys = set(existing_records)
+        # 1 second was the former baked-in default and causes duplicate cached
+        # Agent snapshots. Align untouched legacy defaults with the 2s collector.
+        legacy_metrics = existing_records.get("METRICS_STREAM_INTERVAL")
+        legacy_metrics_changed = bool(legacy_metrics and legacy_metrics.setting_value == "1")
+        if legacy_metrics_changed:
+            legacy_metrics.setting_value = "2"
+            session.add(legacy_metrics)
         missing = [key for key in SYSTEM_DEFAULTS if key not in existing_keys]
         if missing:
             logger.info("Seeding %d missing settings defaults...", len(missing))
             for key in missing:
                 initial_val = os.environ.get(key, SYSTEM_DEFAULTS[key])
                 session.add(Setting(setting_key=key, setting_value=str(initial_val)))
+        if missing or legacy_metrics_changed:
             session.commit()
-            _SETTINGS_CACHE.clear()
+            if missing:
+                _SETTINGS_CACHE.clear()
+            else:
+                _SETTINGS_CACHE.pop("METRICS_STREAM_INTERVAL", None)

@@ -34,7 +34,8 @@ services:
       # 轮询间隔（秒），有默认值，可按需调整
       # ═══════════════════════════════════════════════════════════
       # SSE 指标推送到前端的间隔，默认 1 秒
-      METRICS_STREAM_INTERVAL: 1
+      METRICS_STREAM_INTERVAL: 2
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       # 有前端连接时 Docker 容器/Stack 结构刷新间隔，默认 10 秒
       DOCKER_POLL_INTERVAL: 10
       # 无前端连接时的空闲结构刷新间隔，默认 3600 秒（1 小时）

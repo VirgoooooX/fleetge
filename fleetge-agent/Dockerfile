@@ -14,10 +14,16 @@ COPY . .
 
 # Default configuration environment variables
 ENV PORT=8080
+ENV AGENT_BIND_HOST=0.0.0.0
 ENV STACKS_BASE_DIR=/opt/stacks
+ENV AGENT_STATE_DIR=/opt/stacks/.fleetge
+ENV METRICS_ACTIVE_INTERVAL=2
+ENV METRICS_IDLE_TIMEOUT=15
+ENV TRAFFIC_IDLE_INTERVAL=60
+ENV TRAFFIC_INTERFACES=auto
 ENV AGENT_TOKEN=""
 ENV AGENT_REQUIRE_TOKEN=true
 
 EXPOSE 8080
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "-c", "exec python -m uvicorn main:app --host \"${AGENT_BIND_HOST:-0.0.0.0}\" --port \"${PORT:-8080}\""]

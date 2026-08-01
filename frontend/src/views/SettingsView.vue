@@ -1033,7 +1033,7 @@ function setSection(section: SettingsSectionId) {
 
 const paramsForm = reactive<Record<string, any>>({
   DOCKER_POLL_INTERVAL: 10,
-  METRICS_STREAM_INTERVAL: 1,
+  METRICS_STREAM_INTERVAL: 2,
   BACKGROUND_STRUCTURE_REFRESH_INTERVAL: 3600,
   UPDATE_CHECK_INTERVAL: 43200,
   ADMIN_USERNAME: "admin",

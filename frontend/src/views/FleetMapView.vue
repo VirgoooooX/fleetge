@@ -196,6 +196,41 @@
               </div>
               <div class="drawer-meta"><span><Activity :size="14" />{{ statusLabel(selectedHost.status) }}</span><span><Clock3 :size="14" />{{ selectedHost.last_seen ? formatTime(selectedHost.last_seen) : t("map.noRefreshRecord") }}</span></div>
             </section>
+            <section class="inspector-panel identity-panel">
+              <div class="inspector-section-heading">
+                <div><span>{{ t("map.identityKicker") }}</span><h3>{{ t("map.networkIdentity") }}</h3></div>
+                <span class="identity-confidence" :class="{ conflict: networkIdentity?.conflict }">
+                  {{ networkIdentity?.conflict ? t("map.identityConflict") : (networkIdentity?.confidence || t("map.identityUnknown")) }}
+                </span>
+              </div>
+              <div class="identity-effective">
+                <span>{{ t("map.effectivePublicIp") }}</span>
+                <strong>{{ networkIdentity?.effectiveIp || t("map.identityUnresolved") }}</strong>
+                <small>{{ networkIdentity?.effectiveSource || "—" }}</small>
+              </div>
+              <div v-if="networkIdentity?.locationDrift" class="identity-drift">
+                <TriangleAlert :size="14" />{{ t("map.identityDrift") }}
+              </div>
+              <div class="identity-evidence-list">
+                <div v-for="row in identityCategoryRows" :key="row.key" class="identity-evidence-row">
+                  <div><strong>{{ row.label }}</strong><small>{{ row.status }}</small></div>
+                  <code>{{ row.addresses || "—" }}</code>
+                  <small v-if="row.reason" class="identity-reason">{{ row.reason }}</small>
+                </div>
+              </div>
+              <div class="identity-override-row">
+                <el-input v-model="ipOverride" :placeholder="t('map.fixedIpPlaceholder')" clearable />
+                <button class="ui-button" type="button" :disabled="overrideSaving" @click="saveIpOverride">{{ t("map.applyFixedIp") }}</button>
+              </div>
+              <div class="identity-actions">
+                <button class="ui-button" type="button" :disabled="identityRefreshing" @click="refreshIdentity(true)">
+                  <LoaderCircle v-if="identityRefreshing" class="spin" :size="14" />
+                  <LocateFixed v-else :size="14" />{{ t("map.refreshIdentity") }}
+                </button>
+                <button v-if="networkIdentity?.fixedOverride" class="ui-button" type="button" :disabled="overrideSaving" @click="clearIpOverride">{{ t("map.clearFixedIp") }}</button>
+                <span v-if="networkIdentity?.observedAt" class="identity-checked"><Clock3 :size="13" />{{ formatTime(networkIdentity.observedAt) }}</span>
+              </div>
+            </section>
             <section class="inspector-panel">
               <div class="inspector-section-heading"><div><span>{{ t("map.stacksKicker") }}</span><h3>{{ t("map.appStacks") }}</h3></div><b>{{ selectedHost.stacks.length }}</b></div>
               <div v-if="selectedHost.stacks.length" class="stack-list">
@@ -248,6 +283,9 @@ const suggesting = ref(false);
 const savingLocation = ref(false);
 const autoLocating = ref(false);
 const citySearching = ref(false);
+const identityRefreshing = ref(false);
+const overrideSaving = ref(false);
+const ipOverride = ref("");
 const cityResults = ref<FleetLocationSearchResult[]>([]);
 let citySearchTimer: ReturnType<typeof setTimeout> | null = null;
 const locationForm = reactive({
@@ -263,6 +301,25 @@ const locationForm = reactive({
 const selectedHost = computed(() =>
   store.snapshot?.hosts.find((host) => host.host_id === selectedHostId.value) || null
 );
+const networkIdentity = computed(() => selectedHost.value?.network_identity || null);
+const identityCategoryRows = computed(() => {
+  const categories = networkIdentity.value?.categories || {};
+  return [
+    { key: "agent", label: t("map.identityAgent") },
+    { key: "callback", label: t("map.identityCallback") },
+    { key: "dns", label: t("map.identityDns") },
+  ].map(({ key, label }) => {
+    const item = categories[key] || {};
+    const addresses = item.eligibleAddresses?.length ? item.eligibleAddresses : item.addresses;
+    return {
+      key,
+      label,
+      status: item.status || t("map.identityUnknown"),
+      addresses: addresses?.join(", ") || "",
+      reason: [...(item.excludedReasons || []), item.excludedReason || ""].filter(Boolean).join(", "),
+    };
+  });
+});
 const drawerHosts = computed(() => {
   const ids = new Set(drawerHostIds.value);
   return (store.snapshot?.hosts || []).filter((host) => ids.has(host.host_id));
@@ -374,6 +431,38 @@ function diskPercent(metrics: Record<string, any> | null | undefined) {
 
 function formatTime(value: string) {
   return new Intl.DateTimeFormat(locale.value, { dateStyle: "short", timeStyle: "medium" }).format(new Date(value));
+}
+
+async function refreshIdentity(force = true) {
+  if (!selectedHost.value || identityRefreshing.value) return;
+  identityRefreshing.value = true;
+  try {
+    const evidence = await store.refreshNetworkIdentity(selectedHost.value.host_id, force);
+    ipOverride.value = evidence.fixedOverride || "";
+    if (force) ElMessage.success(t("map.identityRefreshed"));
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || t("map.identityRefreshFailed"));
+  } finally {
+    identityRefreshing.value = false;
+  }
+}
+
+async function saveIpOverride() {
+  if (!selectedHost.value) return;
+  overrideSaving.value = true;
+  try {
+    await store.setNetworkIdentityOverride(selectedHost.value.host_id, ipOverride.value.trim() || null);
+    ElMessage.success(t("map.fixedIpSaved"));
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || t("map.fixedIpInvalid"));
+  } finally {
+    overrideSaving.value = false;
+  }
+}
+
+async function clearIpOverride() {
+  ipOverride.value = "";
+  await saveIpOverride();
 }
 
 function openCenterEditor() {
@@ -546,6 +635,15 @@ onMounted(() => {
   );
 });
 
+watch(
+  () => selectedHost.value?.host_id,
+  (hostId) => {
+    if (!hostId) return;
+    ipOverride.value = networkIdentity.value?.fixedOverride || "";
+    if (!networkIdentity.value) void refreshIdentity(false);
+  },
+);
+
 onBeforeUnmount(() => {
   store.stopPolling();
   if (citySearchTimer) clearTimeout(citySearchTimer);
@@ -602,6 +700,14 @@ onBeforeUnmount(() => {
 .metric-grid strong { display: block; margin-top: 6px; color: var(--text-primary); font: 700 16px var(--font-mono); }
 .drawer-meta { display: flex; gap: 15px; margin-top: 11px; padding-top: 11px; border-top: 1px solid var(--border-subtle); color: var(--text-muted); font-size: var(--text-xs); }
 .drawer-meta span { display: flex; align-items: center; gap: 5px; }
+.identity-panel { display:grid; gap:11px; }
+.identity-confidence { padding:4px 7px; border-radius:999px; color:var(--accent-cyan); background:color-mix(in srgb,var(--accent-cyan) 10%,transparent); font:700 var(--text-2xs) var(--font-mono); }
+.identity-confidence.conflict { color:var(--warning); background:color-mix(in srgb,var(--warning) 10%,transparent); }
+.identity-effective { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 10px; padding:11px; border:1px solid var(--border-subtle); border-radius:var(--ui-radius-md); background:var(--surface-panel-raised); }
+.identity-effective span,.identity-effective small { color:var(--text-muted); font-size:var(--text-2xs); }.identity-effective strong{font:700 var(--text-sm) var(--font-mono)}.identity-effective small{grid-column:1/-1}
+.identity-evidence-list{display:grid;gap:6px}.identity-evidence-row{display:grid;grid-template-columns:90px minmax(0,1fr);gap:5px 9px;padding:8px;border-bottom:1px solid var(--border-subtle)}.identity-evidence-row div{display:grid}.identity-evidence-row small{color:var(--text-muted);font-size:var(--text-2xs)}.identity-evidence-row code{overflow:hidden;color:var(--text-secondary);font-size:var(--text-2xs);text-overflow:ellipsis}.identity-reason{grid-column:2}
+.identity-override-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.identity-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.identity-checked{display:flex;align-items:center;gap:4px;margin-left:auto;color:var(--text-muted);font-size:var(--text-2xs)}
+.identity-drift{display:flex;align-items:center;gap:7px;padding:8px;border-radius:var(--ui-radius-md);color:var(--warning);background:color-mix(in srgb,var(--warning) 8%,transparent);font-size:var(--text-xs)}
 .status-pill { padding: 5px 8px; border-radius: 999px; color: var(--accent-cyan) !important; background: color-mix(in srgb, var(--accent-cyan) 10%, transparent); letter-spacing: 0 !important; }
 .status-pill.degraded { color: var(--warning) !important; background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .status-pill.offline,.status-pill.unknown { color: var(--danger) !important; background: color-mix(in srgb, var(--danger) 10%, transparent); }

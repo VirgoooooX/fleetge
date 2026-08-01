@@ -36,14 +36,27 @@ class HostMetrics(BaseModel):
     diskTotal: int
     networkRxBytes: int = 0
     networkTxBytes: int = 0
-    networkRxRate: float = 0.0
-    networkTxRate: float = 0.0
+    networkRxRate: Optional[float] = None
+    networkTxRate: Optional[float] = None
+    networkRxTotalBytes: int = 0
+    networkTxTotalBytes: int = 0
+    networkScope: str = "container"
+    networkSelectionMode: str = "legacy"
+    networkInterfaces: list[str] = Field(default_factory=list)
+    networkCounterEpoch: str = "legacy"
+    counterReset: bool = False
+    hasGap: bool = False
+    persistenceAvailable: bool = False
     diskReadBytes: int = 0
     diskWriteBytes: int = 0
-    diskReadRate: float = 0.0
-    diskWriteRate: float = 0.0
+    diskReadRate: Optional[float] = None
+    diskWriteRate: Optional[float] = None
     loadavg: list[float]
     uptime: int
+    collectorState: str = "active"
+    sampleAgeSeconds: Optional[float] = None
+    metricsActiveInterval: Optional[float] = None
+    trafficIdleInterval: Optional[float] = None
     _warnings: Optional[dict] = None
 
 
@@ -322,6 +335,11 @@ class HostConfigResponse(BaseModel):
     location_country_code: Optional[str] = None
     location_source: Optional[str] = None
     location_confirmed: bool = False
+    location_confidence: Optional[str] = None
+    public_ip_effective: Optional[str] = None
+    public_ip_source: Optional[str] = None
+    public_ip_override: Optional[str] = None
+    network_identity_checked_at: Optional[datetime] = None
     stack_icons: Optional[dict[str, str]] = None  # parsed JSON mapping
     app_profiles: Optional[list[AppProfileEntry]] = None
 

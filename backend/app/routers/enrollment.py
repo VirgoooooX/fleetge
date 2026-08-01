@@ -28,6 +28,7 @@ from app.services.enrollment_service import (
     decode_install_token,
     expire_invite_if_needed,
     normalize_geolocation,
+    resolve_request_source_ip,
     normalize_public_host,
     normalize_url,
     render_install_script,
@@ -249,6 +250,7 @@ async def claim_enrollment(
     instance_id: str = Form(...),
     agent_public_host: str = Form(...),
     geolocation: str = Form(""),
+    callback_mode: str = Form("unknown"),
     session: Session = Depends(get_session),
 ):
     response.headers["Cache-Control"] = "no-store"
@@ -261,6 +263,8 @@ async def claim_enrollment(
             location = normalize_geolocation(json.loads(geolocation))
         except (ValueError, TypeError):
             location = None
+    if location:
+        location["source"] = "legacy_untrusted"
     async with _claim_lock:
         invite = session.exec(select(EnrollmentInvite).where(EnrollmentInvite.claim_token_hash == token_hash(claim_token))).first()
         if invite is None:
@@ -279,6 +283,8 @@ async def claim_enrollment(
         invite.agent_instance_id = instance_id.strip()
         invite.failure_reason = None
         invite.location_payload = json.dumps(location, ensure_ascii=False) if location else None
+        invite.callback_ip = resolve_request_source_ip(request)
+        invite.callback_mode = callback_mode if callback_mode in {"direct", "proxy_fallback"} else "unknown"
         session.commit()
     enrollment_monitor.wake()
     return EnrollmentClaimResponse(

@@ -8,8 +8,8 @@ services:
     image: ghcr.io/virgooooox/fleetge-agent:latest
     container_name: fleetge-agent
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # Host networking is required so psutil sees the Host WAN namespace.
+    network_mode: host
     environment:
       # ═══════════════════════════════════════════════════════════
       # 必填 — 部署前修改
@@ -23,12 +23,24 @@ services:
       AGENT_SECRET_PATH: /replace-with-random-path
       # Compose 文件存放的宿主机目录
       STACKS_BASE_DIR: /opt/stacks
+      # Host 网络下的 Agent 监听端口；有冲突时保持原映射使用的 Host 端口。
+      PORT: 8080
+      # 经过宿主机反代时设为 127.0.0.1，避免 Host 网络意外暴露 Agent 端口。
+      AGENT_BIND_HOST: 0.0.0.0
 
       # ═══════════════════════════════════════════════════════════
       # 可选 — 有默认值，可按需调整
       # ═══════════════════════════════════════════════════════════
-      # psutil 指标采集间隔，默认 5 秒
-      COLLECT_INTERVAL: 5
+      # 前端活跃时的 Host 指标/流量采集间隔，默认 2 秒
+      METRICS_ACTIVE_INTERVAL: 2
+      # 最后一个 Metrics 请求离开多久后休眠 Telemetry
+      METRICS_IDLE_TIMEOUT: 15
+      # 空闲时 WAN 流量保底采样间隔
+      TRAFFIC_IDLE_INTERVAL: 60
+      # auto=默认路由接口；也可显式填写 pppoe-wan,eth0
+      TRAFFIC_INTERFACES: auto
+      # 流量账本目录（位于已持久化的 /opt/stacks 挂载中）
+      AGENT_STATE_DIR: /opt/stacks/.fleetge
       # 监控的磁盘挂载点，逗号分隔，默认 /
       DISK_PATHS: /
       # 日志级别: DEBUG / INFO / WARNING / ERROR，默认 INFO

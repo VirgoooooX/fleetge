@@ -56,6 +56,14 @@ def create_engine_and_tables():
                     "location_country_code": "TEXT",
                     "location_source": "TEXT",
                     "location_confirmed": "BOOLEAN DEFAULT 0",
+                    "location_confidence": "TEXT",
+                    "public_ip_effective": "TEXT",
+                    "public_ip_source": "TEXT",
+                    "public_ip_override": "TEXT",
+                    "network_identity_evidence": "TEXT",
+                    "network_identity_checked_at": "TIMESTAMP",
+                    "enrollment_callback_ip": "TEXT",
+                    "enrollment_callback_mode": "TEXT",
                 }
                 for column_name, column_ddl in host_config_columns.items():
                     if column_name not in columns:
@@ -66,7 +74,7 @@ def create_engine_and_tables():
                     "CREATE UNIQUE INDEX IF NOT EXISTS uq_host_config_agent_instance_id "
                     "ON host_config(agent_instance_id) WHERE agent_instance_id IS NOT NULL"
                 )
-        except Exception as exc:
+        except Exception:
             # Table might not exist yet; create_all will handle it
             pass
 
@@ -100,7 +108,16 @@ def create_engine_and_tables():
         conn.commit()
 
     # Import models so SQLModel.metadata knows about them before create_all
-    from app.models import HostConfig, AuditLog, ImageUpdateCache, Setting, EnrollmentInvite  # noqa: F401
+    from app.models import (  # noqa: F401
+        AuditLog,
+        EnrollmentInvite,
+        HostConfig,
+        HostTrafficBucket,
+        HostTrafficCursor,
+        HostTrafficDaily,
+        ImageUpdateCache,
+        Setting,
+    )
 
     SQLModel.metadata.create_all(engine)
     with engine.connect() as conn:
@@ -110,6 +127,10 @@ def create_engine_and_tables():
                 conn.exec_driver_sql("ALTER TABLE enrollment_invite ADD COLUMN agent_public_host TEXT DEFAULT ''")
             if "location_payload" not in invite_columns:
                 conn.exec_driver_sql("ALTER TABLE enrollment_invite ADD COLUMN location_payload TEXT")
+            if "callback_ip" not in invite_columns:
+                conn.exec_driver_sql("ALTER TABLE enrollment_invite ADD COLUMN callback_ip TEXT")
+            if "callback_mode" not in invite_columns:
+                conn.exec_driver_sql("ALTER TABLE enrollment_invite ADD COLUMN callback_mode TEXT")
             conn.commit()
     with engine.connect() as conn:
         conn.exec_driver_sql(

@@ -3,7 +3,6 @@
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from sqlmodel import Session, select
@@ -56,6 +55,7 @@ def load_hosts_from_yaml() -> int:
 
             agent = entry.get("agent", {})
             location = entry.get("location", {}) or {}
+            network_identity = entry.get("network_identity", {}) or {}
 
             # 1. Fetch existing host config first
             existing = session.exec(
@@ -93,6 +93,9 @@ def load_hosts_from_yaml() -> int:
                     existing.location_country_code = location.get("country_code") or None
                     existing.location_source = location.get("source") or "manual"
                     existing.location_confirmed = bool(location.get("confirmed", False))
+                    existing.location_confidence = location.get("confidence") or existing.location_confidence
+                if "fixed_public_ip" in network_identity:
+                    existing.public_ip_override = network_identity.get("fixed_public_ip") or None
                 # Stack icons
                 stack_icons = entry.get("stack_icons")
                 existing.stack_icons = json.dumps(stack_icons, ensure_ascii=False) if stack_icons else None
@@ -116,6 +119,8 @@ def load_hosts_from_yaml() -> int:
                     location_country_code=location.get("country_code") or None,
                     location_source=location.get("source") or None,
                     location_confirmed=bool(location.get("confirmed", False)),
+                    location_confidence=location.get("confidence") or None,
+                    public_ip_override=network_identity.get("fixed_public_ip") or None,
                     stack_icons=json.dumps(stack_icons, ensure_ascii=False) if (stack_icons := entry.get("stack_icons")) else None,
                     app_profiles=json.dumps(app_profiles, ensure_ascii=False) if (app_profiles := entry.get("app_profiles")) else None,
                 )

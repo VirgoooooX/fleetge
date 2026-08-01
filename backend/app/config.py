@@ -5,7 +5,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-import yaml
 
 # Auto-load .env from project root (works whether cwd is backend/ or project root)
 _ROOT = Path(__file__).resolve().parent.parent.parent  # backend/app/ → backend/ → root
@@ -78,7 +77,7 @@ class Settings:
     @property
     def METRICS_STREAM_INTERVAL(self) -> float:
         from app.services.settings_service import get_setting_value
-        return float(get_setting_value("METRICS_STREAM_INTERVAL", "1"))
+        return float(get_setting_value("METRICS_STREAM_INTERVAL", "2"))
 
     @property
     def DOCKER_POLL_INTERVAL(self) -> int:
@@ -103,6 +102,9 @@ class Settings:
     # Default: empty (same-origin only via nginx), set to
     # "http://127.0.0.1:5173,http://localhost:5173" for dev.
     CORS_ORIGINS: str = os.environ.get("CORS_ORIGINS", "")
+
+    # Only peers in these CIDRs may supply Forwarded/X-Forwarded-For client IPs.
+    TRUSTED_PROXY_CIDRS: str = os.environ.get("TRUSTED_PROXY_CIDRS", "")
 
     def validate(self):
         errors: list[str] = []

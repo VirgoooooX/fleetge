@@ -32,6 +32,17 @@ class HostConfig(SQLModel, table=True):
     location_country_code: Optional[str] = Field(default=None)
     location_source: Optional[str] = Field(default=None)  # ipwho.is | manual | dashboard
     location_confirmed: bool = False
+    location_confidence: Optional[str] = Field(default=None)
+
+    # Public network identity evidence. Public IPs are intentionally kept out
+    # of routine logs and exposed only through authenticated APIs.
+    public_ip_effective: Optional[str] = Field(default=None)
+    public_ip_source: Optional[str] = Field(default=None)
+    public_ip_override: Optional[str] = Field(default=None)
+    network_identity_evidence: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    network_identity_checked_at: Optional[datetime] = None
+    enrollment_callback_ip: Optional[str] = Field(default=None)
+    enrollment_callback_mode: Optional[str] = Field(default=None)
 
     # Stack icon mapping — JSON string: {"stack_name": "icon_url_or_path"}
     stack_icons: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
@@ -126,6 +137,8 @@ class EnrollmentInvite(SQLModel, table=True):
     agent_instance_id: str = Field(index=True)
     hostname: Optional[str] = None
     location_payload: Optional[str] = None
+    callback_ip: Optional[str] = None
+    callback_mode: Optional[str] = None
     agent_port: int = 8080
     stack_root: str = "/opt/stacks"
     agent_image: str = ""
@@ -142,3 +155,49 @@ class EnrollmentInvite(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
     )
+
+
+class HostTrafficBucket(SQLModel, table=True):
+    __tablename__ = "host_traffic_bucket"
+    __table_args__ = (
+        UniqueConstraint("host_id", "ledger_id", "agent_bucket_id", name="uq_host_traffic_agent_bucket"),
+    )
+
+    id: int = Field(primary_key=True, default=None)
+    host_id: str = Field(index=True)
+    ledger_id: str = Field(index=True)
+    agent_bucket_id: int = Field(index=True)
+    bucket_start: datetime = Field(index=True)
+    bucket_seconds: int = 300
+    counter_epoch: str = Field(index=True)
+    rx_bytes: int = 0
+    tx_bytes: int = 0
+    has_gap: bool = False
+    counter_reset: bool = False
+    interfaces_json: str = Field(default="[]", sa_column=Column(Text, nullable=False))
+    synced_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class HostTrafficDaily(SQLModel, table=True):
+    __tablename__ = "host_traffic_daily"
+    __table_args__ = (
+        UniqueConstraint("host_id", "day_utc", name="uq_host_traffic_daily"),
+    )
+
+    id: int = Field(primary_key=True, default=None)
+    host_id: str = Field(index=True)
+    day_utc: str = Field(index=True)
+    rx_bytes: int = 0
+    tx_bytes: int = 0
+    has_gap: bool = False
+    bucket_count: int = 0
+
+
+class HostTrafficCursor(SQLModel, table=True):
+    __tablename__ = "host_traffic_cursor"
+
+    host_id: str = Field(primary_key=True)
+    cursor: int = 0
+    ledger_id: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
+    last_error: Optional[str] = None

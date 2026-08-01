@@ -81,6 +81,8 @@
     <!-- No metrics warning -->
     <el-alert v-else-if="host" :title="t('hostDetail.metricsUnavailable')" type="warning" show-icon :closable="false" class="metric-warning" />
 
+    <HostTrafficPanel v-if="host" :host-id="hostId" :metrics="host.metrics" />
+
     <HostStackWorkspace
       v-if="host"
       :host-id="hostId"
@@ -110,6 +112,7 @@ import {
   type UpdateResult,
 } from "@/stores/dashboard";
 import HostMetricsBar from "@/components/HostMetricsBar.vue";
+import HostTrafficPanel from "@/components/HostTrafficPanel.vue";
 import HostStackWorkspace from "@/components/HostStackWorkspace.vue";
 
 const route = useRoute();
@@ -181,7 +184,7 @@ function formatRate(bytesPerSec: number): string {
   return `${size.toFixed(1)}${units[i]}`;
 }
 
-function formatRateParts(bytesPerSec: number | undefined): { amount: string; unit: string } {
+function formatRateParts(bytesPerSec: number | null | undefined): { amount: string; unit: string } {
   const bytes = Math.abs(bytesPerSec || 0);
   if (bytes === 0) return { amount: "0", unit: "B/s" };
 

@@ -110,7 +110,7 @@ ADMIN_PASSWORD=replace_with_strong_admin_password
 DATABASE_URL=sqlite:////app/data/dashboard-local.db
 HOST_CONFIG_PATH=/app/data/hosts.yaml
 
-METRICS_STREAM_INTERVAL=1
+METRICS_STREAM_INTERVAL=2
 DOCKER_POLL_INTERVAL=10
 BACKGROUND_STRUCTURE_REFRESH_INTERVAL=3600
 UPDATE_CHECK_INTERVAL=43200
@@ -148,8 +148,7 @@ services:
     image: ghcr.io/virgooooox/fleetge-agent:latest
     container_name: fleetge-agent
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    network_mode: host
     environment:
       AGENT_TOKEN: replace-with-a-long-random-token
       AGENT_SECRET_PATH: /replace-with-random-path
@@ -161,8 +160,14 @@ services:
       AGENT_ENABLE_PRUNE: "false"
       AGENT_ENABLE_SELF_UPDATE: "true"
       STACKS_BASE_DIR: /opt/stacks
+      PORT: "8080"
+      AGENT_BIND_HOST: 0.0.0.0
       DISK_PATHS: /
-      COLLECT_INTERVAL: "5"
+      METRICS_ACTIVE_INTERVAL: "2"
+      METRICS_IDLE_TIMEOUT: "15"
+      TRAFFIC_IDLE_INTERVAL: "60"
+      TRAFFIC_INTERFACES: auto
+      AGENT_STATE_DIR: /opt/stacks/.fleetge
       AGENT_LOG_LEVEL: INFO
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -187,12 +192,13 @@ docker compose up -d
 | `ADMIN_PASSWORD` | 必填 | 管理员登录密码。 |
 | `DATABASE_URL` | `sqlite:////app/data/dashboard-local.db` | SQLAlchemy 数据库连接 URI，支持 SQLite/PostgreSQL 等。 |
 | `HOST_CONFIG_PATH` | `/app/data/hosts.yaml` | 主机配置文件路径。 |
-| `METRICS_STREAM_INTERVAL` | `1` | SSE 指标推送间隔，单位秒，范围 `0.5` 到 `10.0`。 |
+| `METRICS_STREAM_INTERVAL` | `2` | 共享 SSE 指标广播间隔，单位秒，范围 `0.5` 到 `10.0`。 |
 | `DOCKER_POLL_INTERVAL` | `10` | 前端在线时 Docker 容器与 Stack 结构刷新间隔，单位秒。 |
 | `BACKGROUND_STRUCTURE_REFRESH_INTERVAL` | `3600` | 前端离线时后台结构刷新间隔，单位秒，范围 `60` 到 `86400`。 |
 | `UPDATE_CHECK_INTERVAL` | `43200` | 系统和镜像更新检测缓存时间，单位秒，范围 `3600` 到 `172800`。 |
 | `JWT_EXPIRE_HOURS` | `24` | 登录会话有效期，单位小时，范围 `1` 到 `720`。 |
 | `CORS_ORIGINS` | 空 | 允许的跨域来源，多个值用逗号分隔，留空表示同源。 |
+| `TRUSTED_PROXY_CIDRS` | 空 | 允许提供真实回调来源头的反向代理 CIDR；未配置时忽略转发头。 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug`、`info`、`warning`、`error`。 |
 
 ### Agent
@@ -210,8 +216,15 @@ docker compose up -d
 | `AGENT_ENABLE_PRUNE` | `false` | 是否允许执行 Docker prune。 |
 | `AGENT_ENABLE_SELF_UPDATE` | `true` | 是否允许 Agent 自更新相关操作。 |
 | `STACKS_BASE_DIR` | `/opt/stacks` | Compose Stack 在受管主机上的目录。 |
+| `PORT` | `8080` | Agent 监听端口；Host 网络模式下必须避开宿主机已有监听。 |
+| `AGENT_BIND_HOST` | `0.0.0.0` | Agent 绑定地址；使用宿主机反代时设为 `127.0.0.1`。 |
 | `DISK_PATHS` | `/` | 需要监控的磁盘挂载点，多个值用逗号分隔。 |
-| `COLLECT_INTERVAL` | `5` | Agent 指标采集间隔，单位秒。 |
+| `METRICS_ACTIVE_INTERVAL` | `2` | 有 Metrics 请求时的 Host Telemetry 与实时流量采样间隔。 |
+| `METRICS_IDLE_TIMEOUT` | `15` | 最后一次 Metrics 请求后进入 Telemetry 休眠的等待秒数。 |
+| `TRAFFIC_IDLE_INTERVAL` | `60` | Telemetry 休眠时 WAN 流量保底采样间隔。 |
+| `TRAFFIC_INTERFACES` | `auto` | `auto` 选择默认路由接口，也可填写逗号分隔的接口名。 |
+| `AGENT_STATE_DIR` | `/opt/stacks/.fleetge` | 五分钟流量账本的持久化目录。 |
+| `COLLECT_INTERVAL` | 空 | 旧版兼容别名；仅在未设置 `METRICS_ACTIVE_INTERVAL` 时生效。 |
 | `AGENT_LOG_LEVEL` | `INFO` | Agent 日志级别。 |
 
 ## 从源码构建

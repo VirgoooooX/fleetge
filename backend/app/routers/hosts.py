@@ -2,15 +2,13 @@
 
 import asyncio
 import json
-import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.responses import StreamingResponse
 
 from app.auth.handler import get_current_user
-from app.config import get_settings
-from app.schemas import DockerInfo, DockerDiskUsage, HostMetrics, HostListResponse, AppSummary
+from app.schemas import HostListResponse, AppSummary
 from app.services.snapshot import snapshot_manager
 
 router = APIRouter(prefix="/api", tags=["hosts"], dependencies=[Depends(get_current_user)])
@@ -220,27 +218,51 @@ def _sse_event(event: str, payload: dict) -> str:
 
 
 @router.get("/hosts/metrics/stream")
-async def host_metrics_stream():
-    """Stream refreshed host metrics for live dashboard cards."""
-    settings = get_settings()
-    interval = max(settings.METRICS_STREAM_INTERVAL, 0.5)
+async def host_metrics_stream(structure_interval: float | None = Query(None, ge=5, le=3600)):
+    """Subscribe to the process-wide shared metrics broadcaster."""
 
     async def generate():
-        snapshot_manager.increment_connections()
+        queue = snapshot_manager.add_metrics_subscriber()
+        lease = snapshot_manager.register_structure_lease(structure_interval) if structure_interval else None
         try:
+            yield _sse_event("hosts", snapshot_manager.current_metrics_payload())
             while True:
-                summaries = await snapshot_manager.refresh_metrics_now()
-                yield _sse_event(
-                    "hosts",
-                    {
-                        "hosts": [summary.model_dump() for summary in summaries],
-                        "updated": time.time(),
-                    },
-                )
-                await asyncio.sleep(interval)
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield _sse_event("hosts", payload)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
         except asyncio.CancelledError:
             raise
         finally:
-            snapshot_manager.decrement_connections()
+            snapshot_manager.remove_metrics_subscriber(queue)
+            snapshot_manager.unregister_structure_lease(lease)
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.get("/hosts/activity/stream")
+async def host_activity_stream(structure_interval: float = Query(10, ge=5, le=3600)):
+    """Hold a route-aware Docker structure lease without waking Host telemetry."""
+
+    async def generate():
+        lease = snapshot_manager.register_structure_lease(structure_interval)
+        try:
+            yield _sse_event("activity", {"structureInterval": structure_interval})
+            while True:
+                await asyncio.sleep(15.0)
+                yield ": keepalive\n\n"
+        except asyncio.CancelledError:
+            raise
+        finally:
+            snapshot_manager.unregister_structure_lease(lease)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import urllib.parse
-from typing import Any, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 import httpx
 import websockets
 
@@ -71,6 +71,33 @@ class AgentClient:
         r = await self._client.get("/api/agent/metrics", headers=self._headers())
         r.raise_for_status()
         return HostMetrics(**r.json())
+
+    async def get_traffic_current(self, *, activate: bool = False) -> dict:
+        r = await self._client.get(
+            "/api/agent/traffic/current",
+            params={"activate": str(bool(activate)).lower()},
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def get_traffic_history(self, cursor: int = 0, limit: int = 1000) -> dict:
+        r = await self._client.get(
+            "/api/agent/traffic/history",
+            params={"cursor": max(0, int(cursor)), "limit": min(max(int(limit), 1), 2000)},
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def get_network_identity(self, *, refresh: bool = False) -> dict:
+        r = await self._client.get(
+            "/api/agent/network-identity",
+            params={"refresh": str(bool(refresh)).lower()},
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
 
     # ── 2. Docker Proxy API ──────────────────────────────────────────
 

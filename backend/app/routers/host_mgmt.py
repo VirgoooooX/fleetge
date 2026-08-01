@@ -138,6 +138,11 @@ def _to_response_model(h: HostConfig) -> HostConfigResponse:
         location_country_code=h.location_country_code,
         location_source=h.location_source,
         location_confirmed=h.location_confirmed,
+        location_confidence=h.location_confidence,
+        public_ip_effective=h.public_ip_effective,
+        public_ip_source=h.public_ip_source,
+        public_ip_override=h.public_ip_override,
+        network_identity_checked_at=h.network_identity_checked_at,
         stack_icons=stack_icons_parsed,
         app_profiles=app_profiles_parsed,
     )

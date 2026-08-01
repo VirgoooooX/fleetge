@@ -17,14 +17,24 @@ export interface HostSummary {
     diskTotal: number;
     networkRxBytes: number;
     networkTxBytes: number;
-    networkRxRate: number;
-    networkTxRate: number;
+    networkRxRate: number | null;
+    networkTxRate: number | null;
+    networkRxTotalBytes?: number;
+    networkTxTotalBytes?: number;
+    networkScope?: "host_wan" | "container" | "unknown";
+    networkSelectionMode?: string;
+    networkInterfaces?: string[];
+    networkCounterEpoch?: string;
+    counterReset?: boolean;
+    hasGap?: boolean;
     diskReadBytes: number;
     diskWriteBytes: number;
-    diskReadRate: number;
-    diskWriteRate: number;
+    diskReadRate: number | null;
+    diskWriteRate: number | null;
     loadavg: number[];
     uptime: number;
+    collectorState?: "active" | "warming" | "idle";
+    sampleAgeSeconds?: number;
   };
   docker_version?: string;
   api_version?: string;
@@ -157,7 +167,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let updatePollTimer: ReturnType<typeof setTimeout> | null = null;
   let metricsStreamController: AbortController | null = null;
+  let activityStreamController: AbortController | null = null;
   let visibilityHandler: (() => void) | null = null;
+  let pollingOptions: { metrics: boolean; structureInterval?: number } = { metrics: true, structureInterval: 30 };
 
   function applyUpdateResults(results: UpdateResult[]) {
     updateResults.value = results || [];
@@ -173,7 +185,19 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   function applyHosts(nextHosts: HostSummary[]) {
-    hosts.value = nextHosts || [];
+    const previous = new Map(hosts.value.map((host) => [host.host_id, host]));
+    hosts.value = (nextHosts || []).map((host) => {
+      const old = previous.get(host.host_id);
+      const nextKey = host.metrics
+        ? `${host.metrics.timestamp}|${host.metrics.networkCounterEpoch || "legacy"}`
+        : "";
+      const oldKey = old?.metrics
+        ? `${old.metrics.timestamp}|${old.metrics.networkCounterEpoch || "legacy"}`
+        : "";
+      return old?.metrics && host.metrics && oldKey === nextKey
+        ? { ...host, metrics: old.metrics }
+        : host;
+    });
   }
 
   function upsertHost(nextHost: HostSummary) {
@@ -257,7 +281,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     metricsStreamController = controller;
 
     void streamSse({
-      url: "/api/hosts/metrics/stream",
+      url: `/api/hosts/metrics/stream${pollingOptions.structureInterval ? `?structure_interval=${pollingOptions.structureInterval}` : ""}`,
       signal: controller.signal,
       onEvent: (ev) => {
         if (ev.event !== "hosts") return;
@@ -285,6 +309,26 @@ export const useDashboardStore = defineStore("dashboard", () => {
       metricsStreamController.abort();
       metricsStreamController = null;
     }
+  }
+
+  function startActivityStream() {
+    if (activityStreamController || document.hidden || !pollingOptions.structureInterval) return;
+    const controller = new AbortController();
+    activityStreamController = controller;
+    void streamSse({
+      url: `/api/hosts/activity/stream?structure_interval=${pollingOptions.structureInterval}`,
+      signal: controller.signal,
+      onEvent: () => undefined,
+    }).catch((e: any) => {
+      if (!controller.signal.aborted) console.warn("Activity stream failed:", e);
+    }).finally(() => {
+      if (activityStreamController === controller) activityStreamController = null;
+    });
+  }
+
+  function stopActivityStream() {
+    activityStreamController?.abort();
+    activityStreamController = null;
   }
 
   async function fetchUpdateChecks(includeFailures = false) {
@@ -334,9 +378,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
-  function startPolling(intervalMs = 15000) {
+  function startPolling(options: { metrics?: boolean; structureInterval?: number } = {}) {
     stopPolling();
-    const hostPollInterval = Math.max(intervalMs, 15000);
+    pollingOptions = {
+      metrics: options.metrics !== false,
+      structureInterval: options.structureInterval,
+    };
+    const hostPollInterval = Math.max((options.structureInterval || 30) * 1000, 30000);
 
     pollTimer = setInterval(() => {
       // Pause when tab is hidden
@@ -348,14 +396,16 @@ export const useDashboardStore = defineStore("dashboard", () => {
       if (!document.hidden) {
         fetchUpdateChecks();
       }
-    }, Math.max(intervalMs, 60000));
+    }, 60000);
 
     visibilityHandler = () => {
       if (document.hidden) {
         stopMetricsStream();
+        stopActivityStream();
       } else {
         fetchHosts();
-        startMetricsStream();
+        if (pollingOptions.metrics) startMetricsStream();
+        else startActivityStream();
       }
     };
     document.addEventListener("visibilitychange", visibilityHandler);
@@ -364,11 +414,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // The SSE connection triggers the backend to switch from 1h → 10s structure polling.
     fetchHosts();
     fetchUpdateChecks();
-    startMetricsStream();
+    if (pollingOptions.metrics) startMetricsStream();
+    else startActivityStream();
   }
 
   function stopPolling() {
     stopMetricsStream();
+    stopActivityStream();
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;

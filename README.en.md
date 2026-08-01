@@ -105,7 +105,7 @@ ADMIN_PASSWORD=replace_with_strong_admin_password
 DATABASE_URL=sqlite:////app/data/dashboard-local.db
 HOST_CONFIG_PATH=/app/data/hosts.yaml
 
-METRICS_STREAM_INTERVAL=1
+METRICS_STREAM_INTERVAL=2
 DOCKER_POLL_INTERVAL=10
 BACKGROUND_STRUCTURE_REFRESH_INTERVAL=3600
 UPDATE_CHECK_INTERVAL=43200
@@ -143,8 +143,7 @@ services:
     image: ghcr.io/virgooooox/fleetge-agent:latest
     container_name: fleetge-agent
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    network_mode: host
     environment:
       AGENT_TOKEN: replace-with-a-long-random-token
       AGENT_SECRET_PATH: /replace-with-random-path
@@ -156,8 +155,14 @@ services:
       AGENT_ENABLE_PRUNE: "false"
       AGENT_ENABLE_SELF_UPDATE: "true"
       STACKS_BASE_DIR: /opt/stacks
+      PORT: "8080"
+      AGENT_BIND_HOST: 0.0.0.0
       DISK_PATHS: /
-      COLLECT_INTERVAL: "5"
+      METRICS_ACTIVE_INTERVAL: "2"
+      METRICS_IDLE_TIMEOUT: "15"
+      TRAFFIC_IDLE_INTERVAL: "60"
+      TRAFFIC_INTERFACES: auto
+      AGENT_STATE_DIR: /opt/stacks/.fleetge
       AGENT_LOG_LEVEL: INFO
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
@@ -182,12 +187,13 @@ If `AGENT_SECRET_PATH` is set, include it in the dashboard-side `agent.url`, for
 | `ADMIN_PASSWORD` | Required | Administrator login password. |
 | `DATABASE_URL` | `sqlite:////app/data/dashboard-local.db` | SQLAlchemy database URI. SQLite and PostgreSQL are supported. |
 | `HOST_CONFIG_PATH` | `/app/data/hosts.yaml` | Path to the host configuration file. |
-| `METRICS_STREAM_INTERVAL` | `1` | SSE metrics stream interval in seconds. Valid range: `0.5` to `10.0`. |
+| `METRICS_STREAM_INTERVAL` | `2` | Shared SSE metrics broadcast interval in seconds. Valid range: `0.5` to `10.0`. |
 | `DOCKER_POLL_INTERVAL` | `10` | Docker container and stack structure refresh interval while clients are connected, in seconds. |
 | `BACKGROUND_STRUCTURE_REFRESH_INTERVAL` | `3600` | Background structure refresh interval while no clients are connected, in seconds. Valid range: `60` to `86400`. |
 | `UPDATE_CHECK_INTERVAL` | `43200` | System and image update check cache interval in seconds. Valid range: `3600` to `172800`. |
 | `JWT_EXPIRE_HOURS` | `24` | Login session lifetime in hours. Valid range: `1` to `720`. |
 | `CORS_ORIGINS` | Empty | Allowed CORS origins, comma separated. Empty means same-origin only. |
+| `TRUSTED_PROXY_CIDRS` | Empty | Reverse-proxy CIDRs allowed to provide the enrollment callback source IP. |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warning`, or `error`. |
 
 ### Agent
@@ -205,8 +211,15 @@ If `AGENT_SECRET_PATH` is set, include it in the dashboard-side `agent.url`, for
 | `AGENT_ENABLE_PRUNE` | `false` | Whether Docker prune is allowed. |
 | `AGENT_ENABLE_SELF_UPDATE` | `true` | Whether agent self-update related operations are allowed. |
 | `STACKS_BASE_DIR` | `/opt/stacks` | Compose stack directory on the managed host. |
+| `PORT` | `8080` | Agent listen port; with Host networking it must not collide with an existing listener. |
+| `AGENT_BIND_HOST` | `0.0.0.0` | Agent bind address; use `127.0.0.1` behind a Host reverse proxy. |
 | `DISK_PATHS` | `/` | Disk mount points to monitor, comma separated. |
-| `COLLECT_INTERVAL` | `5` | Agent metrics collection interval in seconds. |
+| `METRICS_ACTIVE_INTERVAL` | `2` | Host telemetry and live traffic interval while Metrics is requested. |
+| `METRICS_IDLE_TIMEOUT` | `15` | Seconds after the final Metrics request before telemetry sleeps. |
+| `TRAFFIC_IDLE_INTERVAL` | `60` | WAN traffic accounting interval while telemetry sleeps. |
+| `TRAFFIC_INTERFACES` | `auto` | `auto` selects default-route interfaces; a comma-separated list overrides it. |
+| `AGENT_STATE_DIR` | `/opt/stacks/.fleetge` | Persistent directory for the five-minute traffic ledger. |
+| `COLLECT_INTERVAL` | Empty | Deprecated compatibility alias used only when `METRICS_ACTIVE_INTERVAL` is unset. |
 | `AGENT_LOG_LEVEL` | `INFO` | Agent log level. |
 
 ## Build From Source

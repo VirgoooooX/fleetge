@@ -229,11 +229,15 @@ const refreshIssueText = computed(() => (
 // Sparkline History Queues
 const cpuHistory = ref<number[]>([]);
 const netHistory = ref<number[]>([]);
+const lastMetricKey = ref("");
 
 watch(
   () => props.host.metrics,
   (m) => {
     if (m) {
+      const key = `${m.timestamp}|${m.networkCounterEpoch || "legacy"}`;
+      if (key === lastMetricKey.value) return;
+      lastMetricKey.value = key;
       // Push CPU
       cpuHistory.value.push(m.cpuPercent);
       if (cpuHistory.value.length > 50) cpuHistory.value.shift();
@@ -320,7 +324,7 @@ function formatBytes(bytes: number | undefined): string {
   return `${size.toFixed(1)} ${units[i]}`;
 }
 
-function formatRateParts(bytesPerSec: number | undefined): { amount: string; unit: string } {
+function formatRateParts(bytesPerSec: number | null | undefined): { amount: string; unit: string } {
   const bytes = Math.abs(bytesPerSec || 0);
   if (bytes === 0) return { amount: "0", unit: "B/s" };
 

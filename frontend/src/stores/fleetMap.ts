@@ -14,6 +14,27 @@ export interface FleetLocation {
   country_code?: string | null;
   source?: string | null;
   confirmed: boolean;
+  confidence?: string | null;
+}
+
+export interface NetworkIdentityEvidence {
+  observedAt?: string;
+  effectiveIp?: string | null;
+  effectiveSource?: string | null;
+  confidence?: string;
+  conflict?: boolean;
+  locationDrift?: boolean;
+  fixedOverride?: string | null;
+  categories?: Record<string, {
+    status?: string;
+    addresses?: string[];
+    eligibleAddresses?: string[];
+    eligible?: boolean;
+    mode?: string;
+    excludedReason?: string | null;
+    excludedReasons?: string[];
+    cnameChain?: string[];
+  }>;
 }
 
 export interface FleetLocationSearchResult extends FleetLocation {
@@ -47,6 +68,7 @@ export interface FleetMapHost {
   error_message?: string | null;
   agent_instance_id?: string | null;
   location?: FleetLocation | null;
+  network_identity?: NetworkIdentityEvidence | null;
   stacks: FleetMapStack[];
 }
 
@@ -153,6 +175,31 @@ export const useFleetMapStore = defineStore("fleet-map", () => {
     return res.data.location as FleetLocation;
   }
 
+  async function refreshNetworkIdentity(hostId: string, force = true) {
+    const res = await apiClient.post(
+      `/api/admin/hosts/${encodeURIComponent(hostId)}/network-identity/refresh`,
+      undefined,
+      { params: { force } },
+    );
+    if (snapshot.value) {
+      const host = snapshot.value.hosts.find((item) => item.host_id === hostId);
+      if (host) host.network_identity = res.data;
+    }
+    return res.data as NetworkIdentityEvidence;
+  }
+
+  async function setNetworkIdentityOverride(hostId: string, ip: string | null) {
+    const res = await apiClient.put(
+      `/api/admin/hosts/${encodeURIComponent(hostId)}/network-identity/override`,
+      { ip },
+    );
+    if (snapshot.value) {
+      const host = snapshot.value.hosts.find((item) => item.host_id === hostId);
+      if (host) host.network_identity = { ...res.data, fixedOverride: ip };
+    }
+    return res.data as NetworkIdentityEvidence;
+  }
+
   async function searchLocations(query: string, language = "zh") {
     const res = await apiClient.get("/api/admin/location/search", {
       params: { q: query, language },
@@ -177,5 +224,6 @@ export const useFleetMapStore = defineStore("fleet-map", () => {
     snapshot, loading, error, filter, onlyIssues, hosts, unlocatedHosts,
     fetchSnapshot, fetchCenterSettings, suggestCenterLocation, saveCenterSettings, updateLocation,
     suggestLocation, searchLocations, startPolling, stopPolling,
+    refreshNetworkIdentity, setNetworkIdentityOverride,
   };
 });

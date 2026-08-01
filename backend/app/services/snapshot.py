@@ -12,6 +12,7 @@ Cache tiers:
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -23,7 +24,6 @@ from app.config import get_settings
 from app.database import engine, Session
 from app.models import HostConfig, ImageUpdateCache
 from app.schemas import (
-    ContainerDetail,
     ContainerStats,
     ContainerSummary,
     ContainerPort,
@@ -180,6 +180,10 @@ class SnapshotManager:
         self._agent_clients: dict[str, AgentClient] = {}
         self._host_refresh_locks: dict[str, asyncio.Lock] = {}
         self._metrics_refresh_lock = asyncio.Lock()
+        self._metrics_broadcast_task: asyncio.Task | None = None
+        self._metrics_subscribers: set[asyncio.Queue] = set()
+        self._metrics_wake_event = asyncio.Event()
+        self._metrics_idle_deadline: float | None = None
         self._update_check_lock = asyncio.Lock()
         self._stats_tasks: dict[str, asyncio.Task] = {}
         self._realtime_refresh_tasks: dict[str, asyncio.Task] = {}  # coalesce WebSocket-triggered refreshes
@@ -195,6 +199,7 @@ class SnapshotManager:
         # Active connection tracking for polling optimization
         self._active_connections = 0
         self._connection_event = asyncio.Event()
+        self._structure_leases: dict[str, float] = {}
 
         # Failure backoff: skip unreachable hosts so they don't slow the poll cycle
         self._consecutive_failures: dict[str, int] = {}
@@ -273,6 +278,118 @@ class SnapshotManager:
         self._active_connections = max(0, self._active_connections - 1)
         logger.info("Active connections decremented: %d", self._active_connections)
 
+    def register_structure_lease(self, interval: float) -> str:
+        token = uuid.uuid4().hex
+        self._structure_leases[token] = max(5.0, min(float(interval), 3600.0))
+        self._connection_event.set()
+        return token
+
+    def unregister_structure_lease(self, token: str | None) -> None:
+        if token:
+            self._structure_leases.pop(token, None)
+            self._connection_event.set()
+
+    def _structure_interval(self, background_interval: float) -> float:
+        candidates = list(self._structure_leases.values())
+        if self._active_connections > 0:
+            candidates.append(float(get_settings().DOCKER_POLL_INTERVAL))
+        return min(candidates) if candidates else float(background_interval)
+
+    def add_metrics_subscriber(self) -> asyncio.Queue:
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+        self._metrics_subscribers.add(queue)
+        self._metrics_idle_deadline = None
+        self._metrics_wake_event.set()
+        if self._running and (self._metrics_broadcast_task is None or self._metrics_broadcast_task.done()):
+            self._metrics_broadcast_task = asyncio.create_task(self._metrics_broadcast_loop())
+        return queue
+
+    def remove_metrics_subscriber(self, queue: asyncio.Queue) -> None:
+        self._metrics_subscribers.discard(queue)
+        if not self._metrics_subscribers and self._metrics_idle_deadline is None:
+            self._metrics_idle_deadline = time.monotonic() + 15.0
+        self._metrics_wake_event.set()
+
+    def current_metrics_payload(self) -> dict:
+        summaries = [self.build_host_summary(snapshot) for snapshot in self.list_snapshots()]
+        return {
+            "hosts": [summary.model_dump() for summary in summaries],
+            "updated": time.time(),
+        }
+
+    @staticmethod
+    def _metrics_signature(summaries: list[HostSummary]) -> tuple:
+        return tuple(
+            (
+                summary.host_id,
+                summary.status,
+                summary.error_message,
+                summary.metrics.timestamp if summary.metrics else None,
+                summary.metrics.networkCounterEpoch if summary.metrics else None,
+            )
+            for summary in summaries
+        )
+
+    async def _metrics_broadcast_loop(self) -> None:
+        """One Agent refresh loop shared by every browser and tab."""
+        next_deadline = time.monotonic()
+        last_signature: tuple | None = None
+        try:
+            while self._running:
+                now = time.monotonic()
+                if not self._metrics_subscribers:
+                    if self._metrics_idle_deadline is None:
+                        self._metrics_idle_deadline = now + 15.0
+                    if now >= self._metrics_idle_deadline:
+                        return
+                    self._metrics_wake_event.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._metrics_wake_event.wait(),
+                            timeout=self._metrics_idle_deadline - now,
+                        )
+                        next_deadline = time.monotonic()
+                        continue
+                    except asyncio.TimeoutError:
+                        return
+                try:
+                    await self.refresh_hosts()
+                    summaries = await self.refresh_metrics_now()
+                    signature = self._metrics_signature(summaries)
+                    if signature != last_signature:
+                        payload = {
+                            "hosts": [summary.model_dump() for summary in summaries],
+                            "updated": time.time(),
+                        }
+                        for queue in tuple(self._metrics_subscribers):
+                            if queue.full():
+                                try:
+                                    queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                            queue.put_nowait(payload)
+                        last_signature = signature
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("Shared metrics refresh failed: %s", exc)
+
+                interval = max(float(get_settings().METRICS_STREAM_INTERVAL), 0.5)
+                next_deadline += interval
+                now = time.monotonic()
+                if next_deadline <= now:
+                    next_deadline = now + interval
+                timeout = next_deadline - now
+                self._metrics_wake_event.clear()
+                try:
+                    await asyncio.wait_for(self._metrics_wake_event.wait(), timeout=timeout)
+                    if self._metrics_subscribers:
+                        next_deadline = min(next_deadline, time.monotonic())
+                except asyncio.TimeoutError:
+                    pass
+        finally:
+            self._metrics_broadcast_task = None
+
     # ── Failure backoff ─────────────────────────────────────────────
 
     def _should_skip(self, host_id: str) -> bool:
@@ -328,6 +445,8 @@ class SnapshotManager:
 
     async def stop(self) -> None:
         self._running = False
+        if self._metrics_broadcast_task is not None:
+            self._metrics_broadcast_task.cancel()
         for t in self._tasks:
             t.cancel()
         for t in list(self._stats_tasks.values()):
@@ -336,7 +455,9 @@ class SnapshotManager:
             t.cancel()
         await asyncio.gather(
             *self._tasks, *self._stats_tasks.values(),
-            *self._realtime_refresh_tasks.values(), return_exceptions=True,
+            *self._realtime_refresh_tasks.values(),
+            *([self._metrics_broadcast_task] if self._metrics_broadcast_task else []),
+            return_exceptions=True,
         )
         self._stats_tasks.clear()
         self._realtime_refresh_tasks.clear()
@@ -356,10 +477,16 @@ class SnapshotManager:
         # Step 1: Cancel tasks outside the lock
         self._running = False
         tasks_to_cancel = list(self._tasks)
+        metrics_task = self._metrics_broadcast_task
+        if metrics_task is not None:
+            metrics_task.cancel()
         for t in tasks_to_cancel:
             t.cancel()
-        if tasks_to_cancel:
-            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+        await asyncio.gather(
+            *tasks_to_cancel,
+            *([metrics_task] if metrics_task else []),
+            return_exceptions=True,
+        )
 
         # Step 2: Acquire lock for state rebuild
         async with self._lock:
@@ -420,6 +547,8 @@ class SnapshotManager:
                     )
                 ),
             ]
+            if self._metrics_subscribers:
+                self._metrics_broadcast_task = asyncio.create_task(self._metrics_broadcast_loop())
         logger.info("Poll loops restarted successfully.")
 
 
@@ -730,12 +859,13 @@ class SnapshotManager:
 
             cached_txt = cached_target or "unknown"
             fresh_txt = fresh_target or "unavailable"
+            local_txt = ",".join(candidate[:19] for candidate in local_candidates)
             summaries.append(FinalizeSummary(
                 image=image,
                 cleared=False,
                 verdict=(
                     f"{image}: updated, but digest does not match target "
-                    f"(local={local_candidates[0][:19]} cached={cached_txt[:19]} "
+                    f"(local={local_txt} cached={cached_txt[:19]} "
                     f"registry={fresh_txt[:19]})"
                 ),
             ))
@@ -932,16 +1062,13 @@ class SnapshotManager:
                 try:
                     # Active connections: fast poll at DOCKER_POLL_INTERVAL.
                     # Idle: wait for a connection event or BACKGROUND_STRUCTURE_REFRESH_INTERVAL.
-                    timeout = float(get_settings().DOCKER_POLL_INTERVAL) if self._active_connections > 0 else float(interval)
+                    timeout = self._structure_interval(float(interval))
                     self._connection_event.clear()
-                    if self._active_connections > 0:
-                        await asyncio.sleep(timeout)
-                    else:
-                        try:
-                            await asyncio.wait_for(self._connection_event.wait(), timeout=timeout)
-                            logger.info("Wake up structure poll loop due to new connection")
-                        except asyncio.TimeoutError:
-                            pass
+                    try:
+                        await asyncio.wait_for(self._connection_event.wait(), timeout=timeout)
+                        logger.debug("Wake up structure poll loop due to lease change")
+                    except asyncio.TimeoutError:
+                        pass
                 except asyncio.CancelledError:
                     break
             else:

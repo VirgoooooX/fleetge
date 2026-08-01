@@ -51,7 +51,11 @@ def write_hosts_to_yaml() -> None:
                 "country_code": h.location_country_code or "",
                 "source": h.location_source or "manual",
                 "confirmed": bool(h.location_confirmed),
+                "confidence": h.location_confidence or "",
             }
+
+        if h.public_ip_override:
+            host_entry["network_identity"] = {"fixed_public_ip": h.public_ip_override}
 
         # Stack icons
         try:

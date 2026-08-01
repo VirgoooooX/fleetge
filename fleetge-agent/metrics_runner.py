@@ -1,11 +1,19 @@
+"""Adaptive Host telemetry coordinator.
+
+Telemetry sleeps when there is no authenticated metrics demand. WAN counters keep
+their own low-frequency accounting cycle so traffic totals do not depend on a UI.
+"""
+
+from __future__ import annotations
+
+import logging
 import os
 import platform
 import sys
 import threading
 import time
-import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any
 
 logger = logging.getLogger("fleetge-agent.metrics")
 
@@ -15,145 +23,233 @@ except ImportError:
     logger.error("psutil is required. Install with: pip install psutil")
     sys.exit(1)
 
-# Configuration from environment
-DISK_PATHS = [p.strip() for p in os.environ.get("DISK_PATHS", "/").split(",") if p.strip()]
-COLLECT_INTERVAL = float(os.environ.get("COLLECT_INTERVAL", "5"))
+from traffic_accountant import TrafficAccountant
+
+DISK_PATHS = [path.strip() for path in os.environ.get("DISK_PATHS", "/").split(",") if path.strip()]
+METRICS_ACTIVE_INTERVAL = max(
+    0.5,
+    float(os.environ.get("METRICS_ACTIVE_INTERVAL", os.environ.get("COLLECT_INTERVAL", "2"))),
+)
+TRAFFIC_IDLE_INTERVAL = max(10.0, float(os.environ.get("TRAFFIC_IDLE_INTERVAL", "60")))
+METRICS_IDLE_TIMEOUT = max(2.0, float(os.environ.get("METRICS_IDLE_TIMEOUT", "15")))
 HOSTNAME = platform.node() or "unknown"
 
-_cache_lock = threading.Lock()
-_cached_metrics: dict = {}
 
-# History for delta rate calculation
-_last_time: Optional[float] = None
-_last_net_rx: Optional[int] = None
-_last_net_tx: Optional[int] = None
-_last_disk_read: Optional[int] = None
-_last_disk_write: Optional[int] = None
+def _utc_timestamp() -> str:
+    now = datetime.now(timezone.utc)
+    return now.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def _collect_once() -> dict:
-    """Perform metrics collection and rate calculation."""
-    global _last_time, _last_net_rx, _last_net_tx, _last_disk_read, _last_disk_write
+class MetricsCoordinator:
+    def __init__(self, traffic: TrafficAccountant | None = None) -> None:
+        self.traffic = traffic or TrafficAccountant()
+        self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._cached_metrics: dict[str, Any] = {}
+        self._snapshot_mono = 0.0
+        self._last_demand_mono = float("-inf")
+        self._last_telemetry_mono = 0.0
+        self._last_traffic_mono = 0.0
+        self._last_disk_mono: float | None = None
+        self._last_disk_read: int | None = None
+        self._last_disk_write: int | None = None
+        self._collector_state = "idle"
 
-    current_time = time.monotonic()
-    
-    # 1. CPU
-    cpu = psutil.cpu_percent(interval=None)
+    def start(self) -> None:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            psutil.cpu_percent(interval=None)
+            self._thread = threading.Thread(target=self._run, daemon=True, name="agent-metrics")
+            self._thread.start()
 
-    # 2. Memory
-    mem = psutil.virtual_memory()
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=5.0)
+        self.traffic.close()
 
-    # 3. Disk Usage
-    disk_used = 0
-    disk_total = 0
-    disk_failures = []
-    for path in DISK_PATHS:
+    def mark_demand(self) -> float:
+        requested_at = time.monotonic()
+        with self._lock:
+            self._last_demand_mono = requested_at
+        self._wake.set()
+        return requested_at
+
+    def _is_active(self, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
+        with self._lock:
+            return current - self._last_demand_mono <= METRICS_IDLE_TIMEOUT
+
+    def _collect_telemetry(self, now_mono: float, traffic: dict[str, Any]) -> dict[str, Any]:
+        elapsed = now_mono - self._last_telemetry_mono if self._last_telemetry_mono else None
+        warming = elapsed is None or elapsed > METRICS_ACTIVE_INTERVAL * 3
+        # After a long idle, interval=None would average the entire sleep window.
+        # A short blocking sample keeps the first visible CPU value current while
+        # disk/network rates remain explicitly warming until their second point.
+        cpu = psutil.cpu_percent(interval=0.25 if warming else None)
+        memory = psutil.virtual_memory()
+
+        disk_used = 0
+        disk_total = 0
+        disk_failures: list[str] = []
+        for path in DISK_PATHS:
+            try:
+                usage = psutil.disk_usage(path)
+                disk_used += int(usage.used)
+                disk_total += int(usage.total)
+            except (FileNotFoundError, OSError):
+                disk_failures.append(path)
+
         try:
-            usage = psutil.disk_usage(path)
-            disk_used += usage.used
-            disk_total += usage.total
-        except FileNotFoundError:
-            disk_failures.append(path)
+            disk_io = psutil.disk_io_counters()
+            disk_read = int(disk_io.read_bytes) if disk_io else 0
+            disk_write = int(disk_io.write_bytes) if disk_io else 0
+        except Exception:
+            disk_read = disk_write = 0
 
-    # 4. Network Counters
-    net = psutil.net_io_counters()
-    net_rx = net.bytes_recv
-    net_tx = net.bytes_sent
+        disk_read_rate: float | None = None
+        disk_write_rate: float | None = None
+        if (
+            not warming
+            and self._last_disk_mono is not None
+            and self._last_disk_read is not None
+            and self._last_disk_write is not None
+            and disk_read >= self._last_disk_read
+            and disk_write >= self._last_disk_write
+        ):
+            dt = now_mono - self._last_disk_mono
+            if dt > 0:
+                disk_read_rate = round((disk_read - self._last_disk_read) / dt, 2)
+                disk_write_rate = round((disk_write - self._last_disk_write) / dt, 2)
 
-    # 5. Disk I/O Counters
-    try:
-        disk_io = psutil.disk_io_counters()
-        disk_read = disk_io.read_bytes
-        disk_write = disk_io.write_bytes
-    except Exception:
-        disk_read = 0
-        disk_write = 0
-
-    # 6. Load Average & Uptime
-    load_raw = psutil.getloadavg()
-    load_avg = [round(x, 2) for x in load_raw]
-    uptime = int(time.time() - psutil.boot_time())
-
-    # 7. Timestamp (ISO 8601 UTC)
-    now_dt = datetime.now(timezone.utc)
-    timestamp = now_dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now_dt.microsecond // 1000:03d}Z"
-
-    # 8. Calculate Rates (Delta / Delta Time)
-    net_rx_rate = 0.0
-    net_tx_rate = 0.0
-    disk_read_rate = 0.0
-    disk_write_rate = 0.0
-
-    if _last_time is not None:
-        dt = current_time - _last_time
-        if dt > 0:
-            if _last_net_rx is not None and net_rx >= _last_net_rx:
-                net_rx_rate = round((net_rx - _last_net_rx) / dt, 2)
-            if _last_net_tx is not None and net_tx >= _last_net_tx:
-                net_tx_rate = round((net_tx - _last_net_tx) / dt, 2)
-            if _last_disk_read is not None and disk_read >= _last_disk_read:
-                disk_read_rate = round((disk_read - _last_disk_read) / dt, 2)
-            if _last_disk_write is not None and disk_write >= _last_disk_write:
-                disk_write_rate = round((disk_write - _last_disk_write) / dt, 2)
-
-    # Update history
-    _last_time = current_time
-    _last_net_rx = net_rx
-    _last_net_tx = net_tx
-    _last_disk_read = disk_read
-    _last_disk_write = disk_write
-
-    result = {
-        "hostname": HOSTNAME,
-        "timestamp": timestamp,
-        "cpuPercent": round(cpu, 1),
-        "memoryUsed": mem.used,
-        "memoryTotal": mem.total,
-        "diskUsed": disk_used,
-        "diskTotal": disk_total,
-        "networkRxBytes": net_rx,
-        "networkTxBytes": net_tx,
-        "networkRxRate": net_rx_rate,
-        "networkTxRate": net_tx_rate,
-        "diskReadBytes": disk_read,
-        "diskWriteBytes": disk_write,
-        "diskReadRate": disk_read_rate,
-        "diskWriteRate": disk_write_rate,
-        "loadavg": load_avg,
-        "uptime": uptime,
-    }
-
-    if disk_failures:
-        result["_warnings"] = {"diskPathsNotFound": disk_failures}
-
-    return result
-
-
-def _collector_loop() -> None:
-    """Background collection thread."""
-    global _cached_metrics
-    # Initialize CPU measurement baseline
-    psutil.cpu_percent(interval=None)
-    
-    while True:
+        self._last_disk_mono = now_mono
+        self._last_disk_read = disk_read
+        self._last_disk_write = disk_write
         try:
-            snapshot = _collect_once()
-            with _cache_lock:
-                _cached_metrics = snapshot
-        except Exception as exc:
-            logger.error(f"[agent-metrics] Collection failed: {exc}")
-        time.sleep(COLLECT_INTERVAL)
+            load_avg = [round(value, 2) for value in psutil.getloadavg()]
+        except (AttributeError, OSError):
+            load_avg = [0.0, 0.0, 0.0]
+
+        result: dict[str, Any] = {
+            "hostname": HOSTNAME,
+            "timestamp": _utc_timestamp(),
+            "cpuPercent": round(cpu, 1),
+            "memoryUsed": int(memory.used),
+            "memoryTotal": int(memory.total),
+            "diskUsed": disk_used,
+            "diskTotal": disk_total,
+            "diskReadBytes": disk_read,
+            "diskWriteBytes": disk_write,
+            "diskReadRate": disk_read_rate,
+            "diskWriteRate": disk_write_rate,
+            "loadavg": load_avg,
+            "uptime": int(time.time() - psutil.boot_time()),
+            "collectorState": "warming" if warming else "active",
+            "sampleAgeSeconds": 0.0,
+            "metricsActiveInterval": METRICS_ACTIVE_INTERVAL,
+            "trafficIdleInterval": TRAFFIC_IDLE_INTERVAL,
+            **traffic,
+        }
+        # Traffic has its own timestamp; the telemetry timestamp remains canonical.
+        result.pop("timestamp", None)
+        result["timestamp"] = _utc_timestamp()
+        if disk_failures:
+            result["_warnings"] = {"diskPathsNotFound": disk_failures}
+        return result
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            now = time.monotonic()
+            active = self._is_active(now)
+            traffic_interval = METRICS_ACTIVE_INTERVAL if active else TRAFFIC_IDLE_INTERVAL
+            traffic_due = not self._last_traffic_mono or now - self._last_traffic_mono >= traffic_interval
+            telemetry_due = active and (
+                not self._last_telemetry_mono or now - self._last_telemetry_mono >= METRICS_ACTIVE_INTERVAL
+            )
+            traffic = self.traffic.current()
+            if traffic_due:
+                try:
+                    traffic = self.traffic.sample(active=active)
+                    self._last_traffic_mono = time.monotonic()
+                except Exception as exc:
+                    logger.error("WAN traffic collection failed: %s", exc)
+
+            if telemetry_due:
+                try:
+                    collected_at = time.monotonic()
+                    snapshot = self._collect_telemetry(collected_at, traffic)
+                    with self._condition:
+                        self._cached_metrics = snapshot
+                        self._snapshot_mono = time.monotonic()
+                        self._last_telemetry_mono = collected_at
+                        self._collector_state = snapshot["collectorState"]
+                        self._condition.notify_all()
+                except Exception as exc:
+                    logger.error("Host telemetry collection failed: %s", exc)
+            elif not active:
+                with self._lock:
+                    self._collector_state = "idle"
+
+            now = time.monotonic()
+            if active:
+                due_in = min(
+                    max(0.05, METRICS_ACTIVE_INTERVAL - (now - self._last_telemetry_mono)),
+                    max(0.05, METRICS_ACTIVE_INTERVAL - (now - self._last_traffic_mono)),
+                    max(0.05, METRICS_IDLE_TIMEOUT - (now - self._last_demand_mono)),
+                )
+            else:
+                due_in = max(0.05, TRAFFIC_IDLE_INTERVAL - (now - self._last_traffic_mono))
+            self._wake.wait(timeout=due_in)
+            self._wake.clear()
+
+    def metrics(self, wait_timeout: float = 1.0) -> dict[str, Any]:
+        requested_at = self.mark_demand()
+        with self._condition:
+            fresh_enough = self._cached_metrics and requested_at - self._snapshot_mono <= METRICS_ACTIVE_INTERVAL * 1.5
+            if not fresh_enough:
+                self._condition.wait_for(
+                    lambda: self._snapshot_mono >= requested_at or self._stop.is_set(),
+                    timeout=max(0.0, wait_timeout),
+                )
+            if not self._cached_metrics:
+                raise RuntimeError("Metrics not ready yet — wait for first collection cycle")
+            result = dict(self._cached_metrics)
+            result["sampleAgeSeconds"] = round(max(0.0, time.monotonic() - self._snapshot_mono), 3)
+            return result
+
+    def traffic_current(self, *, activate: bool = False) -> dict[str, Any]:
+        if activate:
+            self.mark_demand()
+        result = self.traffic.current()
+        result["collectorState"] = "active" if self._is_active() else "idle"
+        return result
 
 
-def get_metrics() -> dict:
-    """Fetch cached metrics immediately. Never blocks."""
-    with _cache_lock:
-        if not _cached_metrics:
-            raise RuntimeError("Metrics not ready yet — wait for first collection cycle")
-        return dict(_cached_metrics)
+_coordinator = MetricsCoordinator()
+
+
+def get_metrics(wait_timeout: float = 1.0) -> dict[str, Any]:
+    return _coordinator.metrics(wait_timeout=wait_timeout)
+
+
+def get_traffic_current(activate: bool = False) -> dict[str, Any]:
+    return _coordinator.traffic_current(activate=activate)
+
+
+def get_traffic_history(cursor: int = 0, limit: int = 1000) -> dict[str, Any]:
+    return _coordinator.traffic.history(cursor=cursor, limit=limit)
 
 
 def start_metrics_collector() -> None:
-    """Starts the background collection loop."""
-    collector = threading.Thread(target=_collector_loop, daemon=True, name="agent-metrics")
-    collector.start()
+    _coordinator.start()
+
+
+def stop_metrics_collector() -> None:
+    _coordinator.stop()

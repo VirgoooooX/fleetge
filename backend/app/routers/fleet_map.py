@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import socket
+import ipaddress
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,11 +15,13 @@ from app.database import engine, get_session
 from app.models import AuditLog, HostConfig, Setting
 from app.schemas import FleetMapSettingsRequest, HostLocationRequest
 from app.services.enrollment_service import (
-    candidate_host_ip,
-    is_private_host,
     location_for_host,
     search_location_names,
     suggest_location_from_ip,
+)
+from app.services.network_identity_service import (
+    get_stored_network_identity,
+    refresh_host_network_identity,
 )
 from app.services.host_writer import write_hosts_to_yaml
 from app.services.snapshot import snapshot_manager
@@ -111,6 +113,7 @@ async def fleet_map_snapshot():
             "error_message": summary.get("error_message") if summary else host.error_message,
             "agent_instance_id": host.agent_instance_id,
             "location": location_for_host(host),
+            "network_identity": get_stored_network_identity(host),
             "stacks": stacks,
         }
         nodes.append(node)
@@ -206,6 +209,7 @@ async def update_host_location(
     host.location_country_code = (req.country_code or "").strip().upper()[:8] or None
     host.location_source = req.source or "manual"
     host.location_confirmed = bool(req.confirmed)
+    host.location_confidence = "manual" if host.location_confirmed else None
     session.add(AuditLog(user=username, action="host.location.update", host_id=host_id, result="success", detail=f"source={host.location_source}", ip_address=request.client.host if request.client else None))
     session.commit()
     write_hosts_to_yaml()
@@ -223,31 +227,98 @@ async def suggest_host_location(
     host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
     if host is None:
         raise HTTPException(status_code=404, detail="Host not found")
-    ip = candidate_host_ip(host.agent_url)
-    if not ip:
-        try:
-            parsed = __import__("urllib.parse", fromlist=["urlparse"]).urlparse(host.agent_url or "")
-            hostname = parsed.hostname
-            if hostname:
-                ip = next(
-                    (item[4][0] for item in socket.getaddrinfo(hostname, None)
-                     if "." in item[4][0] and not is_private_host(item[4][0])),
-                    None,
-                )
-        except Exception:
-            ip = None
-    suggestion = await suggest_location_from_ip(ip)
+    try:
+        evidence = await refresh_host_network_identity(host_id, force=False)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Host not found")
+    suggestion = evidence.get("locationSuggestion")
     if not suggestion:
-        raise HTTPException(status_code=409, detail="Location suggestion unavailable; enter coordinates manually")
-    host.location_latitude = suggestion["latitude"]
-    host.location_longitude = suggestion["longitude"]
-    host.location_city = suggestion.get("city")
-    host.location_region = suggestion.get("region")
-    host.location_country = suggestion.get("country")
-    host.location_country_code = suggestion.get("country_code")
-    host.location_source = suggestion.get("source") or "ipwho.is"
-    host.location_confirmed = False
-    session.add(AuditLog(user=username, action="host.location.suggest", host_id=host_id, result="success", detail=f"source={host.location_source}", ip_address=request.client.host if request.client else None))
+        raise HTTPException(status_code=409, detail="公网 IP 证据未形成共识或地理数据库冲突；请检查探测依据或手动填写")
+    session.add(AuditLog(user=username, action="host.location.suggest", host_id=host_id, result="success", detail="source=ip-consensus", ip_address=request.client.host if request.client else None))
     session.commit()
     write_hosts_to_yaml()
     return {"host_id": host_id, "location": suggestion}
+
+
+@admin_router.get("/hosts/{host_id}/network-identity")
+async def get_host_network_identity(
+    host_id: str,
+    username: str = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    _require_admin(username)
+    host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
+    if host is None:
+        raise HTTPException(status_code=404, detail="Host not found")
+    return {
+        "host_id": host_id,
+        "fixed_override": host.public_ip_override,
+        "effective_ip": host.public_ip_effective,
+        "effective_source": host.public_ip_source,
+        "checked_at": host.network_identity_checked_at,
+        "evidence": get_stored_network_identity(host),
+    }
+
+
+@admin_router.post("/hosts/{host_id}/network-identity/refresh")
+async def refresh_network_identity(
+    host_id: str,
+    request: Request,
+    force: bool = Query(True),
+    username: str = Depends(get_current_user),
+):
+    _require_admin(username)
+    try:
+        evidence = await refresh_host_network_identity(host_id, force=force)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Host not found")
+    with Session(engine) as session:
+        session.add(AuditLog(
+            user=username,
+            action="host.network_identity.refresh",
+            host_id=host_id,
+            result="success",
+            detail=f"confidence={evidence.get('confidence')}",
+            ip_address=request.client.host if request.client else None,
+        ))
+        session.commit()
+    write_hosts_to_yaml()
+    return evidence
+
+
+@admin_router.put("/hosts/{host_id}/network-identity/override")
+async def update_network_identity_override(
+    host_id: str,
+    body: dict,
+    request: Request,
+    username: str = Depends(get_current_user),
+):
+    _require_admin(username)
+    raw = str(body.get("ip") or "").strip()
+    normalized = None
+    if raw:
+        try:
+            address = ipaddress.ip_address(raw)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid public IP address")
+        if not address.is_global:
+            raise HTTPException(status_code=400, detail="Override must be a public IP address")
+        normalized = address.compressed
+    with Session(engine) as session:
+        host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
+        if host is None:
+            raise HTTPException(status_code=404, detail="Host not found")
+        host.public_ip_override = normalized
+        session.add(host)
+        session.add(AuditLog(
+            user=username,
+            action="host.network_identity.override",
+            host_id=host_id,
+            result="success",
+            detail="set" if normalized else "cleared",
+            ip_address=request.client.host if request.client else None,
+        ))
+        session.commit()
+    evidence = await refresh_host_network_identity(host_id, force=True)
+    write_hosts_to_yaml()
+    return evidence

@@ -37,10 +37,17 @@ for uvicorn_logger in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     uv_logger.addFilter(_SuppressInvalidHttpRequestWarning())
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.requests import HTTPConnection
-from metrics_runner import start_metrics_collector, get_metrics
+from metrics_runner import (
+    get_metrics,
+    get_traffic_current,
+    get_traffic_history,
+    start_metrics_collector,
+    stop_metrics_collector,
+)
+from network_identity import probe_network_identity
 import docker_client
 import compose_runner
 
@@ -170,6 +177,7 @@ async def lifespan(_app: FastAPI):
     logger.info("Starting Fleetge Agent metrics collector thread...")
     start_metrics_collector()
     yield
+    stop_metrics_collector()
     await docker_client.close_docker_client()
 
 
@@ -191,11 +199,29 @@ async def health_check():
 
 @app.get("/api/agent/metrics")
 async def read_metrics():
-    """Retrieve cached system performance metrics immediately."""
+    """Wake adaptive collection and return a fresh or explicitly warming snapshot."""
     try:
-        return get_metrics()
+        return await asyncio.to_thread(get_metrics, 1.0)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/api/agent/traffic/current")
+async def read_current_traffic(activate: bool = Query(False)):
+    """Return selected WAN counters without waking telemetry unless requested."""
+    return await asyncio.to_thread(get_traffic_current, activate)
+
+
+@app.get("/api/agent/traffic/history")
+async def read_traffic_history(cursor: int = Query(0, ge=0), limit: int = Query(1000, ge=1, le=2000)):
+    """Return completed five-minute traffic buckets after an opaque integer cursor."""
+    return await asyncio.to_thread(get_traffic_history, cursor, limit)
+
+
+@app.get("/api/agent/network-identity")
+async def read_network_identity(refresh: bool = Query(False)):
+    """Probe public IPv4/IPv6 with fixed providers and environment proxies disabled."""
+    return await probe_network_identity(force=refresh)
 
 
 # Mount the sub-routers for Docker proxy and Compose Stack runner

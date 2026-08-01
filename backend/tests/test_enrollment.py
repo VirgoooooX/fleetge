@@ -41,7 +41,11 @@ def test_install_envelope_can_be_decoded_without_plaintext_db_storage():
     script = render_install_script(invite, "claim-token", "long-agent-token", "https://fleetge.example")
     assert "long-agent-token" not in script
     assert "claim-token" in script
-    assert "https://ipwho.is/" in script
+    assert "https://ipwho.is/" not in script
+    assert "--noproxy '*'" in script
+    assert "callback_mode=direct" in script
+    assert "callback_mode=proxy_fallback" in script
+    assert "network_mode: host" not in script  # compose content remains base64 encoded
 
 
 def test_geolocation_is_normalized_and_rejects_bad_coordinates():
