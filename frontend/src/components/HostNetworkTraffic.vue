@@ -54,7 +54,7 @@
     </div>
 
     <svg
-      v-if="variant === 'card' && trendPaths.stroke"
+      v-if="variant === 'card'"
       class="traffic-strip__trend"
       width="100%"
       height="18"
@@ -69,8 +69,9 @@
           <stop offset="100%" stop-color="var(--accent-cyan)" stop-opacity="0" />
         </linearGradient>
       </defs>
-      <path :d="trendPaths.fill" :fill="`url(#${gradientId})`" />
+      <path v-if="trendPaths.fill" :d="trendPaths.fill" :fill="`url(#${gradientId})`" />
       <path
+        v-if="trendPaths.stroke"
         :d="trendPaths.stroke"
         fill="none"
         stroke="var(--accent-cyan)"
@@ -243,9 +244,14 @@ const trendPaths = computed(() => generateTrend(rateHistory.value));
 }
 
 .traffic-strip--card {
+  height: 98px;
+  box-sizing: border-box;
   padding: 10px 12px 7px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--ui-radius-lg);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .traffic-strip--detail {
@@ -266,6 +272,8 @@ const trendPaths = computed(() => generateTrend(rateHistory.value));
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
+  height: 20px;
+  min-height: 20px;
 }
 
 .traffic-strip__identity {
@@ -335,7 +343,9 @@ const trendPaths = computed(() => generateTrend(rateHistory.value));
 .traffic-strip__values {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 8px;
+  margin-top: 4px;
+  min-height: 38px;
+  align-items: center;
 }
 
 .traffic-strip__segment {

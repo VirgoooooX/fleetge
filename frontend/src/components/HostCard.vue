@@ -207,7 +207,6 @@ watch(
       // Push CPU
       cpuHistory.value.push(m.cpuPercent);
       if (cpuHistory.value.length > 50) cpuHistory.value.shift();
-
     }
   },
   { immediate: true, deep: true }
@@ -343,13 +342,18 @@ const vibrantIcons = {
   --weight-regular: 400;
 
   cursor: pointer;
+  height: 100%;
   min-height: 286px;
   background: var(--host-card-bg) !important;
   border-color: var(--border-subtle) !important;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .host-card :deep(.el-card__body) {
   padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  box-sizing: border-box;
 }
 .host-card:hover {
   border-color: var(--border-strong) !important;
@@ -362,6 +366,7 @@ const vibrantIcons = {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  height: 26px;
   min-height: 26px;
 }
 .card-header-left {
@@ -461,6 +466,8 @@ const vibrantIcons = {
   margin-top: 3px;
   margin-left: 18px;
   margin-bottom: 12px;
+  height: 18px;
+  line-height: 18px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -472,6 +479,8 @@ const vibrantIcons = {
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin-bottom: 10px;
+  height: 110px;
+  box-sizing: border-box;
 }
 .m-sub-card {
   background: var(--surface-panel);
@@ -482,7 +491,8 @@ const vibrantIcons = {
   flex-direction: column;
   position: relative;
   overflow: hidden;
-  min-height: 110px;
+  height: 110px;
+  box-sizing: border-box;
 }
 .m-sub-card-header {
   display: flex;
@@ -521,6 +531,9 @@ const vibrantIcons = {
   align-items: baseline;
   gap: 2px;
   margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .val-amount {
   width: 2.6em;
@@ -576,11 +589,15 @@ const vibrantIcons = {
   left: 0;
   width: 100%;
   height: 32px;
+  pointer-events: none;
+  overflow: hidden;
 }
 
 /* Network is the primary Host telemetry block; disk I/O follows as a quiet rail. */
 .m-network-block {
   margin-bottom: 8px;
+  height: 98px;
+  box-sizing: border-box;
 }
 
 .m-io-strip {
@@ -588,7 +605,9 @@ const vibrantIcons = {
   grid-template-columns: minmax(72px, 1fr) minmax(0, 1.25fr) minmax(0, 1.25fr);
   align-items: center;
   gap: 10px;
-  min-height: 34px;
+  height: 36px;
+  min-height: 36px;
+  box-sizing: border-box;
   padding: 6px 10px;
   margin-bottom: 12px;
   border: 1px solid var(--border-subtle);
@@ -638,7 +657,9 @@ const vibrantIcons = {
 }
 
 .metrics-missing {
-  min-height: 96px;
+  height: 262px;
+  min-height: 262px;
+  box-sizing: border-box;
   display: grid;
   place-items: center;
   border: 1px dashed var(--border-subtle);
@@ -646,7 +667,7 @@ const vibrantIcons = {
   color: var(--text-muted);
   font-size: var(--font-size-label);
   font-weight: var(--weight-regular);
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 /* Footer splits */
@@ -656,6 +677,8 @@ const vibrantIcons = {
   padding-top: 9px;
   margin-top: auto;
   align-items: center;
+  height: 28px;
+  box-sizing: border-box;
 }
 .m-foot-item {
   flex: 1;
