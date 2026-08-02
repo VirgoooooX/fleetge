@@ -118,13 +118,13 @@
     <!-- Disk I/O is intentionally secondary to Host WAN traffic. -->
     <div v-if="host.metrics" class="m-io-strip">
       <span class="m-io-strip__label">{{ t('hostDetail.diskIO') }}</span>
-      <div class="m-io-strip__metric">
-        <span>{{ t('hostCard.read') }}</span>
+      <div class="m-io-strip__metric" :title="`${t('hostDetail.diskIO')} · ${t('hostCard.read')}`">
+        <span class="m-io-strip__arrow is-down">↓</span>
         <strong>{{ formatRateParts(host.metrics.diskReadRate).amount }}</strong>
         <small>{{ formatRateParts(host.metrics.diskReadRate).unit }}</small>
       </div>
-      <div class="m-io-strip__metric">
-        <span>{{ t('hostCard.write') }}</span>
+      <div class="m-io-strip__metric" :title="`${t('hostDetail.diskIO')} · ${t('hostCard.write')}`">
+        <span class="m-io-strip__arrow is-up">↑</span>
         <strong>{{ formatRateParts(host.metrics.diskWriteRate).amount }}</strong>
         <small>{{ formatRateParts(host.metrics.diskWriteRate).unit }}</small>
       </div>
@@ -343,7 +343,7 @@ const vibrantIcons = {
 
   cursor: pointer;
   height: 100%;
-  min-height: 286px;
+  min-height: 298px;
   background: var(--host-card-bg) !important;
   border-color: var(--border-subtle) !important;
   transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -595,8 +595,8 @@ const vibrantIcons = {
 
 /* Network is the primary Host telemetry block; disk I/O follows as a quiet rail. */
 .m-network-block {
-  margin-bottom: 8px;
-  height: 98px;
+  margin-bottom: 10px;
+  height: 110px;
   box-sizing: border-box;
 }
 
@@ -608,45 +608,59 @@ const vibrantIcons = {
   height: 36px;
   min-height: 36px;
   box-sizing: border-box;
-  padding: 6px 10px;
-  margin-bottom: 12px;
+  padding: 6px 12px;
+  margin-bottom: 10px;
   border: 1px solid var(--border-subtle);
-  border-radius: var(--ui-radius-md);
+  border-radius: var(--ui-radius-lg);
   color: var(--text-secondary);
   background: var(--surface-panel);
+  font-family: var(--font-body);
 }
 
 .m-io-strip__label {
-  font-size: var(--text-xs);
+  font-size: var(--font-size-label);
   font-weight: 700;
+  color: var(--text-secondary);
 }
 
 .m-io-strip__metric {
-  display: grid;
-  grid-template-columns: auto minmax(3.8ch, auto) minmax(0, 1fr);
+  display: flex;
   align-items: baseline;
-  justify-content: end;
+  justify-content: flex-end;
   gap: 4px;
   min-width: 0;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-variant-numeric: tabular-nums;
 }
 
-.m-io-strip__metric > span {
-  color: var(--text-muted);
-  font: var(--text-2xs) var(--font-body);
+.m-io-strip__arrow {
+  font-family: var(--font-body);
+  font-weight: 800;
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+
+.m-io-strip__arrow.is-down {
+  color: var(--accent-cyan);
+}
+
+.m-io-strip__arrow.is-up {
+  color: var(--accent-blue);
 }
 
 .m-io-strip__metric strong {
+  overflow: hidden;
   color: var(--text-primary);
-  font-size: var(--text-xs);
+  font-size: var(--font-size-data);
+  font-weight: var(--weight-bold);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .m-io-strip__metric small {
-  overflow: hidden;
   color: var(--text-muted);
-  font-size: var(--text-2xs);
-  text-overflow: ellipsis;
+  font-size: var(--font-size-micro);
   white-space: nowrap;
 }
 
@@ -657,8 +671,8 @@ const vibrantIcons = {
 }
 
 .metrics-missing {
-  height: 262px;
-  min-height: 262px;
+  height: 274px;
+  min-height: 274px;
   box-sizing: border-box;
   display: grid;
   place-items: center;

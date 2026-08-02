@@ -52,41 +52,11 @@
         </div>
       </article>
     </div>
-
-    <svg
-      v-if="variant === 'card'"
-      class="traffic-strip__trend"
-      width="100%"
-      height="18"
-      viewBox="0 0 100 18"
-      preserveAspectRatio="none"
-      shape-rendering="geometricPrecision"
-      aria-hidden="true"
-    >
-      <defs>
-        <linearGradient :id="gradientId" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--accent-cyan)" stop-opacity="0.12" />
-          <stop offset="100%" stop-color="var(--accent-cyan)" stop-opacity="0" />
-        </linearGradient>
-      </defs>
-      <path v-if="trendPaths.fill" :d="trendPaths.fill" :fill="`url(#${gradientId})`" />
-      <path
-        v-if="trendPaths.stroke"
-        :d="trendPaths.stroke"
-        fill="none"
-        stroke="var(--accent-cyan)"
-        stroke-width="1"
-        stroke-opacity="0.78"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        vector-effect="non-scaling-stroke"
-      />
-    </svg>
   </section>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { HostSummary, HostTrafficState } from "@/stores/dashboard";
 
@@ -116,8 +86,6 @@ const props = withDefaults(defineProps<{
 });
 
 const { t } = useI18n();
-const rateHistory = ref<number[]>([]);
-const lastMetricKey = ref("");
 
 const summary = computed(() => props.traffic?.summary || null);
 const today = computed(() => summary.value?.today?.hasData ? summary.value.today : null);
@@ -173,22 +141,6 @@ const networkInterfaceSummary = computed(() => {
   return interfaces.length === 1 ? interfaces[0] : `${interfaces[0]} +${interfaces.length - 1}`;
 });
 const networkInterfaceTitle = computed(() => networkInterfaces.value.join(", "));
-const gradientId = computed(() => (
-  `traffic-${props.hostId}-${props.variant}`.replace(/[^a-zA-Z0-9_-]/g, "-")
-));
-
-watch(
-  () => props.metrics,
-  (metrics) => {
-    if (!metrics) return;
-    const key = `${metrics.timestamp}|${metrics.networkCounterEpoch || "legacy"}`;
-    if (key === lastMetricKey.value) return;
-    lastMetricKey.value = key;
-    rateHistory.value.push((metrics.networkRxRate || 0) + (metrics.networkTxRate || 0));
-    if (rateHistory.value.length > 50) rateHistory.value.shift();
-  },
-  { immediate: true, deep: true },
-);
 
 function formatParts(value: number | null | undefined, perSecond = false): ValueParts {
   if (value == null) return { amount: "—", unit: "", text: "—" };
@@ -204,35 +156,6 @@ function formatParts(value: number | null | undefined, perSecond = false): Value
   const unit = `${units[index]}${perSecond ? "/s" : ""}`;
   return { amount, unit, text: `${amount} ${unit}` };
 }
-
-function generateTrend(data: number[]) {
-  if (data.length < 6) return { stroke: "", fill: "" };
-  const width = 100;
-  const height = 18;
-  const max = Math.max(...data, 1);
-  const points = data.map((value, index) => ({
-    x: (index / (data.length - 1)) * width,
-    y: 2 + (height - 4) * (1 - value / max),
-  }));
-  const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-  let stroke = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
-  for (let index = 0; index < points.length - 1; index += 1) {
-    const p0 = points[Math.max(0, index - 1)];
-    const p1 = points[index];
-    const p2 = points[index + 1];
-    const p3 = points[Math.min(points.length - 1, index + 2)];
-    const minY = Math.min(p1.y, p2.y);
-    const maxY = Math.max(p1.y, p2.y);
-    const cp1x = p1.x + (p2.x - p0.x) / 6;
-    const cp1y = clamp(p1.y + (p2.y - p0.y) / 6, minY, maxY);
-    const cp2x = p2.x - (p3.x - p1.x) / 6;
-    const cp2y = clamp(p2.y - (p3.y - p1.y) / 6, minY, maxY);
-    stroke += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-  return { stroke, fill: `${stroke} L ${width} ${height} L 0 ${height} Z` };
-}
-
-const trendPaths = computed(() => generateTrend(rateHistory.value));
 </script>
 
 <style scoped>
@@ -244,9 +167,9 @@ const trendPaths = computed(() => generateTrend(rateHistory.value));
 }
 
 .traffic-strip--card {
-  height: 98px;
+  height: 110px;
   box-sizing: border-box;
-  padding: 10px 12px 7px;
+  padding: 12px 14px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--ui-radius-lg);
   display: flex;
@@ -343,8 +266,8 @@ const trendPaths = computed(() => generateTrend(rateHistory.value));
 .traffic-strip__values {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 4px;
-  min-height: 38px;
+  margin-top: 6px;
+  min-height: 42px;
   align-items: center;
 }
 
@@ -456,12 +379,6 @@ const trendPaths = computed(() => generateTrend(rateHistory.value));
 
 .traffic-strip__arrow.is-up {
   color: var(--accent-blue);
-}
-
-.traffic-strip__trend {
-  display: block;
-  margin-top: 5px;
-  opacity: 0.82;
 }
 
 @media (max-width: 520px) {
