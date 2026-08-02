@@ -126,8 +126,8 @@
     <div class="map-controls" :aria-label="t('map.controlsAria')">
       <button type="button" :aria-label="t('map.zoomIn')" :disabled="camera.k >= MAX_ZOOM" @click="zoomBy(1.35)">+</button>
       <button type="button" :aria-label="t('map.zoomOut')" :disabled="camera.k <= MIN_ZOOM" @click="zoomBy(1 / 1.35)">−</button>
-      <button class="map-controls__reset" type="button" :aria-label="t('map.resetView')" @click="resetView">◎</button>
-      <button type="button" :aria-label="t('map.fitHosts')" :title="t('map.fitHosts')" @click="fitHostsToView"><Maximize2 :size="15" /></button>
+      <button class="map-controls__reset" type="button" :aria-label="t('map.resetView')" @click="resetView()">◎</button>
+      <button type="button" :aria-label="t('map.fitHosts')" :title="t('map.fitHosts')" @click="fitHostsToView()"><Maximize2 :size="15" /></button>
       <button
         class="map-controls__mode"
         type="button"
@@ -380,31 +380,100 @@ function setZoom(nextZoom: number) {
   constrainPan();
 }
 
+let animationFrameId: number | null = null;
+
+function stopCameraAnimation() {
+  if (animationFrameId !== null) {
+    cancelAnimationFrame(animationFrameId);
+    animationFrameId = null;
+  }
+}
+
+function animateCamera(
+  target: {
+    longitude: number;
+    latitude: number;
+    k: number;
+    panX: number;
+    panY: number;
+  },
+  duration = 750,
+) {
+  stopCameraAnimation();
+
+  const startLon = rotation.longitude;
+  const startLat = rotation.latitude;
+  const startK = camera.k;
+  const startPanX = camera.panX;
+  const startPanY = camera.panY;
+
+  // Shortest path for spherical longitude rotation
+  const diffLon = ((target.longitude - startLon + 540) % 360) - 180;
+  const diffLat = target.latitude - startLat;
+  const diffK = target.k - startK;
+  const diffPanX = target.panX - startPanX;
+  const diffPanY = target.panY - startPanY;
+
+  const startTime = performance.now();
+
+  function step(now: number) {
+    const elapsed = now - startTime;
+    const progress = Math.min(1, elapsed / duration);
+    // Cubic ease-out curve for smooth, natural motion
+    const ease = 1 - Math.pow(1 - progress, 3);
+
+    rotation.longitude = ((startLon + diffLon * ease + 540) % 360) - 180;
+    rotation.latitude = Math.max(-60, Math.min(60, startLat + diffLat * ease));
+    camera.k = startK + diffK * ease;
+    camera.panX = startPanX + diffPanX * ease;
+    camera.panY = startPanY + diffPanY * ease;
+
+    if (progress < 1) {
+      animationFrameId = requestAnimationFrame(step);
+    } else {
+      animationFrameId = null;
+      constrainPan();
+    }
+  }
+
+  animationFrameId = requestAnimationFrame(step);
+}
+
 function zoomBy(factor: number) {
+  stopCameraAnimation();
   setZoom(camera.k * factor);
 }
 
-function resetView() {
-  camera.k = 1;
-  camera.panX = 0;
-  camera.panY = 0;
-  rotation.longitude = -105;
-  rotation.latitude = 0;
+function resetView(animated = true) {
+  if (animated) {
+    animateCamera({
+      longitude: -105,
+      latitude: 0,
+      k: 1,
+      panX: 0,
+      panY: 0,
+    });
+  } else {
+    stopCameraAnimation();
+    camera.k = 1;
+    camera.panX = 0;
+    camera.panY = 0;
+    rotation.longitude = -105;
+    rotation.latitude = 0;
+  }
 }
 
-function fitHostsToView() {
-  const locations = props.hosts.flatMap((host) => host.location
-    ? [[host.location.latitude, host.location.longitude] as [number, number]]
-    : []);
+function focusLocations(locations: [number, number][], animated = true) {
   if (!locations.length) {
-    resetView();
+    resetView(animated);
     return;
   }
 
   const focus = calculateGeographicFocus(locations);
-  rotation.longitude = -focus[1];
-  rotation.latitude = -focus[0];
-  const projection = createFleetProjection(size.width, size.height, 34, [rotation.longitude, rotation.latitude]);
+  const targetLon = -focus[1];
+  const targetLat = -focus[0];
+
+  const projection = createFleetProjection(size.width, size.height, 34, [targetLon, targetLat]);
   const points = locations.flatMap((location) => {
     const point = projectFleetPoint(projection, location);
     return point ? [point] : [];
@@ -422,19 +491,46 @@ function fitHostsToView() {
   const compact = spanX < size.width * .04 && spanY < size.height * .04;
   const scaleX = (size.width * .72) / Math.max(spanX, 1);
   const scaleY = (size.height * .68) / Math.max(spanY, 1);
-  camera.k = compact ? 2.55 : Math.max(1, Math.min(3.2, scaleX, scaleY));
-  camera.panX = camera.k * (size.width / 2 - (minX + maxX) / 2);
-  camera.panY = camera.k * (size.height / 2 - (minY + maxY) / 2);
-  constrainPan();
+
+  const targetK = compact ? 2.55 : Math.max(1, Math.min(3.2, scaleX, scaleY));
+  const targetPanX = targetK * (size.width / 2 - (minX + maxX) / 2);
+  const targetPanY = targetK * (size.height / 2 - (minY + maxY) / 2);
+
+  if (animated) {
+    animateCamera({
+      longitude: targetLon,
+      latitude: targetLat,
+      k: targetK,
+      panX: targetPanX,
+      panY: targetPanY,
+    }, 750);
+  } else {
+    stopCameraAnimation();
+    rotation.longitude = targetLon;
+    rotation.latitude = targetLat;
+    camera.k = targetK;
+    camera.panX = targetPanX;
+    camera.panY = targetPanY;
+    constrainPan();
+  }
+}
+
+function fitHostsToView(animated = true) {
+  const locations = props.hosts.flatMap((host) => host.location
+    ? [[host.location.latitude, host.location.longitude] as [number, number]]
+    : []);
+  focusLocations(locations, animated);
 }
 
 function handleWheel(event: WheelEvent) {
+  stopCameraAnimation();
   const factor = Math.exp(-event.deltaY * 0.0012);
   setZoom(camera.k * factor);
 }
 
 function handlePointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
+  stopCameraAnimation();
   dragPointerId = event.pointerId;
   dragging.value = true;
   dragMoved.value = false;
@@ -498,6 +594,12 @@ watch(
 );
 
 onBeforeUnmount(() => resizeObserver?.disconnect());
+
+defineExpose({
+  focusLocations,
+  resetView,
+  fitHostsToView,
+});
 </script>
 
 <style scoped>

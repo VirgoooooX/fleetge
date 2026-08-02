@@ -33,6 +33,7 @@
     <section class="map-workspace ui-panel" :class="{ 'has-unlocated': store.unlocatedHosts.length > 0 }">
       <div class="map-stage">
         <FleetGeoMap
+          ref="geoMapRef"
           :center="store.snapshot?.center || null"
           :hosts="store.hosts"
           @select="openMapSelection"
@@ -84,6 +85,99 @@
           <ChevronRight :size="16" />
         </button>
       </aside>
+    </section>
+
+    <!-- Topology & Latency Matrix Panel -->
+    <section v-if="store.snapshot?.hosts.length" class="topology-matrix-panel ui-panel">
+      <header class="topology-matrix-header">
+        <div class="topology-matrix-title">
+          <span class="ui-section-kicker">{{ t("map.topologyKicker") }}</span>
+          <h3>{{ t("map.topologyTitle") }}</h3>
+        </div>
+        <div class="topology-matrix-pills">
+          <span class="matrix-pill">
+            <Globe :size="13" />
+            <span>{{ t("map.locatedNodes") }} <strong>{{ hostsWithLocationCount }} / {{ store.snapshot.hosts.length }}</strong></span>
+          </span>
+          <span v-if="averageRttMs > 0" class="matrix-pill">
+            <Radio :size="13" />
+            <span>{{ t("map.avgLatency") }} <strong>{{ averageRttMs }} ms</strong></span>
+          </span>
+        </div>
+      </header>
+
+      <div class="topology-table-container">
+        <table class="topology-table">
+          <thead>
+            <tr>
+              <th>{{ t("map.colNode") }}</th>
+              <th>{{ t("map.colStatus") }}</th>
+              <th>{{ t("map.colLocation") }}</th>
+              <th>{{ t("map.colPublicIp") }}</th>
+              <th>{{ t("map.colDistance") }}</th>
+              <th>{{ t("map.colLatency") }}</th>
+              <th>{{ t("map.colContainers") }}</th>
+              <th class="text-right">{{ t("map.colActions") }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="node in topologyNodes"
+              :key="node.host_id"
+              class="topology-row"
+              :class="{ 'is-selected': selectedHostId === node.host_id }"
+              @click="openNodeDrawer(node.host)"
+            >
+              <td class="cell-node">
+                <div class="node-identity">
+                  <span class="node-dot" :class="node.status"></span>
+                  <strong>{{ node.display_name }}</strong>
+                </div>
+              </td>
+              <td>
+                <span class="m-status-pill" :class="`is-${node.status}`">
+                  {{ statusLabel(node.status) }}
+                </span>
+              </td>
+              <td class="cell-location">
+                <span class="location-text">{{ node.locationText }}</span>
+              </td>
+              <td class="cell-ip">
+                <code v-if="node.effectiveIp !== '—'" class="ip-code">{{ node.effectiveIp }}</code>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="cell-distance">
+                <span v-if="node.distanceKm !== null" class="distance-text">
+                  {{ node.distanceKm === 0 ? t("map.distanceLocal") : `${node.distanceKm.toLocaleString()} km` }}
+                </span>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="cell-latency">
+                <div v-if="node.rttMs !== null" class="rtt-badge" :class="`rtt-${node.rttTone}`">
+                  <span class="rtt-dot"></span>
+                  <strong>{{ node.rttMs }}</strong>
+                  <small>ms</small>
+                </div>
+                <span v-else class="text-muted">—</span>
+              </td>
+              <td class="cell-containers">
+                <strong>{{ node.container_count }}</strong>
+                <small class="text-muted"> {{ t("map.containersCountSuffix") }}</small>
+              </td>
+              <td class="cell-actions text-right" @click.stop>
+                <button
+                  class="ui-button ui-button--compact"
+                  type="button"
+                  @click.stop="focusNodeOnMap(node.host)"
+                >
+                  <ExternalLink :size="13" />
+                  {{ t("map.inspectNode") }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <el-drawer
@@ -257,8 +351,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
-  Activity, ArrowLeft, ChevronRight, Clock3, Crosshair, ExternalLink, LoaderCircle,
-  LocateFixed, MapPinned, Server, ShieldCheck, TriangleAlert, Users, X,
+  Activity, ArrowLeft, ChevronRight, Clock3, Crosshair, ExternalLink, Globe, LoaderCircle,
+  LocateFixed, MapPinned, Radio, Server, ShieldCheck, TriangleAlert, Users, X,
 } from "lucide-vue-next";
 import { ElMessage } from "element-plus";
 import FleetGeoMap from "@/components/FleetGeoMap.vue";
@@ -296,6 +390,82 @@ const locationForm = reactive({
   country_code: "",
   latitude: 0,
   longitude: 0,
+});
+
+function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+}
+
+function estimateRttMs(distanceKm: number): number {
+  if (distanceKm <= 5) return 1;
+  if (distanceKm <= 50) return 6;
+  if (distanceKm <= 200) return 14;
+  return Math.round(15 + distanceKm * 0.016);
+}
+
+const topologyNodes = computed(() => {
+  const snapshot = store.snapshot;
+  if (!snapshot) return [];
+  const center = snapshot.center;
+  const centerHasLoc = center && typeof center.latitude === "number" && typeof center.longitude === "number";
+
+  return snapshot.hosts.map((host) => {
+    const loc = host.location;
+    const hasLocation = Boolean(loc && typeof loc.latitude === "number" && typeof loc.longitude === "number");
+
+    let distanceKm: number | null = null;
+    let rttMs: number | null = null;
+    if (centerHasLoc && hasLocation && loc) {
+      distanceKm = calculateDistanceKm(center.latitude, center.longitude, loc.latitude, loc.longitude);
+      rttMs = estimateRttMs(distanceKm);
+    }
+
+    let rttTone = "unknown";
+    if (host.status === "offline") {
+      rttTone = "offline";
+    } else if (rttMs !== null) {
+      if (rttMs < 30) rttTone = "excellent";
+      else if (rttMs < 120) rttTone = "good";
+      else rttTone = "fair";
+    }
+
+    const locationText = loc
+      ? [loc.city || loc.region, loc.country].filter(Boolean).join(", ") || t("map.unlocated")
+      : t("map.unlocated");
+
+    return {
+      host_id: host.host_id,
+      display_name: host.display_name,
+      status: host.status,
+      container_count: host.container_count,
+      effectiveIp: host.network_identity?.effectiveIp || "—",
+      hasLocation,
+      locationText,
+      distanceKm,
+      rttMs,
+      rttTone,
+      host,
+    };
+  });
+});
+
+const hostsWithLocationCount = computed(() =>
+  topologyNodes.value.filter((n) => n.hasLocation).length
+);
+
+const averageRttMs = computed(() => {
+  const valid = topologyNodes.value.filter((n) => n.rttMs !== null && n.status !== "offline");
+  if (!valid.length) return 0;
+  const sum = valid.reduce((acc, n) => acc + (n.rttMs || 0), 0);
+  return Math.round(sum / valid.length);
 });
 
 const selectedHost = computed(() =>
@@ -388,12 +558,29 @@ function statusLabel(status: FleetMapHost["status"]) {
   return t("map.unknown");
 }
 
+const geoMapRef = ref<any>(null);
+
 function openMapSelection(hosts: FleetMapHost[]) {
   drawerMode.value = "selection";
   drawerHostIds.value = hosts.map((host) => host.host_id);
   selectedHostId.value = hosts.length === 1 ? hosts[0].host_id : "";
   locationEditing.value = false;
   drawerVisible.value = true;
+}
+
+function openNodeDrawer(host: FleetMapHost) {
+  openMapSelection([host]);
+}
+
+function focusNodeOnMap(host: FleetMapHost) {
+  selectedHostId.value = host.host_id;
+  if (host.location && typeof host.location.latitude === "number" && typeof host.location.longitude === "number") {
+    geoMapRef.value?.focusLocations([[host.location.latitude, host.location.longitude]]);
+  }
+  const mapWorkspace = document.querySelector(".map-workspace");
+  if (mapWorkspace) {
+    mapWorkspace.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function openUnlocatedHost(host: FleetMapHost) {
@@ -776,4 +963,202 @@ onBeforeUnmount(() => {
 .city-results strong { font-size: 12px; }
 .city-results small,.city-searching { color: var(--fleet-map-muted); font-size: 10px; }
 .city-searching { display: flex; align-items: center; gap: 6px; padding: 10px; }
+
+/* ── Topology & Latency Matrix Panel ───────────────────────────── */
+.topology-matrix-panel {
+  margin-top: 16px;
+  background: var(--fleet-map-panel);
+  border-color: var(--fleet-map-border);
+  box-shadow: var(--fleet-map-shadow);
+  border-radius: var(--ui-radius-lg);
+  overflow: hidden;
+}
+
+.topology-matrix-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--fleet-map-border);
+  background: var(--fleet-map-panel);
+}
+
+.topology-matrix-title h3 {
+  margin: 2px 0 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--fleet-map-ink);
+}
+
+.topology-matrix-pills {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.matrix-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--fleet-map-panel-raised);
+  border: 1px solid var(--fleet-map-border);
+  font-size: var(--text-xs);
+  color: var(--fleet-map-muted);
+}
+
+.matrix-pill strong {
+  color: var(--fleet-map-ink);
+  font-weight: 800;
+}
+
+.topology-table-container {
+  overflow-x: auto;
+}
+
+.topology-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+}
+
+.topology-table th {
+  padding: 10px 16px;
+  background: var(--fleet-map-panel-raised);
+  color: var(--fleet-map-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--fleet-map-border);
+}
+
+.topology-row {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.topology-row:hover {
+  background-color: color-mix(in srgb, var(--accent-blue) 6%, var(--fleet-map-panel));
+}
+
+.topology-row.is-selected {
+  background-color: color-mix(in srgb, var(--accent-blue) 12%, var(--fleet-map-panel));
+}
+
+.topology-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--fleet-map-border);
+  color: var(--fleet-map-ink);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.topology-row:last-child td {
+  border-bottom: none;
+}
+
+.node-identity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.node-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.node-dot.online { background: var(--success); }
+.node-dot.degraded { background: var(--warning); }
+.node-dot.offline { background: var(--danger); }
+.node-dot.unknown { background: var(--fleet-map-muted); }
+
+.m-status-pill {
+  font-size: 11.5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.m-status-pill.is-online {
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success) 24%, transparent);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+.m-status-pill.is-degraded {
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning) 26%, transparent);
+  background: color-mix(in srgb, var(--warning) 8%, transparent);
+}
+.m-status-pill.is-offline {
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.m-status-pill.is-unknown {
+  color: var(--fleet-map-muted);
+  border: 1px solid var(--fleet-map-border);
+  background: var(--fleet-map-panel-raised);
+}
+
+.ip-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 2px 7px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--fleet-map-panel-raised);
+  color: var(--fleet-map-ink);
+  border: 1px solid var(--fleet-map-border);
+}
+
+.rtt-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.rtt-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.rtt-badge.rtt-excellent {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 24%, transparent);
+}
+.rtt-badge.rtt-excellent .rtt-dot { background: var(--success); }
+
+.rtt-badge.rtt-good {
+  color: var(--accent-cyan);
+  background: color-mix(in srgb, var(--accent-cyan) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 24%, transparent);
+}
+.rtt-badge.rtt-good .rtt-dot { background: var(--accent-cyan); }
+
+.rtt-badge.rtt-fair {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 24%, transparent);
+}
+.rtt-badge.rtt-fair .rtt-dot { background: var(--warning); }
+
+.rtt-badge.rtt-offline {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 28%, transparent);
+}
+.rtt-badge.rtt-offline .rtt-dot { background: var(--danger); }
 </style>
