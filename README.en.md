@@ -26,20 +26,22 @@ Fleetge's product shape and parts of its interaction model are inspired by and a
   <img src="assets/dashboard.png" width="92%" alt="Fleetge Dashboard" />
 </div>
 
-| App Launchpad | Host Console |
+| Fleet Map | App Launchpad |
 | :---: | :---: |
-| <img src="assets/apps.png" alt="App Launchpad" /> | <img src="assets/host_detail.png" alt="Host Detail" /> |
+| <img src="assets/fleet_map.png" alt="Fleet Map" /> | <img src="assets/apps.png" alt="App Launchpad" /> |
 
-| Image Updates | Settings |
+| Host Console | Image Updates |
 | :---: | :---: |
-| <img src="assets/updates.png" alt="Image Updates" /> | <img src="assets/settings.png" alt="Settings" /> |
+| <img src="assets/host_detail.png" alt="Host Detail" /> | <img src="assets/updates.png" alt="Image Updates" /> |
 
 ## Capabilities
 
 | Capability | Description |
 | :--- | :--- |
 | Multi-host dashboard | View online status, CPU, memory, disk, network throughput, and container counts across all managed hosts. |
-| Real-time metrics | Stream host metrics over SSE with second-level refresh intervals. |
+| Real-time metrics | Stream host metrics over SSE with fixed-height host cards and trend sparklines. |
+| Traffic Statistics | Track real-time WAN transfer rates and cumulative traffic for today and custom monthly billing cycles (e.g. starting on the 15th). |
+| Fleet Map | Visualize geographic distribution, online status, and telemetries of all managed nodes on an interactive global map. |
 | App Launchpad | Aggregate service entry points by host or custom group, filter by runtime/update status, and open external app URLs quickly. |
 | Compose Stack management | Start, stop, restart, update, and delete stacks remotely with live terminal output. |
 | Built-in Compose editor | Create, edit, and deploy Compose files directly from the web UI. |

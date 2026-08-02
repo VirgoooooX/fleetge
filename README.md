@@ -31,20 +31,22 @@ Fleetge 的产品形态与部分交互体验参考并致谢 [Dockge](https://git
   <img src="assets/dashboard.png" width="92%" alt="Fleetge Dashboard" />
 </div>
 
-| 应用启动台 | 主机控制台 |
+| 节点分布地图 (Fleet Map) | 应用启动台 |
 | :---: | :---: |
-| <img src="assets/apps.png" alt="App Launchpad" /> | <img src="assets/host_detail.png" alt="Host Detail" /> |
+| <img src="assets/fleet_map.png" alt="Fleet Map" /> | <img src="assets/apps.png" alt="App Launchpad" /> |
 
-| 镜像更新 | 系统设置 |
+| 主机控制台 | 镜像更新 |
 | :---: | :---: |
-| <img src="assets/updates.png" alt="Image Updates" /> | <img src="assets/settings.png" alt="Settings" /> |
+| <img src="assets/host_detail.png" alt="Host Detail" /> | <img src="assets/updates.png" alt="Image Updates" /> |
 
 ## 核心能力
 
 | 能力 | 说明 |
 | :--- | :--- |
 | 多主机总览 | 集中查看所有受管节点的在线状态、CPU、内存、磁盘、网络吞吐与容器数量。 |
-| 实时指标曲线 | 通过 SSE 推送秒级性能数据，适合轻量运维看板和日常巡检。 |
+| 实时指标曲线 | 通过 SSE 推送秒级性能数据，固定高度卡片展示动态 Trend 与 CPU Sparkline 曲线。 |
+| 流量统计与监测 | 实时计算 WAN 网络速率，汇总今日与月度/账单周期（如每月15日起算）的上传下载累计流量。 |
+| 节点分布地图 | 在可视化世界地图上直观定位受管主机的地理位置分布、在线状态与指标概览。 |
 | 应用启动台 | 按主机或自定义分组聚合服务入口，支持运行状态、更新状态筛选和快速跳转。 |
 | Compose Stack 管理 | 远程启动、停止、重启、更新、删除 Stack，并查看实时终端输出。 |
 | 在线 Compose 编辑器 | 直接在 Web 界面中创建、编辑和部署 Compose 文件。 |
