@@ -169,10 +169,7 @@
               <p>{{ t("settings.hosts.count", { count: store.hosts.length }) }}</p>
             </div>
             <div class="section-actions">
-              <el-button class="ui-button enrollment-launch" @click="openEnrollmentDialog">
-                <Rocket :size="16" />一键入网
-              </el-button>
-              <el-button type="primary" class="ui-button ui-button--primary" :icon="Plus" @click="openCreateHostDialog">
+              <el-button type="primary" class="ui-button ui-button--primary" :icon="Plus" @click="openAddHostChoiceDialog">
                 {{ t("settings.hosts.add") }}
               </el-button>
             </div>
@@ -439,11 +436,58 @@
       </main>
     </div>
 
+    <!-- Choice Modal: 添加主机类型选择 -->
+    <el-dialog
+      v-model="addHostChoiceVisible"
+      :title="t('settings.hosts.addChoiceTitle')"
+      width="min(540px, calc(100vw - 28px))"
+      class="ui-dialog add-host-choice-dialog"
+    >
+      <div class="add-host-choice-intro">
+        <p>{{ t("settings.hosts.addChoiceSubtitle") }}</p>
+      </div>
+      <div class="add-host-choice-cards">
+        <div
+          class="add-host-choice-card choice-card--enrollment"
+          tabindex="0"
+          role="button"
+          @click="chooseAddHostMode('enrollment')"
+          @keydown.enter.prevent="chooseAddHostMode('enrollment')"
+        >
+          <div class="choice-card-icon">
+            <Rocket :size="24" />
+          </div>
+          <div class="choice-card-body">
+            <h4>{{ t("settings.hosts.modeEnrollmentTitle") }}</h4>
+            <p>{{ t("settings.hosts.modeEnrollmentDesc") }}</p>
+          </div>
+          <ChevronRight class="choice-card-arrow" :size="18" />
+        </div>
+
+        <div
+          class="add-host-choice-card choice-card--manual"
+          tabindex="0"
+          role="button"
+          @click="chooseAddHostMode('manual')"
+          @keydown.enter.prevent="chooseAddHostMode('manual')"
+        >
+          <div class="choice-card-icon">
+            <Server :size="24" />
+          </div>
+          <div class="choice-card-body">
+            <h4>{{ t("settings.hosts.modeManualTitle") }}</h4>
+            <p>{{ t("settings.hosts.modeManualDesc") }}</p>
+          </div>
+          <ChevronRight class="choice-card-arrow" :size="18" />
+        </div>
+      </div>
+    </el-dialog>
+
     <el-dialog
       v-model="enrollmentDialogVisible"
       title="Agent 一键入网"
       width="min(760px, calc(100vw - 28px))"
-      custom-class="ui-dialog enrollment-dialog"
+      class="ui-dialog enrollment-dialog"
       @closed="currentInstallCommand = ''"
     >
       <div class="enrollment-intro">
@@ -521,7 +565,7 @@
       v-model="hostDialogVisible"
       :title="hostFormMode === 'create' ? t('settings.hosts.create') : t('settings.hosts.edit')"
       width="640px"
-      custom-class="ui-dialog"
+      class="ui-dialog"
       :before-close="closeHostDialog"
     >
       <el-form :model="hostForm" label-position="top" ref="hostFormRef" :rules="hostRules" v-loading="hostFormLoading">
@@ -592,7 +636,7 @@
       v-model="appProfilesDialogVisible"
       :title="t('settings.appProfiles.title', { name: selectedHost?.display_name })"
       width="880px"
-      custom-class="ui-dialog"
+      class="ui-dialog"
     >
       <div class="icons-dialog-body" v-loading="appProfilesLoading">
         <div class="current-icons-section">
@@ -719,7 +763,7 @@
       v-model="globalEnvDialogVisible"
       :title="t('settings.globalEnv.title', { name: selectedHost?.display_name })"
       width="720px"
-      custom-class="ui-dialog"
+      class="ui-dialog"
     >
       <div class="global-env-dialog" v-loading="globalEnvLoading">
         <el-alert
@@ -806,6 +850,7 @@ import {
 } from "@element-plus/icons-vue";
 import {
   BookOpen,
+  ChevronRight,
   GitBranch,
   History,
   MessageCircleQuestionMark,
@@ -852,6 +897,20 @@ const { isMobile } = useMobile();
 const appVersion = __APP_VERSION__;
 
 const enrollmentDialogVisible = ref(false);
+const addHostChoiceVisible = ref(false);
+
+function openAddHostChoiceDialog() {
+  addHostChoiceVisible.value = true;
+}
+
+function chooseAddHostMode(mode: "enrollment" | "manual") {
+  addHostChoiceVisible.value = false;
+  if (mode === "enrollment") {
+    openEnrollmentDialog();
+  } else {
+    openCreateHostDialog();
+  }
+}
 const creatingInvite = ref(false);
 const currentInviteId = ref("");
 const currentInstallCommand = ref("");
@@ -1746,7 +1805,7 @@ watch(
     }
     const action = Array.isArray(query.action) ? query.action[0] : query.action;
     if (action === "add-host") {
-      openCreateHostDialog();
+      openAddHostChoiceDialog();
       void router.replace({ name: "settings", query: { section: "hosts" } });
     }
   },
@@ -2447,15 +2506,14 @@ onBeforeUnmount(() => {
 }
 
 .enrollment-intro {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 13px;
-  align-items: center;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px;
   margin-bottom: 18px;
-  padding: 14px;
-  border: 1px solid rgba(96, 165, 250, 0.18);
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  background: linear-gradient(120deg, rgba(59, 130, 246, 0.11), rgba(34, 211, 238, 0.035));
+  background: var(--surface-panel-raised, rgba(59, 130, 246, 0.04));
 }
 
 .enrollment-intro-icon {
@@ -2464,15 +2522,79 @@ onBeforeUnmount(() => {
   width: 44px;
   height: 44px;
   border-radius: 12px;
-  color: #7dd3fc;
-  background: rgba(14, 165, 233, 0.12);
+  color: var(--accent-blue, #3b82f6);
+  background: color-mix(in srgb, var(--accent-blue, #3b82f6) 12%, transparent);
+  flex-shrink: 0;
 }
 
-.enrollment-intro strong { color: var(--text-primary); }
-.enrollment-intro p { margin: 5px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.55; }
-.enrollment-warning { margin-top: 6px; color: #fbbf24; font-size: 11px; }
-.enrollment-option-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(120px, .55fr); gap: 10px 14px; }
-.enrollment-option-grid > :last-child { grid-column: 1 / -1; }
+.enrollment-intro strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.enrollment-intro p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.enrollment-warning {
+  margin-top: 6px;
+  color: var(--warning, #fbbf24);
+  font-size: 11px;
+}
+
+:deep(.enrollment-dialog .el-collapse) {
+  margin-top: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  overflow: hidden;
+  background: transparent;
+}
+
+:deep(.enrollment-dialog .el-collapse-item__header) {
+  padding: 0 16px;
+  height: 44px;
+  line-height: 44px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--surface-panel-raised, rgba(15, 23, 42, 0.03));
+  border-bottom: none;
+  transition: background 0.2s ease;
+}
+
+:deep(.enrollment-dialog .el-collapse-item__header.is-active) {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+:deep(.enrollment-dialog .el-collapse-item__wrap) {
+  background: var(--surface-panel, transparent);
+  border-bottom: none;
+}
+
+:deep(.enrollment-dialog .el-collapse-item__content) {
+  padding: 16px;
+  color: var(--text-primary);
+}
+
+.enrollment-option-grid {
+  display: grid;
+  grid-template-columns: 1fr 140px;
+  gap: 14px;
+}
+
+.enrollment-option-grid > :last-child {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+:deep(.enrollment-dialog .el-input-number) {
+  width: 100%;
+}
 
 .install-command-card {
   margin-top: 16px;
@@ -2543,5 +2665,77 @@ onBeforeUnmount(() => {
   :deep(.mobile-hidden) {
     display: none !important;
   }
+}
+
+.add-host-choice-intro p {
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.add-host-choice-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.add-host-choice-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-panel);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  outline: none;
+  user-select: none;
+}
+.add-host-choice-card:hover,
+.add-host-choice-card:focus-visible {
+  border-color: var(--accent-blue, #3b82f6);
+  background: color-mix(in srgb, var(--accent-blue, #3b82f6) 6%, var(--surface-panel));
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.12);
+  transform: translateY(-1px);
+}
+.choice-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.choice-card--enrollment .choice-card-icon {
+  color: #3b82f6;
+  background: color-mix(in srgb, #3b82f6 12%, transparent);
+}
+.choice-card--manual .choice-card-icon {
+  color: #10b981;
+  background: color-mix(in srgb, #10b981 12%, transparent);
+}
+.choice-card-body {
+  flex: 1;
+  min-width: 0;
+}
+.choice-card-body h4 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+.choice-card-body p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.choice-card-arrow {
+  color: var(--text-muted);
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+.add-host-choice-card:hover .choice-card-arrow {
+  color: var(--accent-blue, #3b82f6);
+  transform: translateX(3px);
 }
 </style>
