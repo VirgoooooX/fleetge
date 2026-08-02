@@ -1,0 +1,36 @@
+# Host configuration for Docker Dashboard
+# Place this at the path specified by HOST_CONFIG_PATH env var (default: /app/data/hosts.yaml)
+#
+# Usage:
+#   1. Copy to your dashboard's data directory
+#   2. Generate a Fernet key: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#   3. Set CREDENTIALS_KEY in .env
+#   4. Restart the dashboard — hosts will be loaded on startup
+#
+# Security reminder: This file contains plaintext tokens. Restrict file permissions
+# (chmod 600) and never commit it to version control.
+
+hosts:
+  - host_id: oc-chicago
+    display_name: OC Chicago
+    sort_order: 1
+    enabled: true
+    agent:
+      url: http://192.168.1.100:8080
+      token: "CHANGEME_agent_token"
+
+  - host_id: istoreos
+    display_name: iStoreOS (Agent Mode)
+    sort_order: 2
+    enabled: true
+    agent:
+      url: http://192.168.31.100:8080
+      token: "CHANGEME_agent_token"
+
+  - host_id: zspace-nas
+    display_name: Z4S NAS
+    sort_order: 3
+    enabled: true
+    agent:
+      url: http://192.168.31.253:8080
+      token: "CHANGEME_agent_token"

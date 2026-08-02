@@ -1,41 +1,63 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 dist/
+build/
 *.egg
 .venv/
 venv/
+ENV/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# Node
+# Node / Frontend
 node_modules/
 frontend/dist/
+frontend/build/
+frontend/coverage/
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Logs
 logs/
-# IDE
+*.log
+*-dev.err.log
+*-dev.out.log
+
+# IDE & Editor
 .idea/
 .vscode/
 *.swp
 *.swo
-data/
-# OS
+*.sublime-workspace
 .DS_Store
 Thumbs.db
 
-# Secrets — never commit
+# Secrets & Local Config — never commit
 .env
-.env.local
-data/hosts.yaml
-hosts.yaml.example
-data/dashboard.db
+.env.*
+!.env.example
+hosts.yaml
+!hosts.yaml.example
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.bak
 
-# Build artifacts
-frontend/tsconfig.tsbuildinfo
-
-# Temp
-tmp/
-
-# Dev logs
-*-dev.err.log
-*-dev.out.log
-docs/superpowers/specs/2026-06-16-i18n-integration-design.md
+# Testing & Tool Caches / Temp
+.playwright-cli/
+.codegraph/
 .codex-tmp/
+.agents/
+tmp/
+temp/
+
+# Specs
+docs/superpowers/specs/2026-06-16-i18n-integration-design.md
