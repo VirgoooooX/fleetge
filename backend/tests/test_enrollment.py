@@ -1,9 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
 from app.models import EnrollmentInvite
+from app.routers.enrollment import _response
 from app.services.enrollment_service import (
     build_install_command,
     decode_install_token,
+    ensure_utc,
+    expire_invite_if_needed,
     is_private_host,
     normalize_geolocation,
     normalize_public_host,
@@ -83,3 +86,23 @@ def test_agent_public_host_must_be_a_concrete_hostname():
     assert normalize_public_host("agent-vps-01.example.com") == "agent-vps-01.example.com"
     assert normalize_public_host("HTTPS://agent-vps-01.example.com") is None
     assert normalize_public_host("*.example.com") is None
+
+
+def test_sqlite_naive_invite_timestamp_is_restored_to_utc():
+    invite = _invite()
+    invite.expires_at = datetime(2026, 8, 2, 9, 1, 4, 401148)
+
+    response = _response(invite).model_dump(mode="json")
+
+    assert ensure_utc(invite.expires_at) == datetime(
+        2026, 8, 2, 9, 1, 4, 401148, tzinfo=timezone.utc
+    )
+    assert response["expires_at"] == "2026-08-02T09:01:04.401148Z"
+
+
+def test_sqlite_naive_future_invite_does_not_expire_immediately():
+    invite = _invite()
+    invite.expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(tzinfo=None)
+
+    assert expire_invite_if_needed(invite) is False
+    assert invite.status == "issued"

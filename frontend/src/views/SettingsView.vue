@@ -871,6 +871,7 @@ import { apiClient } from "@/api/client";
 import { useSettingsStore, type HostConfigResponse, type AppProfileEntry, type EnrollmentStatus } from "@/stores/settings";
 import { useDashboardStore, type UpdateResult } from "@/stores/dashboard";
 import { useMobile } from "@/composables/useMobile";
+import { remainingInviteSeconds } from "@/utils/dateTime";
 import UpdateBadge from "@/components/UpdateBadge.vue";
 
 type SettingsSectionId = "params" | "hosts" | "maintenance" | "audit" | "about";
@@ -941,10 +942,8 @@ const enrollmentHttpWarning = computed(() => {
 });
 
 function remainingTime(expiresAt: string) {
-  void enrollmentClock.value;
-  const left = Math.max(0, new Date(expiresAt).getTime() - Date.now());
-  if (!left) return "已过期";
-  const seconds = Math.ceil(left / 1000);
+  const seconds = remainingInviteSeconds(expiresAt, enrollmentClock.value);
+  if (!seconds) return "已过期";
   return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0");
 }
 

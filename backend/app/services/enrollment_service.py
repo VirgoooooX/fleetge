@@ -38,6 +38,13 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def ensure_utc(value: datetime) -> datetime:
+    """Restore UTC tzinfo lost by SQLite and normalize aware timestamps."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def token_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -511,7 +518,7 @@ def create_invite(session: Session, username: str, dashboard_url: str, agent_pub
 def expire_invite_if_needed(invite: EnrollmentInvite) -> bool:
     if invite.status in {"active", "revoked", "expired"}:
         return invite.status == "expired"
-    if invite.expires_at <= utc_now():
+    if ensure_utc(invite.expires_at) <= utc_now():
         invite.status = "expired"
         invite.agent_token_encrypted = None
         invite.secret_path = None

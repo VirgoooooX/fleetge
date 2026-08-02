@@ -5,7 +5,6 @@ import {
   createFleetProjection,
   filterFleetHosts,
   projectFleetPoint,
-  remainingInviteSeconds,
 } from "./fleetMap";
 import type { FleetMapHost } from "@/stores/fleetMap";
 
@@ -22,10 +21,6 @@ describe("Fleet Map data helpers", () => {
 
   it("treats unknown nodes as issues", () => {
     expect(filterFleetHosts(hosts, "all", true).map((host) => host.host_id)).toEqual(["degraded", "legacy"]);
-  });
-
-  it("never returns a negative invite countdown", () => {
-    expect(remainingInviteSeconds("2026-01-01T00:00:00Z", Date.parse("2026-01-01T00:00:02Z"))).toBe(0);
   });
 
   it("centres the complete world on China's central meridian", () => {

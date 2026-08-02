@@ -31,10 +31,6 @@ export function filterFleetHosts<T extends FilterableHost>(hosts: T[], filter: F
   });
 }
 
-export function remainingInviteSeconds(expiresAt: string, now = Date.now()) {
-  return Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 1000));
-}
-
 /**
  * Natural Earth keeps the complete world visible while rotating the central
  * meridian to 105°E. This is a real China-centred projection, not a cropped
