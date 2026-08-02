@@ -234,7 +234,7 @@ async def suggest_host_location(
     suggestion = evidence.get("locationSuggestion")
     if not suggestion:
         raise HTTPException(status_code=409, detail="公网 IP 证据未形成共识或地理数据库冲突；请检查探测依据或手动填写")
-    session.add(AuditLog(user=username, action="host.location.suggest", host_id=host_id, result="success", detail="source=ip-consensus", ip_address=request.client.host if request.client else None))
+    session.add(AuditLog(user=username, action="host.location.suggest", host_id=host_id, result="success", detail=f"source={suggestion.get('source') or 'ip-geolocation'}", ip_address=request.client.host if request.client else None))
     session.commit()
     write_hosts_to_yaml()
     return {"host_id": host_id, "location": suggestion}

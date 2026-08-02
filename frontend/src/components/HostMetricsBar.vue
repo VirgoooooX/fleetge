@@ -29,9 +29,9 @@ const props = defineProps<{
 
 const color = computed(() => {
   const p = props.percent;
-  if (p > 80) return "#f56c6c";
-  if (p > 60) return "#e6a23c";
-  return "#67c23a";
+  if (p > 80) return "var(--danger)";
+  if (p > 60) return "var(--warning)";
+  return "var(--success)";
 });
 
 function formatBytes(bytes: number): string {
@@ -56,7 +56,7 @@ function formatBytes(bytes: number): string {
   background: var(--surface-panel);
 }
 .bar-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   font-weight: 600;
 }

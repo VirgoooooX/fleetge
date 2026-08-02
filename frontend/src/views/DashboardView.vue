@@ -65,6 +65,7 @@
         v-for="host in sortedHosts"
         :key="host.host_id"
         :host="host"
+        :traffic="store.getHostTrafficState(host.host_id)"
         :update-count="store.getHostUpdateCount(host.host_id)"
         @click="goToHost(host.host_id)"
         @updates="goToHost(host.host_id)"
@@ -79,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive } from "vue";
+import { computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useDashboardStore } from "@/stores/dashboard";
@@ -105,6 +106,35 @@ const stoppedContainers = computed(() =>
 );
 
 const sortedHosts = computed(() => store.hosts);
+const hostIds = computed(() => sortedHosts.value.map((host) => host.host_id));
+
+let trafficTimer: ReturnType<typeof setInterval> | null = null;
+
+async function refreshTrafficSummaries() {
+  if (document.hidden) return;
+  await Promise.allSettled(
+    hostIds.value.map((hostId) => store.fetchHostTrafficSummary(hostId, true)),
+  );
+}
+
+function handleVisibilityChange() {
+  if (!document.hidden) void refreshTrafficSummaries();
+}
+
+onMounted(() => {
+  void refreshTrafficSummaries();
+  trafficTimer = setInterval(() => void refreshTrafficSummaries(), 60000);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+});
+
+watch(hostIds, (next, previous) => {
+  if (next.join("|") !== previous.join("|")) void refreshTrafficSummaries();
+});
+
+onUnmounted(() => {
+  if (trafficTimer) clearInterval(trafficTimer);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
+});
 
 function goToHost(hostId: string) {
   router.push(`/hosts/${hostId}`);

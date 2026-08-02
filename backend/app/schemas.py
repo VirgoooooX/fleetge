@@ -64,6 +64,7 @@ class HostSummary(BaseModel):
     host_id: str
     display_name: str
     status: str  # online | offline | degraded | unknown
+    traffic_billing_day: int = 1
     metrics: Optional[HostMetrics] = None
     docker_version: Optional[str] = None
     api_version: Optional[str] = None
@@ -297,6 +298,7 @@ class HostCreateRequest(BaseModel):
     display_name: str
     enabled: bool = True
     sort_order: int = 0
+    traffic_billing_day: int = Field(default=1, ge=1, le=31)
     # Agent connection (primary)
     agent_url: Optional[str] = None
     agent_token: Optional[str] = None
@@ -306,6 +308,7 @@ class HostUpdateRequest(BaseModel):
     display_name: str
     enabled: bool = True
     sort_order: int = 0
+    traffic_billing_day: int | None = Field(default=None, ge=1, le=31)
     agent_url: Optional[str] = None
     agent_token: Optional[str] = None  # None = keep existing, "" = clear
 
@@ -324,6 +327,7 @@ class HostConfigResponse(BaseModel):
     display_name: str
     enabled: bool
     sort_order: int
+    traffic_billing_day: int = 1
     agent_url: Optional[str] = None
     has_agent_token: bool = False     # masked: only show whether token exists
     agent_instance_id: Optional[str] = None

@@ -395,13 +395,27 @@ class TrafficAccountant:
                 }
             safe_limit = min(max(int(limit), 1), 2000)
             with self._connect() as conn:
+                oldest_completed = conn.execute(
+                    "SELECT MIN(id) AS id FROM traffic_bucket WHERE completed=1"
+                ).fetchone()
                 rows = conn.execute(
                     "SELECT * FROM traffic_bucket WHERE completed=1 AND id>? ORDER BY id LIMIT ?",
                     (max(int(cursor), 0), safe_limit + 1),
                 ).fetchall()
             has_more = len(rows) > safe_limit
             rows = rows[:safe_limit]
-            retention_gap = bool(cursor and rows and int(rows[0]["id"]) > int(cursor) + 1)
+            # SQLite AUTOINCREMENT values are allowed to have holes. In particular,
+            # INSERT ... ON CONFLICT DO UPDATE consumes sequence values while the
+            # open five-minute bucket is checkpointed. Only a cursor older than the
+            # oldest retained completed row proves that history was actually pruned.
+            oldest_completed_id = (
+                int(oldest_completed["id"])
+                if oldest_completed is not None and oldest_completed["id"] is not None
+                else None
+            )
+            retention_gap = bool(
+                cursor and oldest_completed_id is not None and int(cursor) < oldest_completed_id
+            )
             buckets = [
                 {
                     "id": int(row["id"]),

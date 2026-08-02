@@ -540,18 +540,14 @@ async function autoLocateUnlocatedHosts() {
   if (autoLocating.value) return;
   autoLocating.value = true;
   const pending = [...store.unlocatedHosts];
-  let located = 0;
   for (const host of pending) {
     try {
       await store.suggestLocation(host.host_id);
-      located += 1;
     } catch {
-      // Private IPs and failed DNS lookups stay in the manual list.
+      // Leave the Host in the manual list when no usable location is available.
     }
   }
   autoLocating.value = false;
-  if (located) ElMessage.success(t("map.autoLocatedSuccess", { count: located }));
-  else ElMessage.info(t("map.autoLocatedEmpty"));
 }
 
 async function suggestCurrentLocation() {
@@ -571,9 +567,8 @@ async function suggestCurrentLocation() {
     locationForm.country_code = suggestion.country_code || "";
     locationForm.latitude = Number(suggestion.latitude);
     locationForm.longitude = Number(suggestion.longitude);
-    ElMessage.success(t("map.suggestionReady"));
-  } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || error.message || t("map.suggestionUnavailable"));
+  } catch {
+    // Keep the current form unchanged when no usable location is available.
   } finally {
     suggesting.value = false;
   }

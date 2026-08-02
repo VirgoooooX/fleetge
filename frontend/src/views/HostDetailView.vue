@@ -18,42 +18,19 @@
       />
       <div class="metrics-item">
         <div class="metrics-header">
-          <span class="metrics-label">{{ t('hostDetail.load') }}</span>
-        </div>
-        <div class="metrics-value-container">
-          <span class="metrics-value metrics-value--numeric">{{ loadText }}</span>
-        </div>
-      </div>
-      <div class="metrics-item">
-        <div class="metrics-header">
           <span class="metrics-label">{{ t('hostDetail.uptime') }}</span>
         </div>
         <div class="metrics-value-container">
           <span class="metrics-value">{{ uptimeText }}</span>
         </div>
       </div>
-      <div class="metrics-item">
-        <div class="metrics-header">
-          <span class="activity-dot" :class="netActivityLevel" />
-          <span class="metrics-label">{{ t('hostDetail.network') }}</span>
-        </div>
-        <div class="metrics-value-container telemetry-lines">
-          <div class="telemetry-line">
-            <span class="tl-label">↓</span>
-            <span class="tl-value">
-              <span class="tl-amount">{{ netRxParts.amount }}</span>
-              <span class="tl-unit">{{ netRxParts.unit }}</span>
-            </span>
-          </div>
-          <div class="telemetry-line">
-            <span class="tl-label">↑</span>
-            <span class="tl-value">
-              <span class="tl-amount">{{ netTxParts.amount }}</span>
-              <span class="tl-unit">{{ netTxParts.unit }}</span>
-            </span>
-          </div>
-        </div>
-      </div>
+      <HostNetworkTraffic
+        class="network-metrics-item"
+        :host-id="hostId"
+        :metrics="host.metrics"
+        :traffic="trafficState"
+        variant="detail"
+      />
       <div class="metrics-item">
         <div class="metrics-header">
           <span class="activity-dot" :class="ioActivityLevel" />
@@ -80,8 +57,6 @@
 
     <!-- No metrics warning -->
     <el-alert v-else-if="host" :title="t('hostDetail.metricsUnavailable')" type="warning" show-icon :closable="false" class="metric-warning" />
-
-    <HostTrafficPanel v-if="host" :host-id="hostId" :metrics="host.metrics" />
 
     <HostStackWorkspace
       v-if="host"
@@ -112,7 +87,7 @@ import {
   type UpdateResult,
 } from "@/stores/dashboard";
 import HostMetricsBar from "@/components/HostMetricsBar.vue";
-import HostTrafficPanel from "@/components/HostTrafficPanel.vue";
+import HostNetworkTraffic from "@/components/HostNetworkTraffic.vue";
 import HostStackWorkspace from "@/components/HostStackWorkspace.vue";
 
 const route = useRoute();
@@ -130,6 +105,7 @@ const updateLoading = ref(false);
 
 const structureLoading = ref(false);
 const detailRequestSeq = ref(0);
+const trafficState = computed(() => dashboardStore.getHostTrafficState(hostId.value));
 
 // Computed metrics
 const memPercent = computed(() => {
@@ -142,12 +118,6 @@ const diskPercent = computed(() => {
   if (!host.value?.metrics) return 0;
   const m = host.value.metrics;
   return m.diskTotal > 0 ? Math.round((m.diskUsed / m.diskTotal) * 100) : 0;
-});
-
-const loadText = computed(() => {
-  const l = host.value?.metrics?.loadavg;
-  if (!l || l.length === 0) return "-";
-  return l.map((x) => x.toFixed(2)).join(" / ");
 });
 
 const uptimeText = computed(() => {
@@ -171,19 +141,6 @@ const updateStatuses = computed(() => {
   return statuses;
 });
 
-function formatRate(bytesPerSec: number): string {
-  if (!bytesPerSec) return "0 B/s";
-  const abs = Math.abs(bytesPerSec);
-  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
-  let i = 0;
-  let size = abs;
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024;
-    i++;
-  }
-  return `${size.toFixed(1)}${units[i]}`;
-}
-
 function formatRateParts(bytesPerSec: number | null | undefined): { amount: string; unit: string } {
   const bytes = Math.abs(bytesPerSec || 0);
   if (bytes === 0) return { amount: "0", unit: "B/s" };
@@ -206,16 +163,8 @@ function activityLevel(totalRate: number): string {
   return "idle";
 }
 
-const netRxParts = computed(() => formatRateParts(host.value?.metrics?.networkRxRate));
-const netTxParts = computed(() => formatRateParts(host.value?.metrics?.networkTxRate));
 const ioReadParts = computed(() => formatRateParts(host.value?.metrics?.diskReadRate));
 const ioWriteParts = computed(() => formatRateParts(host.value?.metrics?.diskWriteRate));
-
-const netActivityLevel = computed(() => {
-  const m = host.value?.metrics;
-  if (!m) return "idle";
-  return activityLevel((m.networkRxRate || 0) + (m.networkTxRate || 0));
-});
 
 const ioActivityLevel = computed(() => {
   const m = host.value?.metrics;
@@ -401,21 +350,32 @@ async function fetchDetail(options: { skipUpdates?: boolean; silent?: boolean } 
   }
 }
 
-let pollInterval: any = null;
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+let trafficInterval: ReturnType<typeof setInterval> | null = null;
 
 function startPolling() {
   stopPolling();
+  void dashboardStore.fetchHostTrafficSummary(hostId.value, true);
   pollInterval = setInterval(() => {
     if (!document.hidden) {
       fetchDetailCached({ skipUpdates: true, silent: true });
     }
   }, 10000);
+  trafficInterval = setInterval(() => {
+    if (!document.hidden) {
+      void dashboardStore.fetchHostTrafficSummary(hostId.value, true);
+    }
+  }, 60000);
 }
 
 function stopPolling() {
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
+  }
+  if (trafficInterval) {
+    clearInterval(trafficInterval);
+    trafficInterval = null;
   }
 }
 
@@ -462,12 +422,15 @@ onUnmounted(() => {
 }
 .metrics-bar {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 1px;
   border: 1px solid var(--border-subtle);
   background: var(--border-subtle);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
   overflow: hidden;
+}
+.network-metrics-item {
+  grid-column: span 3;
 }
 .metrics-item {
   display: flex;
@@ -482,7 +445,7 @@ onUnmounted(() => {
   gap: 6px;
 }
 .metrics-label {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
   font-weight: 600;
 }
@@ -493,16 +456,11 @@ onUnmounted(() => {
   min-height: 26px;
 }
 .metrics-value {
-  font-size: 13px;
+  font-size: var(--text-md);
   color: var(--text-primary);
   font-weight: 600;
   text-align: right;
 }
-.metrics-value--numeric {
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-
 .telemetry-lines {
   display: flex;
   flex-direction: column;
@@ -518,7 +476,7 @@ onUnmounted(() => {
 }
 .tl-label {
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-muted);
   text-align: center;
   user-select: none;
@@ -531,7 +489,7 @@ onUnmounted(() => {
   gap: 2px;
   font-family: var(--font-body);
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-primary);
   white-space: nowrap;
 }
@@ -563,6 +521,9 @@ onUnmounted(() => {
 @media (max-width: 900px) {
   .metrics-bar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .network-metrics-item {
+    grid-column: span 2;
   }
   .metrics-bar > *:last-child {
     grid-column: span 2;

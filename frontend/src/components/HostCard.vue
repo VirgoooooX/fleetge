@@ -105,66 +105,28 @@
       </div>
     </div>
 
-    <!-- Telemetry: NET / I/O as split row -->
-    <div v-if="host.metrics" class="m-telemetry-box">
-      <!-- Left: Network -->
-      <div class="m-tel-col net-part">
-        <div class="m-tel-header">
-          <div class="icon-wrapper-inline net-color" v-html="vibrantIcons.net"></div>
-          <span>{{ t('hostCard.net') }}</span>
-        </div>
+    <!-- Network: full-width live / today / month summary -->
+    <HostNetworkTraffic
+      v-if="host.metrics"
+      class="m-network-block"
+      :host-id="host.host_id"
+      :metrics="host.metrics"
+      :traffic="traffic"
+      variant="card"
+    />
 
-        <!-- Middle: values — fixed arrows & units, only the number changes -->
-        <div class="m-net-values">
-          <div class="m-net-rate-item">
-            <span class="net-arrow up">↑</span>
-            <strong class="net-amount">{{ formatRateParts(host.metrics.networkTxRate).amount }}</strong>
-            <small class="net-unit">{{ formatRateParts(host.metrics.networkTxRate).unit }}</small>
-          </div>
-          <div class="m-net-rate-item">
-            <span class="net-arrow down">↓</span>
-            <strong class="net-amount">{{ formatRateParts(host.metrics.networkRxRate).amount }}</strong>
-            <small class="net-unit">{{ formatRateParts(host.metrics.networkRxRate).unit }}</small>
-          </div>
-        </div>
-
-        <!-- Bottom: mini sparkline -->
-        <div class="m-net-chart">
-          <svg width="100%" height="20" viewBox="0 0 100 20" preserveAspectRatio="none">
-            <defs>
-              <linearGradient :id="`netGrad-${host.host_id}`" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.42"/>
-                <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.04"/>
-              </linearGradient>
-            </defs>
-            <path v-if="netPaths.fill" :d="netPaths.fill" :fill="`url(#netGrad-${host.host_id})`"/>
-            <path v-if="netPaths.stroke" :d="netPaths.stroke" fill="none" stroke="#06b6d4" stroke-width="1.05" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
+    <!-- Disk I/O is intentionally secondary to Host WAN traffic. -->
+    <div v-if="host.metrics" class="m-io-strip">
+      <span class="m-io-strip__label">{{ t('hostDetail.diskIO') }}</span>
+      <div class="m-io-strip__metric">
+        <span>{{ t('hostCard.read') }}</span>
+        <strong>{{ formatRateParts(host.metrics.diskReadRate).amount }}</strong>
+        <small>{{ formatRateParts(host.metrics.diskReadRate).unit }}</small>
       </div>
-
-      <!-- Middle: I/O Read -->
-      <div class="m-tel-col border-lr io-part">
-        <div class="m-tel-header">
-          <div class="icon-wrapper-inline io-color" v-html="vibrantIcons.io"></div>
-          <span>{{ t('hostCard.io') }} {{ t('hostCard.read', '读取') }}</span>
-        </div>
-        <div class="m-io-value">
-          <strong class="io-amount">{{ formatRateParts(host.metrics.diskReadRate).amount }}</strong>
-          <small class="io-unit">{{ formatRateParts(host.metrics.diskReadRate).unit }}</small>
-        </div>
-      </div>
-
-      <!-- Right: I/O Write -->
-      <div class="m-tel-col io-part">
-        <div class="m-tel-header">
-          <div class="icon-wrapper-inline io-color" v-html="vibrantIcons.io"></div>
-          <span>{{ t('hostCard.io') }} {{ t('hostCard.write', '写入') }}</span>
-        </div>
-        <div class="m-io-value">
-          <strong class="io-amount">{{ formatRateParts(host.metrics.diskWriteRate).amount }}</strong>
-          <small class="io-unit">{{ formatRateParts(host.metrics.diskWriteRate).unit }}</small>
-        </div>
+      <div class="m-io-strip__metric">
+        <span>{{ t('hostCard.write') }}</span>
+        <strong>{{ formatRateParts(host.metrics.diskWriteRate).amount }}</strong>
+        <small>{{ formatRateParts(host.metrics.diskWriteRate).unit }}</small>
       </div>
     </div>
 
@@ -198,9 +160,14 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import StatusIcon from "./StatusIcon.vue";
-import type { HostSummary } from "@/stores/dashboard";
+import HostNetworkTraffic from "./HostNetworkTraffic.vue";
+import type { HostSummary, HostTrafficState } from "@/stores/dashboard";
 
-const props = defineProps<{ host: HostSummary; updateCount?: number }>();
+const props = defineProps<{
+  host: HostSummary;
+  updateCount?: number;
+  traffic?: HostTrafficState;
+}>();
 defineEmits<{ click: []; updates: [] }>();
 
 const { t } = useI18n();
@@ -228,7 +195,6 @@ const refreshIssueText = computed(() => (
 
 // Sparkline History Queues
 const cpuHistory = ref<number[]>([]);
-const netHistory = ref<number[]>([]);
 const lastMetricKey = ref("");
 
 watch(
@@ -242,10 +208,6 @@ watch(
       cpuHistory.value.push(m.cpuPercent);
       if (cpuHistory.value.length > 50) cpuHistory.value.shift();
 
-      // Push Network total rate
-      const netRate = (m.networkRxRate || 0) + (m.networkTxRate || 0);
-      netHistory.value.push(netRate);
-      if (netHistory.value.length > 50) netHistory.value.shift();
     }
   },
   { immediate: true, deep: true }
@@ -290,7 +252,6 @@ function generateSparkline(data: number[], width = 100, height = 24) {
 }
 
 const cpuPaths = computed(() => generateSparkline(cpuHistory.value, 100, 24));
-const netPaths = computed(() => generateSparkline(netHistory.value, 100, 20));
 
 const memPercent = computed(() => {
   const m = props.host.metrics;
@@ -356,14 +317,6 @@ const vibrantIcons = {
           <rect x="4" y="4" width="16" height="16" rx="2" fill="#6366f1" fill-opacity="0.12" stroke="#6366f1"/>
           <path d="M4 10h16" stroke="#6366f1"/><path d="M4 14h16" stroke="#6366f1"/>
           <circle cx="8" cy="7" r="1.5" fill="#fbbf24"/><circle cx="16" cy="17" r="1.5" fill="#10b981"/>
-        </svg>`,
-  net: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="10" fill="#06b6d4" fill-opacity="0.12" stroke="#06b6d4"/>
-          <path d="M12 8v8M9 13l3 3 3-3" stroke="#06b6d4" stroke-width="2"/>
-        </svg>`,
-  io: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="m21 16-4 4-4-4M17 20V4" stroke="#a855f7" stroke-width="2"/>
-          <path opacity="0.4" d="M3 8l4-4 4 4M7 4v16" stroke="#a855f7"/>
         </svg>`,
   images: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <rect x="5" y="5" width="14" height="14" rx="2" fill="#6366f1" fill-opacity="0.12" stroke="#6366f1"/>
@@ -625,153 +578,63 @@ const vibrantIcons = {
   height: 32px;
 }
 
-/* Telemetry split panel */
-.m-telemetry-box {
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
+/* Network is the primary Host telemetry block; disk I/O follows as a quiet rail. */
+.m-network-block {
+  margin-bottom: 8px;
+}
+
+.m-io-strip {
   display: grid;
-  grid-template-columns: minmax(0, 2.2fr) minmax(88px, 0.9fr) minmax(88px, 0.9fr);
-  padding: 12px;
+  grid-template-columns: minmax(72px, 1fr) minmax(0, 1.25fr) minmax(0, 1.25fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 10px;
   margin-bottom: 12px;
-  min-height: 110px;
-}
-.m-tel-col {
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  overflow: hidden;
-  min-width: 0;
-  min-height: 86px;
-}
-.net-part {
-  padding-right: 10px;
-}
-.io-part .m-tel-header {
-  justify-content: center;
-  padding-left: 0;
-}
-.io-part {
-  justify-content: flex-start;
-}
-.m-tel-header {
-  font-size: var(--font-size-label);
-  font-weight: var(--weight-medium);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--ui-radius-md);
   color: var(--text-secondary);
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  background: var(--surface-panel);
 }
-.icon-wrapper-inline {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+
+.m-io-strip__label {
+  font-size: var(--text-xs);
+  font-weight: 700;
 }
-.icon-wrapper-inline.net-color { background: rgba(6, 182, 212, 0.08); color: #06b6d4; }
-.icon-wrapper-inline.io-color { background: rgba(168, 85, 247, 0.08); color: #a855f7; }
-.icon-wrapper-inline :deep(svg) {
-  width: 14px;
-  height: 14px;
-  display: block;
-}
-/* Network middle value row — fills space between header & bottom, vertically centered */
-.m-net-values {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 0;
-  padding-bottom: 22px;
-  line-height: 1;
-  position: relative;
-  z-index: 1;
-}
-.m-net-rate-item {
-  display: flex;
+
+.m-io-strip__metric {
+  display: grid;
+  grid-template-columns: auto minmax(3.8ch, auto) minmax(0, 1fr);
   align-items: baseline;
-  gap: 2px;
-  line-height: 1;
+  justify-content: end;
+  gap: 4px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.m-io-strip__metric > span {
+  color: var(--text-muted);
+  font: var(--text-2xs) var(--font-body);
+}
+
+.m-io-strip__metric strong {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.m-io-strip__metric small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.net-arrow {
-  width: 14px;
-  text-align: center;
-  font-size: var(--font-size-data);
-  font-weight: 900;
-  flex-shrink: 0;
-  line-height: 1;
-}
-.net-arrow.up   { color: #10b981; }
-.net-arrow.down { color: #f59e0b; }
-.net-amount {
-  font-size: var(--font-size-data);
-  line-height: 1;
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  display: inline-block;
-}
-.net-unit {
-  font-size: var(--font-size-micro);
-  line-height: 1;
-  font-weight: var(--weight-regular);
-  color: var(--text-muted);
-  flex-shrink: 0;
-  display: inline-block;
-  margin-left: 2px;
-}
-.m-net-chart {
-  position: absolute;
-  bottom: 4px;
-  left: 0;
-  width: 100%;
-  height: 24px;
-}
-.border-lr {
-  border-left: 1px solid var(--border-subtle);
-  border-right: 1px solid var(--border-subtle);
-}
-.text-center {
-  text-align: center;
-}
+
 .flex-center {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-/* I/O middle value row — fills space between header & bottom, vertically centered */
-.m-io-value {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  margin-top: 0;
-  padding-bottom: 0;
-  line-height: 1;
-  position: relative;
-  z-index: 1;
-}
-.io-amount {
-  font-size: var(--font-size-data);
-  line-height: 1;
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums;
-  display: inline-block;
-}
-.io-unit {
-  font-size: var(--font-size-micro);
-  line-height: 1;
-  font-weight: var(--weight-regular);
-  color: var(--text-muted);
-  flex-shrink: 0;
-  display: inline-block;
-  margin-left: 2px;
 }
 
 .metrics-missing {
@@ -850,17 +713,11 @@ const vibrantIcons = {
   .m-capacity-grid {
     grid-template-columns: 1fr;
   }
-  .m-telemetry-box {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+  .m-io-strip {
+    grid-template-columns: 1fr 1fr;
   }
-  .border-lr {
-    border-left: none;
-    border-right: none;
-    border-top: 1px solid var(--border-subtle);
-    border-bottom: 1px solid var(--border-subtle);
-    padding: 8px 0;
+  .m-io-strip__label {
+    grid-column: 1 / -1;
   }
 }
 </style>

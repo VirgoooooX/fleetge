@@ -64,6 +64,7 @@ def create_engine_and_tables():
                     "network_identity_checked_at": "TIMESTAMP",
                     "enrollment_callback_ip": "TEXT",
                     "enrollment_callback_mode": "TEXT",
+                    "traffic_billing_day": "INTEGER DEFAULT 1",
                 }
                 for column_name, column_ddl in host_config_columns.items():
                     if column_name not in columns:

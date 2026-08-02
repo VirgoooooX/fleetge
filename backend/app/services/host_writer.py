@@ -31,6 +31,7 @@ def write_hosts_to_yaml() -> None:
             "display_name": h.display_name,
             "enabled": h.enabled,
             "sort_order": h.sort_order,
+            "traffic_billing_day": h.traffic_billing_day,
         }
 
         # Agent block

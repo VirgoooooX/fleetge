@@ -6,6 +6,7 @@ import { streamSse } from "@/api/sse";
 export interface HostSummary {
   host_id: string;
   display_name: string;
+  traffic_billing_day?: number;
   status: "online" | "offline" | "degraded" | "unknown";
   metrics?: {
     hostname: string;
@@ -51,6 +52,31 @@ export interface HostSummary {
   docker_disk_build_cache?: number;
   update_count: number;
   error_message?: string;
+}
+
+export interface TrafficRangeSummary {
+  start: string;
+  end: string;
+  rxBytes: number;
+  txBytes: number;
+  totalBytes: number;
+  hasGap: boolean;
+  hasData: boolean;
+}
+
+export interface HostTrafficSummary {
+  hostId: string;
+  timezone: string;
+  billingDay: number;
+  today: TrafficRangeSummary;
+  month: TrafficRangeSummary;
+}
+
+export interface HostTrafficState {
+  summary: HostTrafficSummary | null;
+  loading: boolean;
+  error: string;
+  updatedAt: number;
 }
 
 export interface UpdateResult {
@@ -141,6 +167,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const error = ref("");
   const manualLoading = ref(false);
   const hostDetailsById = ref<Record<string, HostDetailCache>>({});
+  const trafficByHost = ref<Record<string, HostTrafficState>>({});
+  const trafficRequests = new Map<string, Promise<HostTrafficSummary | null>>();
 
   const updateCountsByHost = computed(() => {
     const counts: Record<string, number> = {};
@@ -238,6 +266,63 @@ export const useDashboardStore = defineStore("dashboard", () => {
         cachedAt: Date.now(),
       },
     };
+  }
+
+  function getHostTrafficState(hostId: string): HostTrafficState {
+    return trafficByHost.value[hostId] || {
+      summary: null,
+      loading: false,
+      error: "",
+      updatedAt: 0,
+    };
+  }
+
+  async function fetchHostTrafficSummary(hostId: string, sync = true): Promise<HostTrafficSummary | null> {
+    const pending = trafficRequests.get(hostId);
+    if (pending) return pending;
+
+    const previous = getHostTrafficState(hostId);
+    trafficByHost.value = {
+      ...trafficByHost.value,
+      [hostId]: { ...previous, loading: true, error: "" },
+    };
+
+    const request = (async () => {
+      try {
+        const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        const response = await apiClient.get(
+          `/api/hosts/${encodeURIComponent(hostId)}/traffic/summary`,
+          { params: { timezone, sync } },
+        );
+        const summary = response.data as HostTrafficSummary;
+        trafficByHost.value = {
+          ...trafficByHost.value,
+          [hostId]: {
+            summary,
+            loading: false,
+            error: "",
+            updatedAt: Date.now(),
+          },
+        };
+        return summary;
+      } catch (e: any) {
+        const current = getHostTrafficState(hostId);
+        trafficByHost.value = {
+          ...trafficByHost.value,
+          [hostId]: {
+            ...current,
+            loading: false,
+            error: e?.message || "Failed to fetch traffic summary",
+          },
+        };
+        return current.summary;
+      } finally {
+        trafficRequests.delete(hostId);
+      }
+    })();
+
+    trafficRequests.set(hostId, request);
+    return request;
   }
 
   async function fetchHosts() {
@@ -457,6 +542,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setHostDetailCache,
     patchHostDetailUpdateResults,
     hostDetailsById,
+    trafficByHost,
+    getHostTrafficState,
+    fetchHostTrafficSummary,
     getHostUpdateCount,
     fetchHosts,
     refreshHosts,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -141,7 +142,36 @@ async def sync_host_traffic(host_id: str) -> dict:
         return {"supported": error != "unsupported", "synced": synced, "error": error}
 
 
-def _range_bounds(range_name: str, tz_name: str, start: str | None, end: str | None) -> tuple[datetime, datetime, str]:
+def _billing_cycle_start(now: datetime, billing_day: int) -> datetime:
+    day = min(31, max(1, int(billing_day)))
+
+    def candidate(year: int, month: int) -> datetime:
+        resolved_day = min(day, calendar.monthrange(year, month)[1])
+        return now.replace(
+            year=year,
+            month=month,
+            day=resolved_day,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+    current = candidate(now.year, now.month)
+    if now >= current:
+        return current
+    previous_year = now.year - 1 if now.month == 1 else now.year
+    previous_month = 12 if now.month == 1 else now.month - 1
+    return candidate(previous_year, previous_month)
+
+
+def _range_bounds(
+    range_name: str,
+    tz_name: str,
+    start: str | None,
+    end: str | None,
+    billing_day: int = 1,
+) -> tuple[datetime, datetime, str]:
     try:
         tz = ZoneInfo(tz_name)
     except ZoneInfoNotFoundError:
@@ -149,7 +179,7 @@ def _range_bounds(range_name: str, tz_name: str, start: str | None, end: str | N
         tz_name = "UTC"
     now = datetime.now(tz)
     if range_name == "month":
-        local_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        local_start = _billing_cycle_start(now, billing_day)
         local_end = now
     elif range_name == "custom" and start and end:
         local_start = _parse_timestamp(start).astimezone(tz)
@@ -167,8 +197,15 @@ def build_traffic_report(
     tz_name: str = "Asia/Shanghai",
     start: str | None = None,
     end: str | None = None,
+    billing_day: int = 1,
 ) -> dict:
-    range_start, range_end, resolved_tz = _range_bounds(range_name, tz_name, start, end)
+    range_start, range_end, resolved_tz = _range_bounds(
+        range_name,
+        tz_name,
+        start,
+        end,
+        billing_day,
+    )
     with Session(engine) as session:
         buckets = session.exec(
             select(HostTrafficBucket).where(

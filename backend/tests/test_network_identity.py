@@ -1,8 +1,14 @@
+import asyncio
 from types import SimpleNamespace
 
 from app.models import HostConfig
 from app.services.enrollment_service import resolve_request_source_ip
-from app.services.network_identity_service import _dns_evidence, _select_effective_ip
+from app.services import network_identity_service
+from app.services.network_identity_service import (
+    _dns_evidence,
+    _select_effective_ip,
+    geolocate_consensus,
+)
 
 
 def _request(peer: str, headers: dict[str, str]):
@@ -33,16 +39,29 @@ def test_trusted_proxy_uses_forwarded_source(monkeypatch):
     assert resolve_request_source_ip(request) == "203.0.113.99"
 
 
-def test_effective_ip_needs_two_categories_and_prefers_ipv4():
+def test_effective_ip_uses_best_agent_address_and_prefers_ipv4():
     host = HostConfig(host_id="h", display_name="h")
     categories = {
         "agent": {"eligible": True, "addresses": ["8.8.8.8", "2001:4860:4860::8888"]},
-        "callback": {"eligible": True, "addresses": ["8.8.8.8"]},
-        "dns": {"eligible": True, "eligibleAddresses": ["2001:4860:4860::8888"]},
+        "callback": {"eligible": False, "addresses": []},
+        "dns": {"eligible": False, "eligibleAddresses": []},
     }
     address, source, confidence = _select_effective_ip(host, categories)
     assert address == "8.8.8.8"
-    assert source == "agent+callback"
+    assert source == "agent"
+    assert confidence == "high"
+
+
+def test_effective_ip_prefers_agent_when_other_categories_disagree():
+    host = HostConfig(host_id="h", display_name="h")
+    categories = {
+        "agent": {"eligible": True, "addresses": ["8.8.8.8"]},
+        "callback": {"eligible": True, "addresses": ["1.1.1.1"]},
+        "dns": {"eligible": True, "eligibleAddresses": ["1.1.1.1"]},
+    }
+    address, source, confidence = _select_effective_ip(host, categories)
+    assert address == "8.8.8.8"
+    assert source == "agent"
     assert confidence == "high"
 
 
@@ -55,3 +74,57 @@ def test_cdn_dns_is_excluded_from_consensus():
     })
     assert evidence["eligible"] is False
     assert "cdn_cname" in evidence["excludedReasons"]
+
+
+def test_geolocation_uses_single_available_provider(monkeypatch):
+    async def fake_provider(provider: str, _address: str):
+        if provider == "ipapi.co":
+            return None
+        return {
+            "provider": provider,
+            "city": "Los Angeles",
+            "region": "California",
+            "country": "United States",
+            "country_code": "US",
+            "latitude": 34.0522,
+            "longitude": -118.2437,
+        }
+
+    monkeypatch.setattr(network_identity_service, "_geo_provider", fake_provider)
+    result = asyncio.run(geolocate_consensus("8.8.8.8"))
+    assert result is not None
+    assert result["city"] == "Los Angeles"
+    assert result["source"] == "ipwho.is"
+    assert result["confidence"] == "provider"
+    assert result["providers"] == ["ipwho.is"]
+
+
+def test_geolocation_uses_primary_provider_when_results_conflict(monkeypatch):
+    async def fake_provider(provider: str, _address: str):
+        if provider == "ipwho.is":
+            return {
+                "provider": provider,
+                "city": "Los Angeles",
+                "region": "California",
+                "country": "United States",
+                "country_code": "US",
+                "latitude": 34.0522,
+                "longitude": -118.2437,
+            }
+        return {
+            "provider": provider,
+            "city": "Toronto",
+            "region": "Ontario",
+            "country": "Canada",
+            "country_code": "CA",
+            "latitude": 43.6532,
+            "longitude": -79.3832,
+        }
+
+    monkeypatch.setattr(network_identity_service, "_geo_provider", fake_provider)
+    result = asyncio.run(geolocate_consensus("8.8.8.8"))
+    assert result is not None
+    assert result["city"] == "Los Angeles"
+    assert result["country_code"] == "US"
+    assert result["latitude"] == 34.0522
+    assert result["source"] == "ipwho.is"

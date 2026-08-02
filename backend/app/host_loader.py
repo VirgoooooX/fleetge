@@ -15,6 +15,13 @@ from app.services.crypto import encrypt_string
 logger = logging.getLogger(__name__)
 
 
+def _traffic_billing_day(value: object) -> int:
+    try:
+        return min(31, max(1, int(value or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
 def load_hosts_from_yaml() -> int:
     """Read the HOST_CONFIG_PATH YAML file and upsert into the database.
 
@@ -81,6 +88,7 @@ def load_hosts_from_yaml() -> int:
                 existing.display_name = entry.get("display_name", host_id)
                 existing.enabled = entry.get("enabled", True)
                 existing.sort_order = entry.get("sort_order", 0)
+                existing.traffic_billing_day = _traffic_billing_day(entry.get("traffic_billing_day"))
                 existing.agent_url = agent_url
                 existing.agent_token_encrypted = agent_token_encrypted
                 existing.agent_instance_id = agent.get("instance_id") or existing.agent_instance_id
@@ -108,6 +116,7 @@ def load_hosts_from_yaml() -> int:
                     display_name=entry.get("display_name", host_id),
                     enabled=entry.get("enabled", True),
                     sort_order=entry.get("sort_order", 0),
+                    traffic_billing_day=_traffic_billing_day(entry.get("traffic_billing_day")),
                     agent_url=agent_url,
                     agent_token_encrypted=agent_token_encrypted,
                     agent_instance_id=agent.get("instance_id") or None,

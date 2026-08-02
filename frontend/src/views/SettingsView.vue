@@ -543,6 +543,17 @@
             <el-input-number v-model="hostForm.sort_order" :min="0" />
           </el-form-item>
 
+          <el-form-item :label="t('settings.hosts.form.trafficBillingDay')" prop="traffic_billing_day">
+            <el-input-number
+              v-model="hostForm.traffic_billing_day"
+              class="billing-day-input"
+              :min="1"
+              :max="31"
+              :step="1"
+            />
+            <div class="form-help">{{ t("settings.hosts.form.trafficBillingDayHelp") }}</div>
+          </el-form-item>
+
           <el-form-item :label="t('settings.hosts.form.enabled')" prop="enabled">
             <el-switch v-model="hostForm.enabled" />
           </el-form-item>
@@ -1106,6 +1117,7 @@ const hostForm = reactive({
   display_name: "",
   enabled: true,
   sort_order: 0,
+  traffic_billing_day: 1,
   agent_url: "",
   agent_token: "",
 });
@@ -1143,6 +1155,7 @@ function openCreateHostDialog() {
   hostForm.display_name = "";
   hostForm.enabled = true;
   hostForm.sort_order = store.hosts.length > 0 ? Math.max(...store.hosts.map((h) => h.sort_order)) + 10 : 10;
+  hostForm.traffic_billing_day = 1;
   hostForm.agent_url = "";
   hostForm.agent_token = "";
   hostDialogVisible.value = true;
@@ -1154,6 +1167,7 @@ function openEditHostDialog(row: HostConfigResponse) {
   hostForm.display_name = row.display_name;
   hostForm.enabled = row.enabled;
   hostForm.sort_order = row.sort_order;
+  hostForm.traffic_billing_day = row.traffic_billing_day || 1;
   hostForm.agent_url = row.agent_url || "";
   hostForm.agent_token = "";
   hostDialogVisible.value = true;
@@ -1169,6 +1183,7 @@ function prepareHostPayload() {
     display_name: hostForm.display_name,
     enabled: hostForm.enabled,
     sort_order: hostForm.sort_order,
+    traffic_billing_day: hostForm.traffic_billing_day,
     agent_url: hostForm.agent_url,
     agent_token: hostForm.agent_token || (hostFormMode.value === "edit" ? null : ""),
   };
@@ -1209,6 +1224,7 @@ async function toggleHostEnabled(row: HostConfigResponse) {
       display_name: row.display_name,
       enabled: row.enabled,
       sort_order: row.sort_order,
+      traffic_billing_day: row.traffic_billing_day,
       agent_url: row.agent_url,
       agent_token: null,
     };
@@ -2193,6 +2209,10 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+}
+
+.billing-day-input {
+  width: 100%;
 }
 
 .mode-section,

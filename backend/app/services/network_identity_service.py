@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -17,6 +16,7 @@ from app.models import HostConfig
 from app.services.agent_client import AgentClient
 
 IDENTITY_TTL = timedelta(hours=24)
+IDENTITY_POLICY_VERSION = 2
 _CDN_MARKERS = (
     "cloudflare", "cloudfront", "fastly", "akamai", "akamaiedge", "edgekey",
     "azureedge", "cdn77", "bunnycdn", "cachefly", "imperva", "incapsula",
@@ -167,25 +167,43 @@ def _dns_evidence(resolved: dict) -> dict:
     }
 
 
+def _eligible_addresses(evidence: dict) -> list[str]:
+    if not evidence.get("eligible"):
+        return []
+    raw_addresses = evidence.get("eligibleAddresses") or evidence.get("addresses") or []
+    addresses = {_public_ip(value) for value in raw_addresses}
+    return sorted(
+        (address for address in addresses if address),
+        key=lambda address: (ipaddress.ip_address(address).version != 4, address),
+    )
+
+
 def _select_effective_ip(host: HostConfig, categories: dict) -> tuple[str | None, str | None, str]:
     override = _public_ip(host.public_ip_override)
     if override:
         return override, "fixed_override", "manual"
-    votes: Counter[str] = Counter()
-    sources: dict[str, list[str]] = {}
-    for category, evidence in categories.items():
-        if not evidence.get("eligible"):
+
+    available = {
+        category: _eligible_addresses(categories.get(category) or {})
+        for category in ("agent", "callback", "dns")
+    }
+    for primary, fallback_confidence in (
+        ("agent", "high"),
+        ("callback", "medium"),
+        ("dns", "medium"),
+    ):
+        if not available[primary]:
             continue
-        addresses = evidence.get("eligibleAddresses") or evidence.get("addresses") or []
-        for address in set(addresses):
-            votes[address] += 1
-            sources.setdefault(address, []).append(category)
-    candidates = [address for address, count in votes.items() if count >= 2]
-    candidates.sort(key=lambda address: (ipaddress.ip_address(address).version != 4, -votes[address], address))
-    if not candidates:
-        return None, None, "conflict"
-    selected = candidates[0]
-    return selected, "+".join(sorted(sources[selected])), "high"
+        selected = available[primary][0]
+        supporting = [
+            category
+            for category in ("agent", "callback", "dns")
+            if selected in available[category]
+        ]
+        confidence = "high" if len(supporting) >= 2 else fallback_confidence
+        return selected, "+".join(supporting), confidence
+
+    return None, None, "unavailable"
 
 
 async def _geo_provider(provider: str, address: str) -> dict | None:
@@ -223,30 +241,47 @@ async def geolocate_consensus(address: str) -> dict | None:
     results = [item for item in await asyncio.gather(
         _geo_provider("ipwho.is", address), _geo_provider("ipapi.co", address)
     ) if item]
-    if len(results) != 2:
+    locatable = []
+    for item in results:
+        try:
+            latitude = float(item["latitude"])
+            longitude = float(item["longitude"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        locatable.append({**item, "latitude": latitude, "longitude": longitude})
+    if not locatable:
         return None
-    codes = [str(item.get("country_code") or "").upper() for item in results]
-    if not codes[0] or codes[0] != codes[1]:
-        return None
-    latitudes = [float(item["latitude"]) for item in results if item.get("latitude") is not None]
-    longitudes = [float(item["longitude"]) for item in results if item.get("longitude") is not None]
-    if len(latitudes) != 2 or len(longitudes) != 2:
-        return None
-    cities = [str(item.get("city") or "").strip() for item in results]
-    regions = [str(item.get("region") or "").strip() for item in results]
-    city_agrees = bool(cities[0] and cities[0].casefold() == cities[1].casefold())
-    region_agrees = bool(regions[0] and regions[0].casefold() == regions[1].casefold())
+
+    primary = locatable[0]
+    codes = [str(item.get("country_code") or "").upper() for item in locatable]
+    same_country = bool(codes[0] and len(locatable) > 1 and all(code == codes[0] for code in codes))
+    cities = [str(item.get("city") or "").strip() for item in locatable]
+    regions = [str(item.get("region") or "").strip() for item in locatable]
+    city_agrees = bool(same_country and all(cities) and len({city.casefold() for city in cities}) == 1)
+    region_agrees = bool(same_country and all(regions) and len({region.casefold() for region in regions}) == 1)
+    latitude = (
+        sum(item["latitude"] for item in locatable) / len(locatable)
+        if same_country
+        else primary["latitude"]
+    )
+    longitude = (
+        sum(item["longitude"] for item in locatable) / len(locatable)
+        if same_country
+        else primary["longitude"]
+    )
     return {
-        "city": cities[0] if city_agrees else None,
-        "region": regions[0] if region_agrees else None,
-        "country": results[0].get("country") or results[1].get("country"),
-        "country_code": codes[0],
-        "latitude": sum(latitudes) / 2,
-        "longitude": sum(longitudes) / 2,
-        "source": "ip-consensus",
-        "confidence": "city" if city_agrees else ("region" if region_agrees else "country"),
+        "city": next((city for city in cities if city), None),
+        "region": next((region for region in regions if region), None),
+        "country": next((item.get("country") for item in locatable if item.get("country")), None),
+        "country_code": next((code for code in codes if code), None),
+        "latitude": latitude,
+        "longitude": longitude,
+        "source": "ip-consensus" if same_country else primary["provider"],
+        "confidence": (
+            "city" if city_agrees else ("region" if region_agrees else ("country" if same_country else "provider"))
+        ),
         "confirmed": False,
-        "providers": [item["provider"] for item in results],
+        "providers": [item["provider"] for item in locatable],
     }
 
 
@@ -260,7 +295,9 @@ async def refresh_host_network_identity(host_id: str, *, force: bool = False) ->
             and _utc_now() - (host.network_identity_checked_at.replace(tzinfo=timezone.utc) if host.network_identity_checked_at.tzinfo is None else host.network_identity_checked_at) < IDENTITY_TTL
             and host.network_identity_evidence
         ):
-            return json.loads(host.network_identity_evidence)
+            cached = json.loads(host.network_identity_evidence)
+            if cached.get("policyVersion") == IDENTITY_POLICY_VERSION:
+                return cached
 
     parsed = urlparse(host.agent_url or "")
     hostname = parsed.hostname or ""
@@ -285,6 +322,7 @@ async def refresh_host_network_identity(host_id: str, *, force: bool = False) ->
     effective, source, confidence = _select_effective_ip(host, categories)
     old_effective = host.public_ip_effective
     evidence = {
+        "policyVersion": IDENTITY_POLICY_VERSION,
         "hostId": host_id,
         "observedAt": _utc_now().isoformat(),
         "categories": categories,

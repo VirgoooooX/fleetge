@@ -51,6 +51,42 @@ def test_traffic_counter_reset_starts_new_epoch_and_marks_gap(monkeypatch, tmp_p
     assert second["hasGap"] is True
 
 
+def _insert_completed_bucket(accountant, *, bucket_id: int, bucket_start: int) -> None:
+    accountant._initialize()
+    with accountant._connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO traffic_bucket(
+                id,bucket_start,counter_epoch,rx_bytes,tx_bytes,has_gap,
+                counter_reset,interfaces,completed,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (bucket_id, bucket_start, "epoch-a", 10, 5, 0, 0, '["eth0"]', 1, "now"),
+        )
+
+
+def test_history_does_not_treat_sqlite_id_holes_as_retention_gap(tmp_path):
+    accountant = traffic_accountant.TrafficAccountant(str(tmp_path), "eth0")
+    now = int(time.time())
+    _insert_completed_bucket(accountant, bucket_id=1, bucket_start=now - 600)
+    _insert_completed_bucket(accountant, bucket_id=3, bucket_start=now - 300)
+
+    history = accountant.history(cursor=1)
+
+    assert [bucket["id"] for bucket in history["buckets"]] == [3]
+    assert history["retentionGap"] is False
+
+
+def test_history_marks_cursor_older_than_oldest_retained_bucket(tmp_path):
+    accountant = traffic_accountant.TrafficAccountant(str(tmp_path), "eth0")
+    _insert_completed_bucket(accountant, bucket_id=5, bucket_start=int(time.time()) - 300)
+
+    history = accountant.history(cursor=2)
+
+    assert [bucket["id"] for bucket in history["buckets"]] == [5]
+    assert history["retentionGap"] is True
+
+
 def test_metrics_coordinator_stops_telemetry_after_idle_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(metrics_runner, "METRICS_ACTIVE_INTERVAL", 0.05)
     monkeypatch.setattr(metrics_runner, "METRICS_IDLE_TIMEOUT", 0.1)

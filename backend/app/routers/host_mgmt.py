@@ -127,6 +127,7 @@ def _to_response_model(h: HostConfig) -> HostConfigResponse:
         display_name=h.display_name,
         enabled=h.enabled,
         sort_order=h.sort_order,
+        traffic_billing_day=h.traffic_billing_day,
         agent_url=h.agent_url,
         has_agent_token=bool(h.agent_token_encrypted),
         agent_instance_id=h.agent_instance_id,
@@ -198,6 +199,7 @@ async def create_host(
         display_name=req.display_name,
         enabled=req.enabled,
         sort_order=req.sort_order,
+        traffic_billing_day=req.traffic_billing_day,
         agent_url=req.agent_url,
         agent_token_encrypted=agent_token_encrypted,
     )
@@ -249,6 +251,10 @@ async def update_host(
     if existing.sort_order != req.sort_order:
         existing.sort_order = req.sort_order
         fields_updated.append("sort_order")
+
+    if req.traffic_billing_day is not None and existing.traffic_billing_day != req.traffic_billing_day:
+        existing.traffic_billing_day = req.traffic_billing_day
+        fields_updated.append("traffic_billing_day")
         
     if existing.agent_url != req.agent_url:
         existing.agent_url = req.agent_url
