@@ -3,8 +3,7 @@
     <!-- Header with controls -->
     <header class="ui-page-header">
       <div class="header-left">
-        <div class="ui-section-kicker">{{ t('apps.kicker') }}</div>
-        <h2 class="ui-page-title">{{ t('apps.title') }}</h2>
+        <h2 class="ui-page-title">{{ t('apps.kicker') }}</h2>
         <p class="apps-page-subtitle">{{ t('apps.description') }}</p>
       </div>
       

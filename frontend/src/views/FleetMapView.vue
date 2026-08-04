@@ -2,8 +2,7 @@
   <div class="fleet-map-view" :class="{ 'is-theme-dark': isDarkTheme }">
     <section class="fleet-map-hero ui-panel">
       <div>
-        <div class="fleet-map-eyebrow">{{ t("map.eyebrow") }}</div>
-        <h2>{{ t("map.title") }}</h2>
+        <h2>{{ t("map.eyebrow") }}</h2>
         <p>{{ t("map.description") }}</p>
       </div>
       <button class="ui-button ui-button--large center-config-button" type="button" @click="openCenterEditor">

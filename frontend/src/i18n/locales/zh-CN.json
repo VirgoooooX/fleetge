@@ -9,7 +9,7 @@
   "nav.settings": "系统设置",
   "nav.apps": "应用管理",
   "nav.map": "节点分布",
-  "map.eyebrow": "全球舰队拓扑",
+  "map.eyebrow": "节点拓扑地图",
   "map.title": "节点分布",
   "map.description": "从控制中心到每台主机的实时地理拓扑。位置只作展示，不参与身份或访问控制。",
   "map.centerLocation": "控制中心位置",
