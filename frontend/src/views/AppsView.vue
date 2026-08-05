@@ -1,67 +1,95 @@
 <template>
   <div class="apps-layout" v-loading="loading">
-    <!-- Header with controls -->
-    <header class="ui-page-header">
-      <div class="header-left">
-        <h2 class="ui-page-title">{{ t('apps.kicker') }}</h2>
-        <p class="apps-page-subtitle">{{ t('apps.description') }}</p>
-      </div>
-      
-      <div class="header-right">
-        <!-- Search -->
-        <el-input
-          v-model="searchQuery"
-          :placeholder="t('apps.searchPlaceholder')"
-          class="search-input"
-          clearable
-          :prefix-icon="Search"
-        />
-
-        <!-- Host selector -->
-        <el-select v-model="filterHost" class="filter-select" :placeholder="t('apps.filter.allHosts')">
-          <template #prefix>
-            <el-icon><Link /></el-icon>
-          </template>
-          <el-option :label="t('apps.filter.allHosts')" value="" />
-          <el-option v-for="h in uniqueHosts" :key="h.id" :label="h.name" :value="h.id" />
-        </el-select>
-
-        <!-- View mode -->
-        <el-radio-group v-model="viewMode" size="default" class="view-mode-group">
-          <el-radio-button label="group">
-            <el-icon class="mr-1"><Collection /></el-icon>
-            {{ t('apps.view.byGroup') }}
-          </el-radio-button>
-          <el-radio-button label="host">
-            <el-icon class="mr-1"><Link /></el-icon>
-            {{ t('apps.view.byHost') }}
-          </el-radio-button>
-          <el-radio-button label="all">
-            <el-icon class="mr-1"><Grid /></el-icon>
-            {{ t('apps.view.all') }}
-          </el-radio-button>
-        </el-radio-group>
-      </div>
-    </header>
-
-    <!-- Filter chips bar -->
-    <section class="filters-chips-bar">
-      <div class="chips-list">
-        <button
-          v-for="chip in statusChips"
-          :key="chip.value"
-          type="button"
-          class="filter-chip"
-          :class="{ active: filterStatus === chip.value }"
-          @click="filterStatus = chip.value"
-        >
-          <span>{{ chip.label }}</span>
-          <span class="chip-count" v-if="chip.count > 0">{{ chip.count }}</span>
-        </button>
+    <section class="apps-dashboard ui-dashboard-surface" :aria-label="t('apps.title')">
+      <div class="apps-dashboard-copy">
+        <h2 class="ui-dashboard-title">{{ t('apps.kicker') }}</h2>
+        <p class="ui-dashboard-description">{{ t('apps.description') }}</p>
       </div>
 
-      <div class="checkbox-filters">
-        <el-checkbox v-model="filterNoUrl" :label="t('apps.filter.noUrl')" />
+      <div class="apps-operation-deck" role="toolbar" :aria-label="t('apps.title')">
+        <div class="apps-primary-actions">
+          <div class="operation-cluster operation-cluster--search">
+            <span class="operation-group-icon" aria-hidden="true">
+              <el-icon><Search /></el-icon>
+            </span>
+            <el-input
+              v-model="searchQuery"
+              :placeholder="t('apps.searchPlaceholder')"
+              class="search-input"
+              clearable
+            />
+          </div>
+
+          <el-select v-model="filterHost" class="filter-select" :placeholder="t('apps.filter.allHosts')">
+            <template #prefix>
+              <el-icon><Link /></el-icon>
+            </template>
+            <el-option :label="t('apps.filter.allHosts')" value="" />
+            <el-option v-for="h in uniqueHosts" :key="h.id" :label="h.name" :value="h.id" />
+          </el-select>
+
+          <div class="operation-cluster operation-cluster--view">
+            <span class="operation-group-icon" aria-hidden="true">
+              <el-icon><Operation /></el-icon>
+            </span>
+            <button
+              type="button"
+              class="view-action"
+              :class="{ active: viewMode === 'group' }"
+              :aria-pressed="viewMode === 'group'"
+              @click="viewMode = 'group'"
+            >
+              <el-icon><Collection /></el-icon>
+              <span>{{ t('apps.view.byGroup') }}</span>
+            </button>
+
+            <button
+              type="button"
+              class="view-action"
+              :class="{ active: viewMode === 'host' }"
+              :aria-pressed="viewMode === 'host'"
+              @click="viewMode = 'host'"
+            >
+              <el-icon><Link /></el-icon>
+              <span>{{ t('apps.view.byHost') }}</span>
+            </button>
+
+            <button
+              type="button"
+              class="view-action"
+              :class="{ active: viewMode === 'all' }"
+              :aria-pressed="viewMode === 'all'"
+              @click="viewMode = 'all'"
+            >
+              <el-icon><Grid /></el-icon>
+              <span>{{ t('apps.view.all') }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="apps-secondary-actions">
+          <span class="operation-group-icon" aria-hidden="true">
+            <el-icon><Filter /></el-icon>
+          </span>
+          <nav class="apps-status-tabs" :aria-label="t('apps.title')">
+            <button
+              v-for="chip in statusChips"
+              :key="chip.value"
+              type="button"
+              class="app-status-tab"
+              :class="{ active: filterStatus === chip.value }"
+              @click="filterStatus = chip.value"
+            >
+              <span>{{ chip.label }}</span>
+              <span v-if="chip.count > 0" class="app-status-count">{{ chip.count }}</span>
+            </button>
+          </nav>
+
+          <div class="checkbox-filters">
+            <el-checkbox v-model="filterNoUrl" :label="t('apps.filter.noUrl')" />
+          </div>
+
+        </div>
       </div>
     </section>
 
@@ -375,7 +403,6 @@ import {
   Refresh,
   DocumentCopy,
   Setting,
-  More,
   Picture,
   FolderOpened,
   Link,
@@ -383,6 +410,8 @@ import {
   Delete,
   Grid,
   Edit,
+  Operation,
+  Filter,
 } from "@element-plus/icons-vue";
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
@@ -935,26 +964,93 @@ onUnmounted(() => {
   min-height: calc(100vh - 120px);
 }
 
-.apps-page-subtitle {
-  margin: 6px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.5;
+.apps-dashboard {
+  --apps-control-height: 36px;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(690px, 770px);
+  align-items: center;
+  gap: 32px;
+  min-height: 138px;
+  padding: 18px 22px;
+  background:
+    linear-gradient(110deg, color-mix(in srgb, var(--accent-blue) 7%, transparent), transparent 32%),
+    var(--ui-dashboard-bg);
 }
 
-.header-right {
-  display: flex;
-  align-items: center;
+.apps-dashboard-copy {
+  min-width: 0;
+}
+
+.apps-dashboard-copy .ui-dashboard-description {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-operation-deck {
+  display: grid;
+  width: min(100%, 770px);
+  min-width: 0;
+  justify-self: end;
   gap: 12px;
-  flex-wrap: wrap;
+}
+
+.apps-primary-actions,
+.apps-secondary-actions {
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.apps-primary-actions {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 140px minmax(320px, 1fr);
+}
+
+.apps-secondary-actions {
+  display: flex;
+  width: 100%;
+}
+
+.operation-cluster {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.operation-group-icon {
+  display: inline-flex;
+  box-sizing: border-box;
+  width: 36px;
+  height: var(--apps-control-height);
+  flex: 0 0 36px;
+  align-items: center;
+  justify-content: flex-start;
+  margin: 0 2px;
+  padding: 0 10px 0 4px;
+  border: 0;
+  border-right: 1px solid color-mix(in srgb, var(--border-subtle) 82%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--text-primary) 76%, var(--accent-blue));
+  font-size: 18px;
+}
+
+.operation-group-icon :deep(svg path) {
+  stroke: currentColor;
+  stroke-width: 0.55px;
+  stroke-linejoin: round;
 }
 
 .search-input {
-  width: 220px;
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .filter-select {
-  width: 160px;
+  width: 140px;
 }
 
 /* Apply global tokens to Element Plus Inputs, Selects, and Radios */
@@ -964,9 +1060,17 @@ onUnmounted(() => {
   border: 1px solid var(--border-subtle) !important;
   border-radius: var(--ui-radius-md) !important;
   box-shadow: none !important;
-  height: 32px;
-  padding: 0 12px;
+  height: var(--apps-control-height);
+  padding: 0 13px;
   transition: border-color 0.2s, background-color 0.2s;
+}
+
+.search-input :deep(.el-input__wrapper) {
+  background: color-mix(in srgb, var(--surface-panel) 76%, transparent) !important;
+}
+
+.filter-select :deep(.el-select__wrapper) {
+  height: var(--apps-control-height);
 }
 
 .search-input :deep(.el-input__wrapper:hover),
@@ -977,135 +1081,121 @@ onUnmounted(() => {
   background: var(--ui-control-hover-bg) !important;
 }
 
-.view-mode-group :deep(.el-radio-button__inner) {
-  background: var(--ui-control-bg) !important;
-  border: 1px solid var(--border-subtle) !important;
-  border-left: none !important;
-  box-shadow: none !important;
-  outline: none !important;
-  color: var(--text-secondary) !important;
+.view-action {
+  display: inline-flex;
+  height: var(--apps-control-height);
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: var(--ui-radius-md);
+  font-family: inherit;
   font-size: 12px;
   font-weight: 700;
-  height: 32px;
-  display: inline-flex;
-  align-items: center;
-  padding: 0 16px;
-  border-radius: 0;
-  transition: all 160ms ease;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
 }
 
-.view-mode-group :deep(.el-radio-button:first-child .el-radio-button__inner) {
-  border-left: 1px solid var(--border-subtle) !important;
-  border-top-left-radius: var(--ui-radius-md) !important;
-  border-bottom-left-radius: var(--ui-radius-md) !important;
+.view-action {
+  min-width: 0;
+  flex: 1 1 0;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  background: var(--ui-control-bg);
+  color: var(--text-secondary);
 }
 
-.view-mode-group :deep(.el-radio-button:last-child .el-radio-button__inner) {
-  border-top-right-radius: var(--ui-radius-md) !important;
-  border-bottom-right-radius: var(--ui-radius-md) !important;
+.view-action:hover {
+  border-color: color-mix(in srgb, var(--accent-blue) 55%, var(--border-subtle));
+  color: var(--accent-blue);
+  background: var(--ui-control-hover-bg);
 }
 
-.view-mode-group :deep(.el-radio-button__inner:hover) {
-  color: var(--accent-blue) !important;
-  background: var(--ui-control-hover-bg) !important;
-  border-color: var(--accent-blue) !important;
-  box-shadow: -1px 0 0 0 var(--accent-blue) !important;
+.view-action.active {
+  border-color: var(--accent-blue);
+  color: #ffffff;
+  background: var(--accent-blue);
+  box-shadow: 0 5px 12px color-mix(in srgb, var(--accent-blue) 24%, transparent);
 }
 
-.view-mode-group :deep(.el-radio-button:first-child .el-radio-button__inner:hover) {
-  border-left-color: var(--accent-blue) !important;
-  box-shadow: none !important;
+.view-action:focus-visible,
+.app-status-tab:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent-blue) 72%, transparent);
+  outline-offset: 2px;
 }
 
-.view-mode-group :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background: var(--accent-blue) !important;
-  border-color: var(--accent-blue) !important;
-  color: #ffffff !important;
-  box-shadow: -1px 0 0 0 var(--accent-blue) !important;
-}
-
-.view-mode-group :deep(.el-radio-button:first-child .el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  border-left-color: var(--accent-blue) !important;
-  box-shadow: none !important;
-}
-
-.view-mode-group :deep(.el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
-  outline: 2px solid var(--accent-blue) !important;
-  outline-offset: 1px !important;
-  border-radius: 0 !important;
-}
-
-.view-mode-group :deep(.el-radio-button:first-child .el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
-  border-top-left-radius: var(--ui-radius-md) !important;
-  border-bottom-left-radius: var(--ui-radius-md) !important;
-}
-
-.view-mode-group :deep(.el-radio-button:last-child .el-radio-button__original-radio:focus-visible + .el-radio-button__inner) {
-  border-top-right-radius: var(--ui-radius-md) !important;
-  border-bottom-right-radius: var(--ui-radius-md) !important;
-}
-
-/* Filters and Chips */
-.filters-chips-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  padding-bottom: 12px;
-  flex-wrap: wrap;
-}
-
-.chips-list {
-  display: flex;
+.apps-status-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  flex: 1 1 auto;
+  min-width: 0;
+  height: var(--apps-control-height);
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  overflow: hidden;
+  padding: 0;
 }
 
-.filter-chip {
-  height: 32px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-panel-raised);
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-  display: flex;
+.app-status-tab {
+  display: inline-flex;
+  height: 100%;
+  width: 100%;
   align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.filter-chip:hover {
-  border-color: var(--accent-blue);
-  color: var(--accent-blue);
-}
-
-.filter-chip.active {
-  background: var(--accent-blue);
-  border-color: var(--accent-blue);
-  color: #ffffff;
-}
-
-.chip-count {
-  font-size: 11px;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--ui-radius-md);
+  background: color-mix(in srgb, var(--ui-control-bg) 76%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   font-weight: 700;
-  background: rgba(0, 0, 0, 0.15);
-  padding: 1px 6px;
-  border-radius: 99px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
 }
 
-.filter-chip.active .chip-count {
-  background: rgba(255, 255, 255, 0.25);
-  color: #ffffff;
+.app-status-tab:hover,
+.app-status-tab.active {
+  color: var(--accent-blue);
+  background: var(--ui-control-hover-bg);
+  border-color: color-mix(in srgb, var(--accent-blue) 58%, var(--border-subtle));
+}
+
+.app-status-tab.active {
+  background: color-mix(in srgb, var(--accent-blue) 9%, var(--ui-control-bg));
+  border-color: var(--accent-blue);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.app-status-count {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.app-status-tab.active .app-status-count {
+  color: var(--accent-blue);
 }
 
 .checkbox-filters {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
+  height: var(--apps-control-height);
+  margin-left: auto;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-control-bg);
+  white-space: nowrap;
+}
+
+.checkbox-filters :deep(.el-checkbox__label) {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
 }
 
 .apps-container {
@@ -1439,26 +1529,90 @@ onUnmounted(() => {
   flex: 1;
 }
 
+@media (max-width: 1260px) {
+  .apps-dashboard {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .apps-dashboard-copy .ui-dashboard-description {
+    max-width: 560px;
+  }
+
+  .apps-operation-deck {
+    justify-self: end;
+  }
+}
+
 @media (max-width: 768px) {
   .apps-grid {
     grid-template-columns: 1fr;
   }
-  .ui-page-header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .header-right {
-    width: 100%;
-    justify-content: space-between;
-  }
-  .search-input {
-    flex: 1;
-  }
+
   .profile-form-grid {
     grid-template-columns: 1fr;
   }
   .profile-form-grid .full-width {
     grid-column: span 1;
+  }
+}
+
+@media (max-width: 720px) {
+  .apps-dashboard {
+    padding: 17px 14px;
+  }
+
+  .apps-dashboard-copy .ui-dashboard-description {
+    white-space: normal;
+  }
+
+  .apps-operation-deck {
+    width: 100%;
+    justify-self: stretch;
+  }
+
+  .apps-primary-actions {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .operation-cluster--search,
+  .operation-cluster--view {
+    width: 100%;
+  }
+
+  .filter-select {
+    width: 100%;
+  }
+
+  .view-action {
+    min-width: 0;
+    padding: 0 10px;
+  }
+
+  .apps-secondary-actions {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .apps-status-tabs {
+    width: 100%;
+  }
+
+  .checkbox-filters {
+    grid-column: 2;
+    margin-left: 0;
+    justify-self: end;
+  }
+}
+
+@media (max-width: 520px) {
+  .operation-cluster--view {
+    gap: 6px;
+  }
+
+  .view-action {
+    padding: 0 7px;
   }
 }
 </style>

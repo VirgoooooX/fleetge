@@ -14,6 +14,11 @@
   --ui-warning-border: rgba(251, 191, 36, 0.42);
   --ui-warning-hover-bg: rgba(251, 191, 36, 0.18);
   --ui-control-shadow: 0 10px 24px rgba(2, 6, 23, 0.18);
+  --ui-dashboard-bg: rgba(11, 18, 32, 0.9);
+  --ui-dashboard-inset-bg: rgba(5, 9, 20, 0.38);
+  --ui-dashboard-line: rgba(148, 163, 184, 0.16);
+  --ui-dashboard-shadow: 0 12px 30px rgba(2, 6, 23, 0.12);
+  --ui-dashboard-radius: 10px;
 }
 
 [data-theme="light"] {
@@ -24,6 +29,36 @@
   --ui-danger-hover-bg: rgba(220, 38, 38, 0.12);
   --ui-warning-bg: rgba(217, 119, 6, 0.08);
   --ui-warning-hover-bg: rgba(217, 119, 6, 0.12);
+  --ui-dashboard-bg: rgba(255, 255, 255, 0.92);
+  --ui-dashboard-inset-bg: rgba(240, 245, 252, 0.72);
+  --ui-dashboard-line: rgba(60, 72, 88, 0.14);
+  --ui-dashboard-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
+}
+
+.ui-dashboard-surface {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-dashboard-line);
+  border-radius: var(--ui-dashboard-radius);
+  background: var(--ui-dashboard-bg);
+  box-shadow: var(--ui-dashboard-shadow);
+}
+
+.ui-dashboard-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--title-md);
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+.ui-dashboard-description {
+  margin: 5px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: 1.5;
 }
 
 .ui-page-header {

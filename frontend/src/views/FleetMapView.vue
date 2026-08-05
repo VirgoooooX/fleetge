@@ -1,32 +1,40 @@
 <template>
   <div class="fleet-map-view" :class="{ 'is-theme-dark': isDarkTheme }">
-    <section class="fleet-map-hero ui-panel">
-      <div>
-        <h2>{{ t("map.eyebrow") }}</h2>
-        <p>{{ t("map.description") }}</p>
+    <section class="map-dashboard ui-dashboard-surface">
+      <div class="map-dashboard-copy">
+        <h2 class="ui-dashboard-title">{{ t("map.eyebrow") }}</h2>
+        <p class="ui-dashboard-description">{{ t("map.description") }}</p>
       </div>
-      <button class="ui-button ui-button--large center-config-button" type="button" @click="openCenterEditor">
-        <Crosshair :size="17" />
-        {{ store.snapshot?.center.confirmed ? t("map.centerLocation") : t("map.configureCenter") }}
-      </button>
-    </section>
 
-    <section class="fleet-summary" :aria-label="t('map.summaryAria')">
-      <button
-        v-for="item in summaryItems"
-        :key="item.key"
-        class="summary-card"
-        :class="['tone-' + item.tone, { active: store.filter === item.key }]"
-        type="button"
-        @click="store.filter = item.key"
-      >
-        <span>{{ item.label }}</span>
-        <strong>{{ item.value }}</strong>
-      </button>
-      <label class="issue-toggle">
-        <input v-model="store.onlyIssues" type="checkbox" />
-        <span>{{ t("map.onlyIssues") }}</span>
-      </label>
+      <div class="map-command-deck" :aria-label="t('map.summaryAria')">
+        <div class="map-status-strip">
+          <button
+            v-for="item in summaryItems"
+            :key="item.key"
+            class="summary-card"
+            :class="['tone-' + item.tone, { active: store.filter === item.key }]"
+            type="button"
+            @click="store.filter = item.key"
+          >
+            <span class="summary-dot" :class="item.tone"></span>
+            <span class="summary-label">{{ item.label }}</span>
+            <strong class="summary-value">{{ item.value }}</strong>
+          </button>
+        </div>
+
+        <div class="map-command-actions">
+          <label class="issue-toggle">
+            <input v-model="store.onlyIssues" class="issue-toggle-input" type="checkbox" />
+            <span class="issue-switch" aria-hidden="true"><i /></span>
+            <span>{{ t("map.onlyIssues") }}</span>
+          </label>
+
+          <button class="ui-button center-config-button" type="button" @click="openCenterEditor">
+            <Crosshair :size="15" />
+            {{ store.snapshot?.center.confirmed ? t("map.centerLocation") : t("map.configureCenter") }}
+          </button>
+        </div>
+      </div>
     </section>
 
     <section class="map-workspace ui-panel" :class="{ 'has-unlocated': store.unlocatedHosts.length > 0 }">
@@ -833,19 +841,32 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .fleet-map-view { display: grid; gap: 16px; min-width: 0; }
-.fleet-map-hero { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 22px 24px; border: 1px solid rgba(96,165,250,.14); background: linear-gradient(115deg, rgba(15,32,53,.92), rgba(5,11,23,.9)); }
-.fleet-map-eyebrow,.panel-kicker,.drawer-kicker { color: #60a5fa; font: 700 10px/1.2 "JetBrains Mono",monospace; letter-spacing: .16em; }
-.fleet-map-hero h2 { margin: 5px 0 5px; font-size: clamp(24px,3vw,34px); color: var(--text-primary); }
-.fleet-map-hero p { margin: 0; color: var(--text-secondary); font-size: 13px; }
-.fleet-summary { display: grid; grid-template-columns: repeat(5,minmax(95px,1fr)) auto; gap: 10px; }
-.summary-card { position: relative; display: flex; align-items: center; justify-content: space-between; min-height: 62px; padding: 11px 15px; border: 1px solid var(--border-subtle); border-radius: var(--ui-radius-lg); color: var(--text-secondary); background: var(--surface-panel); cursor: pointer; overflow: hidden; }
-.summary-card::before { content:""; position:absolute; inset:0 auto 0 0; width:3px; background:#64748b; opacity:.6; }
-.summary-card strong { color: var(--text-primary); font: 700 24px/1 "JetBrains Mono",monospace; }
-.summary-card.active { border-color: rgba(96,165,250,.45); box-shadow: 0 0 0 1px rgba(96,165,250,.12) inset; }
-.summary-card.tone-online::before { background:#22d3ee; }.summary-card.tone-degraded::before{background:#fbbf24}.summary-card.tone-unlocated::before{background:#a78bfa}
-.summary-card.tone-offline::before{background:#f87171}
-.issue-toggle { display:flex; align-items:center; gap:9px; padding:0 14px; border:1px solid var(--border-subtle); border-radius:var(--ui-radius-lg); color:var(--text-secondary); background:var(--surface-panel); cursor:pointer; white-space:nowrap; }
-.issue-toggle input { accent-color:#fbbf24; }
+.map-dashboard { display:grid;grid-template-columns:minmax(320px,1fr) auto;align-items:center;gap:24px;min-height:124px;padding:18px 20px;background:var(--fleet-hero-bg);border-color:var(--fleet-map-border);box-shadow:var(--fleet-map-shadow); }
+.map-dashboard-copy { position:relative;z-index:1;min-width:0;max-width:500px; }
+.map-command-deck { position:relative;z-index:1;display:flex;min-width:0;align-items:center;justify-content:flex-end;gap:12px; }
+.map-status-strip { display:flex;min-width:0;overflow:hidden;border:1px solid var(--fleet-map-border);border-radius:var(--ui-radius-md);background:color-mix(in srgb,var(--fleet-map-panel-raised) 78%,transparent); }
+.summary-card { position:relative;display:inline-flex;flex:0 0 auto;align-items:center;gap:7px;height:38px;padding:0 12px;border:0;border-left:1px solid var(--fleet-map-border);border-radius:0;color:var(--text-secondary);background:transparent;cursor:pointer;transition:color .15s ease,background .15s ease;font:700 12px/1 var(--font-body);white-space:nowrap; }
+.summary-card:first-child { border-left:0; }
+.summary-card:hover { color:var(--accent-blue);background:color-mix(in srgb,var(--accent-blue) 7%,transparent); }
+.summary-card.active { color:var(--accent-blue);background:color-mix(in srgb,var(--accent-blue) 12%,transparent);box-shadow:inset 0 -2px 0 var(--accent-blue); }
+.summary-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+.summary-dot.online { background: var(--accent-cyan); box-shadow: 0 0 6px color-mix(in srgb, var(--accent-cyan) 45%, transparent); }
+.summary-dot.degraded { background: var(--warning); box-shadow: 0 0 6px color-mix(in srgb, var(--warning) 45%, transparent); }
+.summary-dot.offline { background: var(--danger); box-shadow: 0 0 6px color-mix(in srgb, var(--danger) 45%, transparent); }
+.summary-dot.unlocated { background: #a78bfa; box-shadow: 0 0 6px rgba(167,139,250,.4); }
+.summary-label { color: var(--text-secondary); }
+.summary-card.active .summary-label { color:currentColor; }
+.summary-value { color: var(--text-primary); font: 700 13px/1 var(--font-mono); }
+
+.map-command-actions { display:flex;align-items:center;gap:10px;padding-left:12px;border-left:1px solid var(--fleet-map-border); }
+.issue-toggle { position:relative;display:inline-flex;align-items:center;gap:7px;height:38px;color:var(--text-secondary);cursor:pointer;white-space:nowrap;font-size:12px; }
+.issue-toggle-input { position:absolute;width:1px;height:1px;overflow:hidden;opacity:0; }
+.issue-switch { position:relative;width:28px;height:16px;flex:0 0 auto;border:1px solid var(--fleet-map-border);border-radius:999px;background:var(--fleet-map-panel-raised);transition:background 160ms ease,border-color 160ms ease; }
+.issue-switch i { position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--text-muted);transition:transform 160ms ease,background 160ms ease; }
+.issue-toggle-input:checked + .issue-switch { border-color:color-mix(in srgb,var(--warning) 55%,var(--fleet-map-border));background:color-mix(in srgb,var(--warning) 13%,var(--fleet-map-panel-raised)); }
+.issue-toggle-input:checked + .issue-switch i { background:var(--warning);transform:translateX(12px); }
+.issue-toggle-input:focus-visible + .issue-switch { outline:2px solid var(--focus-ring);outline-offset:2px; }
+.center-config-button { height:38px;padding:0 13px !important;border-color:color-mix(in srgb,var(--accent-blue) 38%,var(--fleet-map-border)) !important;color:var(--accent-blue) !important;background:color-mix(in srgb,var(--accent-blue) 8%,var(--fleet-map-panel)) !important;font-size:12px;border-radius:var(--ui-radius-md); }
 .map-workspace { display:grid; grid-template-columns:minmax(0,1fr); min-height:620px; padding:0; overflow:hidden; background:#050b16; border:1px solid rgba(96,165,250,.13); }
 .map-workspace.has-unlocated { grid-template-columns:minmax(0,1fr) 260px; }
 .map-stage { position:relative; min-height:620px; overflow:hidden; }
@@ -913,9 +934,10 @@ onBeforeUnmount(() => {
 .drawer-empty { padding: 28px; color: var(--text-muted); text-align: center; font-size: var(--text-sm); }
 .location-form { display: grid; gap: 14px; }.location-form label>span{display:block;margin-bottom:6px;color:var(--text-secondary);font-size:var(--text-sm)}.coordinate-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.coordinate-row .el-input-number{width:100%}.location-hint{display:flex;align-items:flex-start;gap:8px;padding:10px;border:1px solid color-mix(in srgb,var(--accent-blue) 22%,var(--border-subtle));border-radius:var(--ui-radius-md);color:var(--text-secondary);background:color-mix(in srgb,var(--accent-blue) 6%,var(--surface-panel-raised));font-size:var(--text-xs);line-height:1.5}.location-editor-actions{display:flex;align-items:center;gap:8px;padding-top:2px}.action-spacer{flex:1}.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none!important}}
-@media (max-width:899px){.fleet-map-hero{align-items:flex-start;flex-direction:column}.fleet-summary{grid-template-columns:repeat(2,1fr)}.issue-toggle{min-height:48px}.map-workspace{grid-template-columns:1fr}.map-stage{min-height:58vh}.unlocated-panel{max-height:260px;border-top:1px solid rgba(148,163,184,.12);border-left:0}.metric-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:1240px){.map-dashboard{grid-template-columns:1fr}.map-command-deck{justify-content:flex-start}}
+@media (max-width:899px){.map-workspace{grid-template-columns:1fr}.map-stage{min-height:58vh}.unlocated-panel{max-height:260px;border-top:1px solid rgba(148,163,184,.12);border-left:0}.metric-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:899px){:global(.fleet-inspector.el-drawer){border-top:1px solid var(--border-subtle);border-left:0;border-radius:var(--ui-radius-lg) var(--ui-radius-lg) 0 0}.inspector-scroll{padding-bottom:calc(14px + var(--safe-area-bottom))}}
-@media (max-width:560px){.fleet-map-hero{padding:18px}.fleet-summary{gap:7px}.summary-card{min-height:54px;padding:9px 11px}.summary-card strong{font-size:20px}.map-legend{right:12px;left:12px}.coordinate-row{grid-template-columns:1fr}.inspector-actions{grid-template-columns:1fr}.location-editor-actions{flex-wrap:wrap}.action-spacer{display:none}.location-editor-actions .ui-button--primary{flex:1}.cluster-host-row{grid-template-columns:auto minmax(0,1fr) auto}.cluster-host-metric{display:none}}
+@media (max-width:560px){.map-dashboard{gap:16px;padding:17px 14px}.map-command-deck{align-items:stretch;flex-direction:column}.map-status-strip{width:100%;overflow-x:auto}.summary-card{flex:1 0 auto;justify-content:center;padding:0 10px}.map-command-actions{justify-content:space-between;padding:10px 0 0;border-top:1px solid var(--fleet-map-border);border-left:0}.map-legend{right:12px;left:12px}.coordinate-row{grid-template-columns:1fr}.inspector-actions{grid-template-columns:1fr}.location-editor-actions{flex-wrap:wrap}.action-spacer{display:none}.location-editor-actions .ui-button--primary{flex:1}.cluster-host-row{grid-template-columns:auto minmax(0,1fr) auto}.cluster-host-metric{display:none}}
 @media (max-width:899px){.map-workspace.has-unlocated{grid-template-columns:1fr}}
 
 /* Theme tokens keep the map a part of the application, not a dark island. */
@@ -941,8 +963,7 @@ onBeforeUnmount(() => {
   --fleet-map-overlay: rgba(4, 9, 18, .82);
   --fleet-map-shadow: 0 14px 32px rgba(0, 0, 0, .28);
 }
-.fleet-map-hero { background: var(--fleet-hero-bg); border-color: var(--fleet-map-border); box-shadow: var(--fleet-map-shadow); }
-.center-config-button { color: var(--accent-blue) !important; background: color-mix(in srgb, var(--accent-blue) 9%, var(--surface-panel)) !important; border-color: color-mix(in srgb, var(--accent-blue) 32%, var(--border-subtle)) !important; }
+.center-config-button { color: var(--accent-blue) !important; background: color-mix(in srgb, var(--accent-blue) 8%, var(--fleet-map-panel)) !important; border-color: color-mix(in srgb, var(--accent-blue) 38%, var(--fleet-map-border)) !important; }
 .map-workspace { background: var(--fleet-map-panel); border-color: var(--fleet-map-border); box-shadow: var(--fleet-map-shadow); }
 .map-legend { color: var(--fleet-map-muted); background: var(--fleet-map-overlay); border-color: var(--fleet-map-border); box-shadow: 0 8px 22px rgba(53, 91, 126, .12); }
 .map-empty { color: var(--fleet-map-muted); background: color-mix(in srgb, var(--fleet-map-panel) 70%, transparent); }

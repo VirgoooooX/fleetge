@@ -1,52 +1,47 @@
 <template>
   <div class="dashboard-layout">
-    <section class="command-strip">
-      <div class="command-copy">
-        <ClusterHealthBg />
-        <div class="command-copy-content">
-          <div class="ui-section-kicker">{{ t('dashboard.kicker') }}</div>
-          <h2>{{ t('dashboard.title') }}</h2>
-          <p>{{ t('dashboard.description') }}</p>
-        </div>
-        <img src="/cloud_banner.png" alt="Cloud Banner" class="command-banner" />
+    <section class="overview-dashboard ui-dashboard-surface" :aria-label="t('dashboard.title')">
+      <div class="overview-copy">
+        <h2 class="ui-dashboard-title">{{ t('dashboard.title') }}</h2>
+        <p class="ui-dashboard-description">{{ t('dashboard.description') }}</p>
       </div>
-      <div class="summary-grid">
-        <div class="summary-tile" @mouseenter="setTileAnim(0)">
-          <span class="summary-label">{{ t('dashboard.onlineHosts') }}</span>
-          <strong>{{ store.onlineCount }}</strong>
-          <small>/ {{ store.hosts.length }}</small>
-          <div class="tile-icon" :class="tileAnims[0] ? `anim-${tileAnims[0]}` : ''">
-            <el-icon :size="60"><Monitor /></el-icon>
-          </div>
+
+      <div class="fleet-health-readout">
+        <div class="health-readout-heading">
+          <span class="health-readout-icon"><Monitor :size="17" /></span>
+          <span>{{ t('dashboard.onlineHosts') }}</span>
         </div>
-        <div class="summary-tile" @mouseenter="setTileAnim(1)">
-          <span class="summary-label">{{ t('dashboard.runningContainers') }}</span>
+        <div class="health-readout-value">
+          <strong>{{ store.onlineCount }}</strong>
+          <span>/ {{ store.hosts.length }}</span>
+        </div>
+        <div class="health-track" aria-hidden="true">
+          <span :style="{ width: `${onlinePercentage}%` }" />
+        </div>
+      </div>
+
+      <div class="runtime-readouts">
+        <div class="runtime-readout">
+          <span class="runtime-icon"><CheckCircle :size="18" /></span>
+          <span class="runtime-label">{{ t('dashboard.runningContainers') }}</span>
           <strong>{{ store.runningContainers }}</strong>
           <small>{{ t('dashboard.running') }}</small>
-          <div class="tile-icon" :class="tileAnims[1] ? `anim-${tileAnims[1]}` : ''">
-            <el-icon :size="60"><CheckCircle /></el-icon>
-          </div>
         </div>
-        <div class="summary-tile" @mouseenter="setTileAnim(2)">
-          <span class="summary-label">{{ t('dashboard.stoppedContainers') }}</span>
+        <div class="runtime-readout">
+          <span class="runtime-icon"><XCircle :size="18" /></span>
+          <span class="runtime-label">{{ t('dashboard.stoppedContainers') }}</span>
           <strong>{{ stoppedContainers }}</strong>
           <small>{{ t('dashboard.stopped') }}</small>
-          <div class="tile-icon" :class="tileAnims[2] ? `anim-${tileAnims[2]}` : ''">
-            <el-icon :size="60"><XCircle /></el-icon>
-          </div>
         </div>
         <button
-          class="summary-tile critical"
+          class="runtime-readout runtime-readout--updates"
           type="button"
           @click="router.push({ name: 'apps', query: { status: 'updatable' } })"
-          @mouseenter="setTileAnim(3)"
         >
-          <span class="summary-label">{{ t('dashboard.updatableImages') }}</span>
+          <span class="runtime-icon"><Download :size="18" /></span>
+          <span class="runtime-label">{{ t('dashboard.updatableImages') }}</span>
           <strong>{{ store.updateCount }}</strong>
           <small>{{ t('dashboard.updates') }}</small>
-          <div class="tile-icon" :class="tileAnims[3] ? `anim-${tileAnims[3]}` : ''">
-            <el-icon :size="60"><Download /></el-icon>
-          </div>
         </button>
       </div>
     </section>
@@ -80,29 +75,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, watch } from "vue";
+import { computed, onMounted, onUnmounted, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useDashboardStore } from "@/stores/dashboard";
 import HostCard from "@/components/HostCard.vue";
-import ClusterHealthBg from "@/components/ClusterHealthBg.vue";
 import { Monitor, CheckCircle, XCircle, Download } from "@lucide/vue";
 
 const router = useRouter();
 const store = useDashboardStore();
 const { t } = useI18n();
 
-const ANIM_LIST = ['slide-up', 'slide-down', 'slide-right', 'rotate-cw', 'rotate-ccw', 'tilt'] as const;
-const tileAnims = reactive<string[]>(['', '', '', '']);
-
-function setTileAnim(idx: number) {
-  const prev = tileAnims[idx];
-  const pool = ANIM_LIST.filter(a => a !== prev);
-  tileAnims[idx] = pool[Math.floor(Math.random() * pool.length)];
-}
-
 const stoppedContainers = computed(() =>
   store.hosts.reduce((sum, host) => sum + host.container_stopped, 0)
+);
+const onlinePercentage = computed(() =>
+  store.hosts.length ? Math.round((store.onlineCount / store.hosts.length) * 100) : 0
 );
 
 const sortedHosts = computed(() => store.hosts);
@@ -148,183 +136,158 @@ function goToHost(hostId: string) {
   gap: 18px;
 }
 
-.command-strip {
+.overview-dashboard {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(520px, 1.4fr);
-  align-items: stretch;
-  gap: 16px;
+  grid-template-columns: minmax(300px, 1.05fr) minmax(170px, 0.55fr) minmax(430px, 1.45fr);
+  align-items: center;
+  gap: 20px;
+  min-height: 132px;
+  padding: 18px 20px;
+  background:
+    radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent-blue) 10%, transparent), transparent 35%),
+    var(--ui-dashboard-bg);
 }
 
-.command-copy {
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--dash-command-bg);
-  padding: 18px;
+.overview-copy {
+  min-width: 0;
 }
 
-.command-copy {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-  transform: translateZ(0);
-  background: var(--dash-command-bg);
+.overview-copy .ui-dashboard-description {
+  max-width: 390px;
 }
 
-.command-copy-content {
-  position: relative;
-  z-index: 1;
+.fleet-health-readout {
+  min-width: 0;
+  padding-left: 20px;
+  border-left: 1px solid var(--ui-dashboard-line);
 }
 
-.command-banner {
-  position: absolute;
-  right: -10px;
-  bottom: -15px;
-  height: 100%;
-  width: auto;
-  pointer-events: none;
-  opacity: 0.95;
-  z-index: 0;
-  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.command-copy:hover .command-banner {
-  transform: scale(1.06) translate(-4px, -4px) rotate(-1deg);
-}
-
-
-.command-copy h2 {
-  margin: 0;
-  margin-top: 8px;
-  font-size: 24px;
-  line-height: 1.15;
-  color: var(--text-primary);
-}
-
-.command-copy p {
-  max-width: 420px;
-  margin: 10px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-@media (max-width: 500px) {
-  .command-banner {
-    opacity: 0.5;
-    height: 100%;
-    right: -10px;
-    bottom: -15px;
-  }
-}
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.summary-tile {
-  min-height: 150px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: space-between;
-  border: 1px solid var(--border-subtle);
-  border-radius: 7px;
-  background: var(--dash-tile-bg);
-  color: var(--text-primary);
-  padding: 16px 14px;
-  text-align: left;
-  position: relative;
-}
-
-button.summary-tile {
-  cursor: pointer;
-}
-
-.summary-tile:hover {
-  border-color: var(--border-strong);
-  background: var(--dash-tile-hover-bg);
-}
-
-.summary-tile.critical {
-  border-color: var(--border-subtle);
-  background: var(--dash-tile-bg);
-}
-
-.summary-tile strong {
-  font-size: 37px;
-  line-height: 1;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.summary-label {
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-/* ── Tile icon — large background element at center-right ──── */
-.tile-icon {
-  position: absolute;
-  right: 4px;
-  top: 44%;
+.health-readout-heading {
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-  opacity: 1;
-  pointer-events: none;
-  transition:
-    transform 0.45s cubic-bezier(0.16, 1, 0.3, 1),
-    opacity 0.3s ease;
-}
-
-/* Default hover — no random class yet */
-.summary-tile:hover .tile-icon:not([class*="anim-"]) {
-  opacity: 1;
-}
-
-/* ── Random animation variants ────────────────────────────── */
-
-.summary-tile:hover .anim-slide-up {
-  transform: translateY(-8px);
-  opacity: 1;
-}
-.summary-tile:hover .anim-slide-down {
-  transform: translateY(8px);
-  opacity: 1;
-}
-.summary-tile:hover .anim-slide-right {
-  transform: translateX(10px);
-  opacity: 1;
-}
-.summary-tile:hover .anim-rotate-cw {
-  transform: rotate(12deg) scale(1.06);
-  opacity: 1;
-}
-.summary-tile:hover .anim-rotate-ccw {
-  transform: rotate(-14deg) scale(1.06);
-  opacity: 1;
-}
-.summary-tile:hover .anim-tilt {
-  transform: rotate(3deg);
-  opacity: 1;
-}
-
-.summary-tile small {
+  gap: 7px;
   color: var(--text-secondary);
   font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
-.summary-tile.critical strong,
-.summary-tile.critical small {
+.health-readout-icon {
+  display: inline-flex;
+  color: var(--accent-blue);
+}
+
+.health-readout-value {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 7px;
+  font-family: var(--font-mono);
+}
+
+.health-readout-value strong {
+  color: var(--text-primary);
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.06em;
+  line-height: 1;
+}
+
+.health-readout-value span {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.health-track {
+  width: 100%;
+  height: 3px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--ui-dashboard-inset-bg);
+}
+
+.health-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent-blue), var(--success));
+  transition: width 240ms ease;
+}
+
+.runtime-readouts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--ui-dashboard-line);
+  border-radius: var(--ui-radius-md);
+  background: var(--ui-dashboard-inset-bg);
+}
+
+.runtime-readout {
+  display: grid;
+  min-width: 0;
+  min-height: 78px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 3px 9px;
+  padding: 13px 14px;
+  border: 0;
+  border-left: 1px solid var(--ui-dashboard-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+}
+
+.runtime-readout:first-child {
+  border-left: 0;
+}
+
+.runtime-readout--updates {
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.runtime-readout--updates:hover {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+
+.runtime-icon {
+  display: inline-flex;
+  grid-row: 1 / 3;
+  color: var(--text-muted);
+}
+
+.runtime-label {
+  grid-column: 2;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-readout strong {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  font-family: var(--font-mono);
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.runtime-readout small {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.runtime-readout--updates strong,
+.runtime-readout--updates small {
   color: var(--danger);
 }
 
@@ -338,19 +301,57 @@ button.summary-tile {
   gap: 16px;
 }
 
-@media (max-width: 1100px) {
-  .command-strip {
-    grid-template-columns: 1fr;
+@media (max-width: 1180px) {
+  .overview-dashboard {
+    grid-template-columns: minmax(280px, 1fr) minmax(170px, 0.55fr);
+  }
+
+  .runtime-readouts {
+    grid-column: 1 / -1;
   }
 }
 
 @media (max-width: 720px) {
-  .summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .overview-dashboard {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 18px;
+  }
+
+  .fleet-health-readout {
+    padding: 14px 0 0;
+    border-top: 1px solid var(--ui-dashboard-line);
+    border-left: 0;
+  }
+
+  .runtime-readouts {
+    grid-column: auto;
   }
 
   .host-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 460px) {
+  .runtime-readouts {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-readout,
+  .runtime-readout:first-child {
+    border-top: 1px solid var(--ui-dashboard-line);
+    border-left: 0;
+  }
+
+  .runtime-readout:first-child {
+    border-top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .health-track span {
+    transition: none;
   }
 }
 </style>
