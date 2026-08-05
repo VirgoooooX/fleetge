@@ -158,6 +158,10 @@
   "shell.logout": "退出",
   "shell.switchLight": "切换浅色模式",
   "shell.switchDark": "切换深色模式",
+  "footer.status": "系统正常运行",
+  "footer.copyright": "© {year} Fleetge",
+  "footer.github": "GitHub 仓库",
+  "footer.docs": "文档与帮助",
 
   "login.kicker": "Docker Fleet Console",
   "login.title": "Fleetge",

@@ -158,6 +158,10 @@
   "shell.logout": "Logout",
   "shell.switchLight": "Switch to light mode",
   "shell.switchDark": "Switch to dark mode",
+  "footer.status": "System Operational",
+  "footer.copyright": "© {year} Fleetge",
+  "footer.github": "GitHub Repository",
+  "footer.docs": "Docs & Help",
 
   "login.kicker": "Docker Fleet Console",
   "login.title": "Fleetge",

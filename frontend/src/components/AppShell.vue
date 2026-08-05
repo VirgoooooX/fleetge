@@ -181,6 +181,21 @@
       <main class="ops-content" :class="{ 'is-host-detail': route.name === 'host-detail' }">
         <slot />
       </main>
+      <footer class="ops-footer">
+        <span>{{ t('brand.name') }} v{{ appVersion }}</span>
+        <span class="ops-footer-sep">·</span>
+        <span>{{ t('footer.copyright', { year: currentYear }) }}</span>
+        <span class="ops-footer-sep">·</span>
+        <a href="https://github.com/VirgoooooX/fleetge" target="_blank" rel="noopener noreferrer" class="ops-footer-link">
+          <el-icon><GitBranch /></el-icon>
+          <span>{{ t('footer.github') }}</span>
+        </a>
+        <span class="ops-footer-sep">·</span>
+        <a class="ops-footer-link" @click="router.push({ name: 'settings', query: { section: 'about' } })">
+          <el-icon><BookOpen /></el-icon>
+          <span>{{ t('footer.docs') }}</span>
+        </a>
+      </footer>
     </div>
   </div>
 </template>
@@ -203,6 +218,8 @@ import {
   Plus,
   Server,
   Map as MapIcon,
+  GitBranch,
+  BookOpen,
 } from "@lucide/vue";
 import AppLogo from "@/components/AppLogo.vue";
 import StatusIcon from "@/components/StatusIcon.vue";
@@ -212,6 +229,9 @@ import { useTheme } from "@/composables/useTheme";
 import { useMobile } from "@/composables/useMobile";
 import { getOppositeLocale, setStoredLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
+
+const appVersion = __APP_VERSION__;
+const currentYear = new Date().getFullYear();
 
 const route = useRoute();
 const router = useRouter();
@@ -662,12 +682,46 @@ function logout() {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 16px 18px 20px;
+  padding: 16px 18px 4px;
   overflow: auto;
 }
 
 .ops-content.is-host-detail {
   overflow: hidden;
+}
+
+/* ── Footer ── */
+.ops-footer {
+  flex-shrink: 0;
+  margin: 5px 0 7px;
+  padding: 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ops-footer-sep {
+  margin: 0 4px;
+  color: var(--border-subtle);
+  user-select: none;
+}
+
+.ops-footer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-muted);
+  text-decoration: none;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+
+.ops-footer-link:hover {
+  color: var(--text-secondary);
 }
 
 /* ── Hamburger button (hidden on desktop) ── */
