@@ -1,7 +1,7 @@
 <template>
   <div class="fleet-map-view" :class="{ 'is-theme-dark': isDarkTheme }">
     <section class="map-dashboard ui-dashboard-surface">
-      <div class="map-dashboard-copy">
+      <div class="map-dashboard-copy ui-dashboard-copy">
         <h2 class="ui-dashboard-title">{{ t("map.eyebrow") }}</h2>
         <p class="ui-dashboard-description">{{ t("map.description") }}</p>
       </div>
@@ -841,7 +841,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .fleet-map-view { display: grid; gap: 16px; min-width: 0; }
-.map-dashboard { display:grid;grid-template-columns:minmax(320px,1fr) auto;align-items:center;gap:24px;min-height:124px;padding:18px 20px;background:var(--fleet-hero-bg);border-color:var(--fleet-map-border);box-shadow:var(--fleet-map-shadow); }
+.map-dashboard { display:grid;grid-template-columns:minmax(320px,1fr) auto;align-items:center;gap:24px;height:var(--ui-dashboard-header-height);min-height:var(--ui-dashboard-header-height);padding:var(--ui-dashboard-header-padding-block) var(--ui-dashboard-header-padding-inline);background:var(--fleet-hero-bg);border-color:var(--fleet-map-border);box-shadow:var(--fleet-map-shadow); }
 .map-dashboard-copy { position:relative;z-index:1;min-width:0;max-width:500px; }
 .map-command-deck { position:relative;z-index:1;display:flex;min-width:0;align-items:center;justify-content:flex-end;gap:12px; }
 .map-status-strip { display:flex;min-width:0;overflow:hidden;border:1px solid var(--fleet-map-border);border-radius:var(--ui-radius-md);background:color-mix(in srgb,var(--fleet-map-panel-raised) 78%,transparent); }
@@ -934,10 +934,10 @@ onBeforeUnmount(() => {
 .drawer-empty { padding: 28px; color: var(--text-muted); text-align: center; font-size: var(--text-sm); }
 .location-form { display: grid; gap: 14px; }.location-form label>span{display:block;margin-bottom:6px;color:var(--text-secondary);font-size:var(--text-sm)}.coordinate-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.coordinate-row .el-input-number{width:100%}.location-hint{display:flex;align-items:flex-start;gap:8px;padding:10px;border:1px solid color-mix(in srgb,var(--accent-blue) 22%,var(--border-subtle));border-radius:var(--ui-radius-md);color:var(--text-secondary);background:color-mix(in srgb,var(--accent-blue) 6%,var(--surface-panel-raised));font-size:var(--text-xs);line-height:1.5}.location-editor-actions{display:flex;align-items:center;gap:8px;padding-top:2px}.action-spacer{flex:1}.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spin{animation:none!important}}
-@media (max-width:1240px){.map-dashboard{grid-template-columns:1fr}.map-command-deck{justify-content:flex-start}}
+@media (max-width:1240px){.map-dashboard{height:auto;grid-template-columns:1fr}.map-command-deck{justify-content:flex-start}}
 @media (max-width:899px){.map-workspace{grid-template-columns:1fr}.map-stage{min-height:58vh}.unlocated-panel{max-height:260px;border-top:1px solid rgba(148,163,184,.12);border-left:0}.metric-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:899px){:global(.fleet-inspector.el-drawer){border-top:1px solid var(--border-subtle);border-left:0;border-radius:var(--ui-radius-lg) var(--ui-radius-lg) 0 0}.inspector-scroll{padding-bottom:calc(14px + var(--safe-area-bottom))}}
-@media (max-width:560px){.map-dashboard{gap:16px;padding:17px 14px}.map-command-deck{align-items:stretch;flex-direction:column}.map-status-strip{width:100%;overflow-x:auto}.summary-card{flex:1 0 auto;justify-content:center;padding:0 10px}.map-command-actions{justify-content:space-between;padding:10px 0 0;border-top:1px solid var(--fleet-map-border);border-left:0}.map-legend{right:12px;left:12px}.coordinate-row{grid-template-columns:1fr}.inspector-actions{grid-template-columns:1fr}.location-editor-actions{flex-wrap:wrap}.action-spacer{display:none}.location-editor-actions .ui-button--primary{flex:1}.cluster-host-row{grid-template-columns:auto minmax(0,1fr) auto}.cluster-host-metric{display:none}}
+@media (max-width:560px){.map-dashboard{gap:16px;padding:var(--ui-dashboard-header-padding-block) var(--ui-dashboard-header-padding-inline)}.map-command-deck{align-items:stretch;flex-direction:column}.map-status-strip{width:100%;overflow-x:auto}.summary-card{flex:1 0 auto;justify-content:center;padding:0 10px}.map-command-actions{justify-content:space-between;padding:10px 0 0;border-top:1px solid var(--fleet-map-border);border-left:0}.map-legend{right:12px;left:12px}.coordinate-row{grid-template-columns:1fr}.inspector-actions{grid-template-columns:1fr}.location-editor-actions{flex-wrap:wrap}.action-spacer{display:none}.location-editor-actions .ui-button--primary{flex:1}.cluster-host-row{grid-template-columns:auto minmax(0,1fr) auto}.cluster-host-metric{display:none}}
 @media (max-width:899px){.map-workspace.has-unlocated{grid-template-columns:1fr}}
 
 /* Theme tokens keep the map a part of the application, not a dark island. */

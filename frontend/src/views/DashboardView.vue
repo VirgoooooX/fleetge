@@ -1,7 +1,7 @@
 <template>
   <div class="dashboard-layout">
     <section class="overview-dashboard ui-dashboard-surface" :aria-label="t('dashboard.title')">
-      <div class="overview-copy">
+      <div class="overview-copy ui-dashboard-copy">
         <h2 class="ui-dashboard-title">{{ t('dashboard.title') }}</h2>
         <p class="ui-dashboard-description">{{ t('dashboard.description') }}</p>
       </div>
@@ -141,8 +141,9 @@ function goToHost(hostId: string) {
   grid-template-columns: minmax(300px, 1.05fr) minmax(170px, 0.55fr) minmax(430px, 1.45fr);
   align-items: center;
   gap: 20px;
-  min-height: 132px;
-  padding: 18px 20px;
+  height: var(--ui-dashboard-header-height);
+  min-height: var(--ui-dashboard-header-height);
+  padding: var(--ui-dashboard-header-padding-block) var(--ui-dashboard-header-padding-inline);
   background:
     radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent-blue) 10%, transparent), transparent 35%),
     var(--ui-dashboard-bg);
@@ -303,6 +304,7 @@ function goToHost(hostId: string) {
 
 @media (max-width: 1180px) {
   .overview-dashboard {
+    height: auto;
     grid-template-columns: minmax(280px, 1fr) minmax(170px, 0.55fr);
   }
 
@@ -315,7 +317,7 @@ function goToHost(hostId: string) {
   .overview-dashboard {
     grid-template-columns: 1fr;
     gap: 16px;
-    padding: 18px;
+    padding: var(--ui-dashboard-header-padding-block) var(--ui-dashboard-header-padding-inline);
   }
 
   .fleet-health-readout {

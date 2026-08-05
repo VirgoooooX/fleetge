@@ -19,6 +19,9 @@
   --ui-dashboard-line: rgba(148, 163, 184, 0.16);
   --ui-dashboard-shadow: 0 12px 30px rgba(2, 6, 23, 0.12);
   --ui-dashboard-radius: 10px;
+  --ui-dashboard-header-height: 138px;
+  --ui-dashboard-header-padding-block: 18px;
+  --ui-dashboard-header-padding-inline: 22px;
 }
 
 [data-theme="light"] {
@@ -36,6 +39,7 @@
 }
 
 .ui-dashboard-surface {
+  box-sizing: border-box;
   position: relative;
   min-width: 0;
   overflow: hidden;
@@ -43,6 +47,14 @@
   border-radius: var(--ui-dashboard-radius);
   background: var(--ui-dashboard-bg);
   box-shadow: var(--ui-dashboard-shadow);
+}
+
+.ui-dashboard-copy {
+  display: flex;
+  min-width: 0;
+  align-self: stretch;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .ui-dashboard-title {
@@ -55,10 +67,13 @@
 }
 
 .ui-dashboard-description {
+  overflow: hidden;
   margin: 5px 0 0;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ui-page-header {

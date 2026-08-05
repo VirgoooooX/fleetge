@@ -1,7 +1,7 @@
 <template>
   <div class="apps-layout" v-loading="loading">
     <section class="apps-dashboard ui-dashboard-surface" :aria-label="t('apps.title')">
-      <div class="apps-dashboard-copy">
+      <div class="apps-dashboard-copy ui-dashboard-copy">
         <h2 class="ui-dashboard-title">{{ t('apps.kicker') }}</h2>
         <p class="ui-dashboard-description">{{ t('apps.description') }}</p>
       </div>
@@ -32,38 +32,40 @@
             <span class="operation-group-icon" aria-hidden="true">
               <el-icon><Operation /></el-icon>
             </span>
-            <button
-              type="button"
-              class="view-action"
-              :class="{ active: viewMode === 'group' }"
-              :aria-pressed="viewMode === 'group'"
-              @click="viewMode = 'group'"
-            >
-              <el-icon><Collection /></el-icon>
-              <span>{{ t('apps.view.byGroup') }}</span>
-            </button>
+            <div class="view-options-track">
+              <button
+                type="button"
+                class="view-action"
+                :class="{ active: viewMode === 'group' }"
+                :aria-pressed="viewMode === 'group'"
+                @click="viewMode = 'group'"
+              >
+                <el-icon><Collection /></el-icon>
+                <span>{{ t('apps.view.byGroup') }}</span>
+              </button>
 
-            <button
-              type="button"
-              class="view-action"
-              :class="{ active: viewMode === 'host' }"
-              :aria-pressed="viewMode === 'host'"
-              @click="viewMode = 'host'"
-            >
-              <el-icon><Link /></el-icon>
-              <span>{{ t('apps.view.byHost') }}</span>
-            </button>
+              <button
+                type="button"
+                class="view-action"
+                :class="{ active: viewMode === 'host' }"
+                :aria-pressed="viewMode === 'host'"
+                @click="viewMode = 'host'"
+              >
+                <el-icon><Link /></el-icon>
+                <span>{{ t('apps.view.byHost') }}</span>
+              </button>
 
-            <button
-              type="button"
-              class="view-action"
-              :class="{ active: viewMode === 'all' }"
-              :aria-pressed="viewMode === 'all'"
-              @click="viewMode = 'all'"
-            >
-              <el-icon><Grid /></el-icon>
-              <span>{{ t('apps.view.all') }}</span>
-            </button>
+              <button
+                type="button"
+                class="view-action"
+                :class="{ active: viewMode === 'all' }"
+                :aria-pressed="viewMode === 'all'"
+                @click="viewMode = 'all'"
+              >
+                <el-icon><Grid /></el-icon>
+                <span>{{ t('apps.view.all') }}</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -970,8 +972,9 @@ onUnmounted(() => {
   grid-template-columns: minmax(260px, 1fr) minmax(690px, 770px);
   align-items: center;
   gap: 32px;
-  min-height: 138px;
-  padding: 18px 22px;
+  height: var(--ui-dashboard-header-height);
+  min-height: var(--ui-dashboard-header-height);
+  padding: var(--ui-dashboard-header-padding-block) var(--ui-dashboard-header-padding-inline);
   background:
     linear-gradient(110deg, color-mix(in srgb, var(--accent-blue) 7%, transparent), transparent 32%),
     var(--ui-dashboard-bg);
@@ -1083,7 +1086,7 @@ onUnmounted(() => {
 
 .view-action {
   display: inline-flex;
-  height: var(--apps-control-height);
+  height: 28px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -1100,23 +1103,34 @@ onUnmounted(() => {
 .view-action {
   min-width: 0;
   flex: 1 1 0;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  background: var(--ui-control-bg);
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
   color: var(--text-secondary);
 }
 
+.view-options-track {
+  display: flex;
+  box-sizing: border-box;
+  height: var(--apps-control-height);
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--ui-radius-md) + 1px);
+  background: color-mix(in srgb, var(--ui-control-bg) 82%, var(--surface-panel-raised));
+}
+
 .view-action:hover {
-  border-color: color-mix(in srgb, var(--accent-blue) 55%, var(--border-subtle));
   color: var(--accent-blue);
   background: var(--ui-control-hover-bg);
 }
 
 .view-action.active {
-  border-color: var(--accent-blue);
   color: #ffffff;
   background: var(--accent-blue);
-  box-shadow: 0 5px 12px color-mix(in srgb, var(--accent-blue) 24%, transparent);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--accent-blue) 18%, transparent);
 }
 
 .view-action:focus-visible,
@@ -1138,16 +1152,17 @@ onUnmounted(() => {
 }
 
 .app-status-tab {
+  position: relative;
   display: inline-flex;
   height: 100%;
   width: 100%;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 0 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--ui-radius-md);
-  background: color-mix(in srgb, var(--ui-control-bg) 76%, transparent);
+  padding: 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--text-secondary);
   font-size: var(--text-sm);
   font-weight: 700;
@@ -1159,14 +1174,22 @@ onUnmounted(() => {
 .app-status-tab:hover,
 .app-status-tab.active {
   color: var(--accent-blue);
-  background: var(--ui-control-hover-bg);
-  border-color: color-mix(in srgb, var(--accent-blue) 58%, var(--border-subtle));
+  background: transparent;
 }
 
 .app-status-tab.active {
-  background: color-mix(in srgb, var(--accent-blue) 9%, var(--ui-control-bg));
-  border-color: var(--accent-blue);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-blue) 18%, transparent);
+  box-shadow: none;
+}
+
+.app-status-tab.active::after {
+  content: "";
+  position: absolute;
+  right: 12px;
+  bottom: 0;
+  left: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent-blue);
 }
 
 .app-status-count {
@@ -1186,10 +1209,10 @@ onUnmounted(() => {
   align-items: center;
   height: var(--apps-control-height);
   margin-left: auto;
-  padding: 0 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--ui-radius-md);
-  background: var(--ui-control-bg);
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   white-space: nowrap;
 }
 
@@ -1531,6 +1554,7 @@ onUnmounted(() => {
 
 @media (max-width: 1260px) {
   .apps-dashboard {
+    height: auto;
     grid-template-columns: 1fr;
     gap: 14px;
   }
@@ -1559,11 +1583,7 @@ onUnmounted(() => {
 
 @media (max-width: 720px) {
   .apps-dashboard {
-    padding: 17px 14px;
-  }
-
-  .apps-dashboard-copy .ui-dashboard-description {
-    white-space: normal;
+    padding: var(--ui-dashboard-header-padding-block) var(--ui-dashboard-header-padding-inline);
   }
 
   .apps-operation-deck {
