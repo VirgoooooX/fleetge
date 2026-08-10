@@ -2,7 +2,7 @@
   <div
     ref="stageElement"
     class="fleet-geo-map"
-    :class="[`mode-${interactionMode}`, { 'is-dragging': dragging, 'is-theme-dark': isDarkTheme }]"
+    :class="{ 'is-dragging': dragging, 'is-theme-dark': isDarkTheme }"
   >
     <svg
       ref="svgElement"
@@ -128,20 +128,10 @@
       <button type="button" :aria-label="t('map.zoomOut')" :disabled="camera.k <= MIN_ZOOM" @click="zoomBy(1 / 1.35)">−</button>
       <button class="map-controls__reset" type="button" :aria-label="t('map.resetView')" @click="resetView()">◎</button>
       <button type="button" :aria-label="t('map.fitHosts')" :title="t('map.fitHosts')" @click="fitHostsToView()"><Maximize2 :size="15" /></button>
-      <button
-        class="map-controls__mode"
-        type="button"
-        :aria-label="interactionMode === 'rotate' ? t('map.switchToPan') : t('map.switchToRotate')"
-        :title="interactionMode === 'rotate' ? t('map.currentRotate') : t('map.currentPan')"
-        @click="interactionMode = interactionMode === 'rotate' ? 'pan' : 'rotate'"
-      >
-        <Orbit v-if="interactionMode === 'rotate'" :size="15" />
-        <Move v-else :size="15" />
-      </button>
     </div>
 
     <div class="projection-badge"><span></span>{{ projectionLabel }}</div>
-    <div class="map-gesture-hint">{{ interactionMode === "rotate" ? t("map.rotateHint") : t("map.panHint") }}</div>
+    <div class="map-gesture-hint">{{ t("map.rotateHint") }}</div>
 
     <div
       v-if="hoveredCluster"
@@ -159,7 +149,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Maximize2, Move, Orbit } from "lucide-vue-next";
+import { Maximize2 } from "lucide-vue-next";
 import { feature, mesh as topoMesh } from "topojson-client";
 import { geoGraticule10, geoPath } from "d3-geo";
 import worldTopology from "world-atlas/countries-110m.json";
@@ -188,24 +178,29 @@ const stageElement = ref<HTMLElement | null>(null);
 const svgElement = ref<SVGSVGElement | null>(null);
 const size = reactive({ width: 960, height: 620 });
 const camera = reactive({ panX: 0, panY: 0, k: 1 });
-const rotation = reactive({ longitude: -105, latitude: 0 });
-const interactionMode = ref<"rotate" | "pan">("rotate");
+const rotation = reactive({ longitude: -105 });
 const dragging = ref(false);
 const dragMoved = ref(false);
 const hoveredClusterId = ref("");
 let resizeObserver: ResizeObserver | null = null;
 let dragPointerId: number | null = null;
+const activePointers = new Map<number, { x: number; y: number }>();
 let dragStart = { x: 0, y: 0 };
-let rotationOrigin = { longitude: -105, latitude: 0 };
+let previousDragPoint = { x: 0, y: 0 };
+let previousDragTime = 0;
+let longitudeVelocity = 0;
+let rotationOrigin = -105;
 let panOrigin = { x: 0, y: 0 };
-let activeDragMode: "rotate" | "pan" = "rotate";
+let activeDragMode: "roll" | "pan" = "roll";
+let pinchDistance = 0;
+let pinchMidpoint = { x: 0, y: 0 };
 
 const topology = worldTopology as any;
 const countries = feature(topology, topology.objects.countries) as any;
 const countryBorders = topoMesh(topology, topology.objects.countries, (a, b) => a !== b) as any;
 
 const geometry = computed(() => {
-  const projection = createFleetProjection(size.width, size.height, 24, [rotation.longitude, rotation.latitude]);
+  const projection = createFleetProjection(size.width, size.height, 24, [rotation.longitude, 0]);
   const path = geoPath(projection);
   const centerPoint = props.center?.confirmed
     ? projectFleetPoint(projection, [props.center.latitude, props.center.longitude])
@@ -245,11 +240,9 @@ const cameraOffset = computed(() => ({
 const cameraTransform = computed(() => `translate(${cameraOffset.value.x} ${cameraOffset.value.y}) scale(${camera.k})`);
 const projectionLabel = computed(() => {
   const longitude = ((-rotation.longitude + 540) % 360) - 180;
-  const latitude = -rotation.latitude;
   const longitudeText = `${Math.abs(Math.round(longitude))}°${longitude >= 0 ? "E" : "W"}`;
-  const latitudeText = Math.abs(latitude) < 1 ? t("map.equator") : `${Math.abs(Math.round(latitude))}°${latitude >= 0 ? "N" : "S"}`;
-  const isChinaCenter = Math.abs(longitude - 105) < 1 && Math.abs(latitude) < 1;
-  return `${isChinaCenter ? t("map.chinaCenter") : t("map.viewCenter")} · ${longitudeText} · ${latitudeText}`;
+  const isChinaCenter = Math.abs(longitude - 105) < 1;
+  return `${isChinaCenter ? t("map.chinaCenter") : t("map.viewCenter")} · ${longitudeText}`;
 });
 const clusters = computed(() => clusterProjectedNodes(
   geometry.value.nodes.map((node) => ({ item: node.host, point: node.point })),
@@ -369,14 +362,21 @@ function localPoint(event: WheelEvent | PointerEvent) {
 }
 
 function constrainPan() {
-  const maxX = size.width * (0.36 + Math.max(0, camera.k - 1) / 2);
-  const maxY = size.height * (0.36 + Math.max(0, camera.k - 1) / 2);
+  const zoomOverflow = Math.max(0, camera.k - 1);
+  const maxX = size.width * zoomOverflow * .48;
+  const maxY = size.height * zoomOverflow * .48;
   camera.panX = Math.max(-maxX, Math.min(maxX, camera.panX));
   camera.panY = Math.max(-maxY, Math.min(maxY, camera.panY));
 }
 
-function setZoom(nextZoom: number) {
-  camera.k = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
+function setZoom(nextZoom: number, anchor = { x: size.width / 2, y: size.height / 2 }) {
+  const previousZoom = camera.k;
+  const clampedZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
+  if (clampedZoom === previousZoom) return;
+  const zoomRatio = clampedZoom / previousZoom;
+  camera.panX += (1 - zoomRatio) * (anchor.x - size.width / 2 - camera.panX);
+  camera.panY += (1 - zoomRatio) * (anchor.y - size.height / 2 - camera.panY);
+  camera.k = clampedZoom;
   constrainPan();
 }
 
@@ -392,7 +392,6 @@ function stopCameraAnimation() {
 function animateCamera(
   target: {
     longitude: number;
-    latitude: number;
     k: number;
     panX: number;
     panY: number;
@@ -402,14 +401,12 @@ function animateCamera(
   stopCameraAnimation();
 
   const startLon = rotation.longitude;
-  const startLat = rotation.latitude;
   const startK = camera.k;
   const startPanX = camera.panX;
   const startPanY = camera.panY;
 
   // Shortest path for spherical longitude rotation
   const diffLon = ((target.longitude - startLon + 540) % 360) - 180;
-  const diffLat = target.latitude - startLat;
   const diffK = target.k - startK;
   const diffPanX = target.panX - startPanX;
   const diffPanY = target.panY - startPanY;
@@ -423,7 +420,6 @@ function animateCamera(
     const ease = 1 - Math.pow(1 - progress, 3);
 
     rotation.longitude = ((startLon + diffLon * ease + 540) % 360) - 180;
-    rotation.latitude = Math.max(-60, Math.min(60, startLat + diffLat * ease));
     camera.k = startK + diffK * ease;
     camera.panX = startPanX + diffPanX * ease;
     camera.panY = startPanY + diffPanY * ease;
@@ -448,7 +444,6 @@ function resetView(animated = true) {
   if (animated) {
     animateCamera({
       longitude: -105,
-      latitude: 0,
       k: 1,
       panX: 0,
       panY: 0,
@@ -459,7 +454,6 @@ function resetView(animated = true) {
     camera.panX = 0;
     camera.panY = 0;
     rotation.longitude = -105;
-    rotation.latitude = 0;
   }
 }
 
@@ -471,9 +465,8 @@ function focusLocations(locations: [number, number][], animated = true) {
 
   const focus = calculateGeographicFocus(locations);
   const targetLon = -focus[1];
-  const targetLat = -focus[0];
 
-  const projection = createFleetProjection(size.width, size.height, 34, [targetLon, targetLat]);
+  const projection = createFleetProjection(size.width, size.height, 34, [targetLon, 0]);
   const points = locations.flatMap((location) => {
     const point = projectFleetPoint(projection, location);
     return point ? [point] : [];
@@ -499,7 +492,6 @@ function focusLocations(locations: [number, number][], animated = true) {
   if (animated) {
     animateCamera({
       longitude: targetLon,
-      latitude: targetLat,
       k: targetK,
       panX: targetPanX,
       panY: targetPanY,
@@ -507,7 +499,6 @@ function focusLocations(locations: [number, number][], animated = true) {
   } else {
     stopCameraAnimation();
     rotation.longitude = targetLon;
-    rotation.latitude = targetLat;
     camera.k = targetK;
     camera.panX = targetPanX;
     camera.panY = targetPanY;
@@ -525,25 +516,59 @@ function fitHostsToView(animated = true) {
 function handleWheel(event: WheelEvent) {
   stopCameraAnimation();
   const factor = Math.exp(-event.deltaY * 0.0012);
-  setZoom(camera.k * factor);
+  setZoom(camera.k * factor, localPoint(event));
 }
 
 function handlePointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
   stopCameraAnimation();
-  dragPointerId = event.pointerId;
   dragging.value = true;
   dragMoved.value = false;
-  dragStart = localPoint(event);
-  rotationOrigin = { longitude: rotation.longitude, latitude: rotation.latitude };
-  panOrigin = { x: camera.panX, y: camera.panY };
-  activeDragMode = event.shiftKey ? "pan" : interactionMode.value;
+  const point = localPoint(event);
+  activePointers.set(event.pointerId, point);
   svgElement.value?.setPointerCapture(event.pointerId);
+
+  if (activePointers.size >= 2) {
+    const [first, second] = Array.from(activePointers.values());
+    pinchDistance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+    pinchMidpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    dragPointerId = null;
+    longitudeVelocity = 0;
+    return;
+  }
+
+  dragPointerId = event.pointerId;
+  dragStart = point;
+  previousDragPoint = dragStart;
+  previousDragTime = performance.now();
+  longitudeVelocity = 0;
+  rotationOrigin = rotation.longitude;
+  panOrigin = { x: camera.panX, y: camera.panY };
+  activeDragMode = event.shiftKey ? "pan" : "roll";
 }
 
 function handlePointerMove(event: PointerEvent) {
-  if (!dragging.value || dragPointerId !== event.pointerId) return;
+  if (!activePointers.has(event.pointerId)) return;
   const point = localPoint(event);
+  activePointers.set(event.pointerId, point);
+
+  if (activePointers.size >= 2) {
+    const [first, second] = Array.from(activePointers.values());
+    const nextDistance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+    const nextMidpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+    if (Math.abs(nextDistance - pinchDistance) > 1 || Math.hypot(nextMidpoint.x - pinchMidpoint.x, nextMidpoint.y - pinchMidpoint.y) > 1) {
+      dragMoved.value = true;
+    }
+    setZoom(camera.k * (nextDistance / pinchDistance), pinchMidpoint);
+    camera.panX += nextMidpoint.x - pinchMidpoint.x;
+    camera.panY += nextMidpoint.y - pinchMidpoint.y;
+    constrainPan();
+    pinchDistance = nextDistance;
+    pinchMidpoint = nextMidpoint;
+    return;
+  }
+
+  if (!dragging.value || dragPointerId !== event.pointerId) return;
   const dx = point.x - dragStart.x;
   const dy = point.y - dragStart.y;
   if (Math.hypot(dx, dy) > 4) dragMoved.value = true;
@@ -552,18 +577,57 @@ function handlePointerMove(event: PointerEvent) {
     camera.panY = panOrigin.y + dy;
     constrainPan();
   } else {
-    rotation.longitude = ((rotationOrigin.longitude + dx * 0.24 / camera.k + 540) % 360) - 180;
-    rotation.latitude = Math.max(-60, Math.min(60, rotationOrigin.latitude - dy * 0.18 / camera.k));
+    const now = performance.now();
+    const elapsed = Math.max(1, now - previousDragTime);
+    const longitudeDelta = (point.x - previousDragPoint.x) * .24 / camera.k;
+    rotation.longitude = ((rotationOrigin + dx * .24 / camera.k + 540) % 360) - 180;
+    camera.panY = panOrigin.y + dy;
+    constrainPan();
+    longitudeVelocity = longitudeDelta / elapsed;
+    previousDragPoint = point;
+    previousDragTime = now;
   }
 }
 
+function startRollInertia() {
+  if (Math.abs(longitudeVelocity) < .015 || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  let velocity = Math.max(-.18, Math.min(.18, longitudeVelocity));
+  let previousTime = performance.now();
+  const step = (now: number) => {
+    const elapsed = Math.min(32, now - previousTime);
+    previousTime = now;
+    rotation.longitude = ((rotation.longitude + velocity * elapsed + 540) % 360) - 180;
+    velocity *= Math.exp(-elapsed / 240);
+    if (Math.abs(velocity) >= .003) animationFrameId = requestAnimationFrame(step);
+    else animationFrameId = null;
+  };
+  animationFrameId = requestAnimationFrame(step);
+}
+
 function handlePointerUp(event: PointerEvent) {
-  if (dragPointerId !== event.pointerId) return;
+  if (!activePointers.has(event.pointerId)) return;
   if (svgElement.value?.hasPointerCapture(event.pointerId)) {
     svgElement.value.releasePointerCapture(event.pointerId);
   }
+  activePointers.delete(event.pointerId);
+
+  if (activePointers.size === 1) {
+    const [remainingId, remainingPoint] = Array.from(activePointers.entries())[0];
+    dragPointerId = remainingId;
+    dragStart = remainingPoint;
+    previousDragPoint = remainingPoint;
+    previousDragTime = performance.now();
+    rotationOrigin = rotation.longitude;
+    panOrigin = { x: camera.panX, y: camera.panY };
+    longitudeVelocity = 0;
+    return;
+  }
+  if (activePointers.size > 1) return;
+
   dragging.value = false;
   dragPointerId = null;
+  const isFreshRelease = performance.now() - previousDragTime < 80;
+  if (event.type !== "pointercancel" && activeDragMode === "roll" && isFreshRelease) startRollInertia();
   window.setTimeout(() => { dragMoved.value = false; }, 0);
 }
 
@@ -593,7 +657,10 @@ watch(
   { immediate: true, flush: "post" },
 );
 
-onBeforeUnmount(() => resizeObserver?.disconnect());
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  stopCameraAnimation();
+});
 
 defineExpose({
   focusLocations,
@@ -622,7 +689,6 @@ defineExpose({
   --geo-graticule: rgba(116, 157, 198, .09);
 }
 .fleet-geo-map__svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
-.fleet-geo-map.mode-pan:not(.is-dragging) .fleet-geo-map__svg { cursor: move; }
 .fleet-geo-map.is-dragging .fleet-geo-map__svg { cursor: grabbing; }
 .map-sphere { fill: var(--geo-ocean); stroke: var(--geo-border); stroke-width: .8; vector-effect: non-scaling-stroke; }
 .map-graticule { fill: none; stroke: var(--geo-graticule); stroke-width: .65; vector-effect: non-scaling-stroke; }
@@ -676,7 +742,6 @@ defineExpose({
 .map-controls button:hover:not(:disabled),.map-controls button:focus-visible { color: #2563eb; background: color-mix(in srgb, #3b82f6 10%, transparent); outline: none; }
 .map-controls button:disabled { opacity: .35; cursor: default; }
 .map-controls__reset { font-size: 17px !important; }
-.map-controls__mode { color: var(--accent-blue, #3b82f6) !important; }
 .projection-badge,.map-gesture-hint { position: absolute; z-index: 3; color: var(--fleet-map-muted, #607991); background: var(--fleet-map-overlay, rgba(255,255,255,.84)); border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); backdrop-filter: blur(10px); font: 700 9px/1 "JetBrains Mono", monospace; letter-spacing: .1em; }
 .projection-badge { top: 14px; right: 14px; display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 999px; }
 .projection-badge span { width: 5px; height: 5px; border-radius: 50%; background: #3b82f6; box-shadow: 0 0 8px #3b82f6; }

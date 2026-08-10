@@ -23,7 +23,7 @@ describe("Fleet Map data helpers", () => {
     expect(filterFleetHosts(hosts, "all", true).map((host) => host.host_id)).toEqual(["degraded", "legacy"]);
   });
 
-  it("centres the complete world on China's central meridian", () => {
+  it("keeps the complete Equal Earth world visible around China's central meridian", () => {
     const projection = createFleetProjection(1200, 620);
     const china = projectFleetPoint(projection, [35, 105]);
     const losAngeles = projectFleetPoint(projection, [34.05, -118.24]);
@@ -33,6 +33,22 @@ describe("Fleet Map data helpers", () => {
     expect(china![0]).toBeCloseTo(600, 3);
     expect(losAngeles![0]).toBeGreaterThan(24);
     expect(losAngeles![0]).toBeLessThan(1176);
+  });
+
+  it("keeps globally distributed nodes visible while rolling the central meridian", () => {
+    const nodes: [number, number][] = [[35, 105], [34.05, -118.24], [-33.87, 151.21], [64.15, -21.94]];
+
+    for (const longitude of [-180, -90, 0, 90, 180]) {
+      const projection = createFleetProjection(1200, 620, 24, [longitude, 0]);
+      for (const node of nodes) {
+        const point = projectFleetPoint(projection, node);
+        expect(point).not.toBeNull();
+        expect(point![0]).toBeGreaterThanOrEqual(24);
+        expect(point![0]).toBeLessThanOrEqual(1176);
+        expect(point![1]).toBeGreaterThanOrEqual(24);
+        expect(point![1]).toBeLessThanOrEqual(596);
+      }
+    }
   });
 
   it("clusters overlapping projected hosts while preserving distant nodes", () => {

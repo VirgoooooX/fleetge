@@ -1,4 +1,4 @@
-import { geoNaturalEarth1, type GeoProjection } from "d3-geo";
+import { geoEqualEarth, type GeoProjection } from "d3-geo";
 
 export type FleetMapFilter = "all" | "online" | "degraded" | "offline" | "unlocated";
 export type LatLngTuple = [number, number];
@@ -32,9 +32,9 @@ export function filterFleetHosts<T extends FilterableHost>(hosts: T[], filter: F
 }
 
 /**
- * Natural Earth keeps the complete world visible while rotating the central
- * meridian to 105°E. This is a real China-centred projection, not a cropped
- * slippy-map viewport.
+ * Equal Earth keeps every longitude visible in a compact, globe-like outline.
+ * Rotating its central meridian lets the map roll horizontally without hiding
+ * nodes on a back side, unlike a true orthographic globe.
  */
 export function createFleetProjection(
   width: number,
@@ -44,7 +44,7 @@ export function createFleetProjection(
 ): GeoProjection {
   const safeWidth = Math.max(width, padding * 2 + 1);
   const safeHeight = Math.max(height, padding * 2 + 1);
-  return geoNaturalEarth1()
+  return geoEqualEarth()
     .rotate(rotation)
     .precision(0.2)
     .fitExtent(
