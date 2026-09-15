@@ -2,6 +2,7 @@
 
 import asyncio
 import ipaddress
+import json
 import logging
 import time
 from typing import Optional
@@ -18,6 +19,47 @@ router = APIRouter(
 )
 
 STALE_THRESHOLD = 30.0  # seconds
+
+
+def _parse_docker_filters(raw_filters: Optional[str]) -> dict:
+    """Parse Docker's JSON-encoded list endpoint filters safely."""
+    if not raw_filters:
+        return {}
+    try:
+        parsed = json.loads(raw_filters)
+    except (TypeError, json.JSONDecodeError):
+        logger.debug("Ignoring malformed Docker API filters: %s", raw_filters)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _container_health_status(container) -> Optional[str]:
+    """Return the normalized Docker health status from a snapshot container."""
+    health = container.health
+    if isinstance(health, dict):
+        status = health.get("Status") or health.get("status")
+    elif isinstance(health, str):
+        status = health
+    else:
+        status = None
+    return status.lower() if isinstance(status, str) else None
+
+
+def _matches_docker_filters(container, filters: dict) -> bool:
+    """Apply the Docker list filter subset used by Homepage."""
+    health_filter = filters.get("health")
+    if health_filter is None:
+        return True
+
+    values = health_filter if isinstance(health_filter, list) else [health_filter]
+    requested = {
+        value.lower()
+        for value in values
+        if isinstance(value, str) and value
+    }
+    if not requested:
+        return True
+    return _container_health_status(container) in requested
 
 
 def is_private_ip(ip: str) -> bool:
@@ -122,13 +164,21 @@ async def info(request: Request, host_id: str = Depends(get_host_id)):
 
 @router.get("/containers/json")
 @router.get("/containers/json/")
-async def containers_json(request: Request, all: bool = False, host_id: str = Depends(get_host_id)):
+async def containers_json(
+    request: Request,
+    all: bool = False,
+    filters: Optional[str] = None,
+    host_id: str = Depends(get_host_id),
+):
     verify_private_access(request)
     snap = await _get_snap(host_id)
+    docker_filters = _parse_docker_filters(filters)
 
     result = []
     for c in snap.containers:
         if not all and c.state != "running":
+            continue
+        if not _matches_docker_filters(c, docker_filters):
             continue
 
         ports = [

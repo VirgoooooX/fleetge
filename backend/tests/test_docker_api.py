@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import unittest
@@ -53,6 +54,7 @@ class DockerApiTests(unittest.TestCase):
                 repo_digests=["nginx:alpine@sha256:nginx123"],
                 state="running",
                 status="Up 3 hours",
+                health={"Status": "healthy"},
                 created=1672531199,
                 ports=[ContainerPort(private_port=80, public_port=8080, ip="0.0.0.0", type="tcp")],
                 labels={"com.docker.compose.project": "nginx-stack"},
@@ -67,6 +69,7 @@ class DockerApiTests(unittest.TestCase):
                 repo_digests=["postgres:15@sha256:postgres123"],
                 state="exited",
                 status="Exited (0) 5 hours ago",
+                health={"Status": "unhealthy"},
                 created=1672521199,
                 ports=[],
                 labels={"com.docker.compose.project": "db-stack"},
@@ -154,6 +157,25 @@ class DockerApiTests(unittest.TestCase):
         states = {c["Id"]: c["State"] for c in data}
         self.assertEqual(states["a1b2c3d4e5f6"], "running")
         self.assertEqual(states["f6e5d4c3b2a1"], "exited")
+
+    def test_containers_json_health_filter(self):
+        healthy_filter = json.dumps({"health": ["healthy"]})
+        response = self.client.get(
+            "/containers/json",
+            params={"all": "true", "filters": healthy_filter},
+            headers={"X-Host-Id": self.host_id},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([c["Id"] for c in response.json()], ["a1b2c3d4e5f6"])
+
+        unhealthy_filter = json.dumps({"health": ["unhealthy"]})
+        response = self.client.get(
+            "/containers/json",
+            params={"all": "true", "filters": unhealthy_filter},
+            headers={"X-Host-Id": self.host_id},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([c["Id"] for c in response.json()], ["f6e5d4c3b2a1"])
         
     def test_container_inspect(self):
         response = self.client.get("/containers/a1b2c3d4e5f6/json", headers={"X-Host-Id": self.host_id})
