@@ -10,6 +10,7 @@ from starlette.responses import StreamingResponse
 from app.auth.handler import get_current_user
 from app.schemas import HostListResponse, AppSummary
 from app.services.snapshot import snapshot_manager
+from app.services.auto_update import stack_summaries
 
 router = APIRouter(prefix="/api", tags=["hosts"], dependencies=[Depends(get_current_user)])
 
@@ -156,7 +157,7 @@ async def get_host_details(host_id: str):
     host = snapshot_manager.build_host_summary(snap)
     return {
         "host": host.model_dump(),
-        "stacks": [stack.model_dump() for stack in snap.stacks],
+        "stacks": [stack.model_dump() for stack in stack_summaries(snap)],
         "containers": [container.model_dump() for container in snap.containers],
         "container_stats": {
             cid: stats.model_dump()
@@ -175,7 +176,7 @@ async def refresh_host_structure(host_id: str):
     host = snapshot_manager.build_host_summary(snap)
     return {
         "host": host.model_dump(),
-        "stacks": [stack.model_dump() for stack in snap.stacks],
+        "stacks": [stack.model_dump() for stack in stack_summaries(snap)],
         "containers": [container.model_dump() for container in snap.containers],
         "container_stats": {
             cid: stats.model_dump()

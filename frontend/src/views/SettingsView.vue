@@ -160,6 +160,7 @@
               </div>
             </el-form>
           </details>
+          <NotifyHubSettings />
         </section>
 
         <section v-if="activeSection === 'hosts'" class="settings-section" v-loading="store.loading">
@@ -345,7 +346,9 @@
             <el-select v-model="auditResultFilter" class="toolbar-select" :placeholder="t('audit.result')">
               <el-option :label="t('apps.chip.all')" value="" />
               <el-option :label="t('audit.success')" value="success" />
-              <el-option :label="t('audit.failure')" value="failure" />
+              <el-option :label="t('audit.failure')" value="error" />
+              <el-option :label="t('audit.uncertain')" value="uncertain" />
+              <el-option :label="t('audit.skipped')" value="skipped" />
             </el-select>
             <el-select v-model="auditActionFilter" class="toolbar-select wide" :placeholder="t('audit.action')" clearable>
               <el-option :label="t('apps.chip.all')" value="" />
@@ -386,8 +389,8 @@
               </el-table-column>
               <el-table-column :label="t('audit.result')" prop="result" width="90">
                 <template #default="{ row }">
-                  <el-tag :type="row.result === 'success' ? 'success' : 'danger'" size="small">
-                    {{ row.result === "success" ? t("audit.success") : t("audit.failure") }}
+                  <el-tag :type="auditResultType(row.result)" size="small">
+                    {{ auditResultLabel(row.result) }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -816,7 +819,7 @@
         </div>
         <div>
           <dt>{{ t("audit.result") }}</dt>
-          <dd>{{ selectedAuditLog.result === "success" ? t("audit.success") : t("audit.failure") }}</dd>
+          <dd>{{ auditResultLabel(selectedAuditLog.result) }}</dd>
         </div>
         <div>
           <dt>{{ t("audit.ip") }}</dt>
@@ -873,6 +876,7 @@ import { useDashboardStore, type UpdateResult } from "@/stores/dashboard";
 import { useMobile } from "@/composables/useMobile";
 import { remainingInviteSeconds } from "@/utils/dateTime";
 import UpdateBadge from "@/components/UpdateBadge.vue";
+import NotifyHubSettings from "@/components/NotifyHubSettings.vue";
 
 type SettingsSectionId = "params" | "hosts" | "maintenance" | "audit" | "about";
 
@@ -1698,6 +1702,10 @@ const auditDrawerVisible = ref(false);
 const auditLimit = 50;
 
 const auditActionKeys: Record<string, string> = {
+  "stack.auto_update": "audit.action.autoUpdate",
+  "stack.auto_update.configure": "audit.action.autoUpdateConfigure",
+  "stack.auto_update.notify": "audit.action.autoUpdateNotify",
+  "notifyhub.configure": "audit.action.notifyHubConfigure",
   "stack.start": "audit.action.stack.start",
   "stack.stop": "audit.action.stack.stop",
   "stack.down": "audit.action.stack.down",
@@ -1749,7 +1757,8 @@ const auditActions = computed(() =>
 const filteredAuditLogs = computed(() => {
   const q = auditSearch.value.trim().toLowerCase();
   return auditLogs.value.filter((row) => {
-    if (auditResultFilter.value && row.result !== auditResultFilter.value) return false;
+    const result = ["failed", "failure"].includes(row.result) ? "error" : row.result;
+    if (auditResultFilter.value && result !== auditResultFilter.value) return false;
     if (auditActionFilter.value && row.action !== auditActionFilter.value) return false;
     if (!q) return true;
     return [
@@ -1762,6 +1771,14 @@ const filteredAuditLogs = computed(() => {
     ].some((value) => String(value || "").toLowerCase().includes(q));
   });
 });
+
+function auditResultType(result: string) {
+  return result === "success" ? "success" : result === "skipped" ? "info" : result === "uncertain" ? "warning" : "danger";
+}
+
+function auditResultLabel(result: string): string {
+  return t(result === "success" ? "audit.success" : result === "skipped" ? "audit.skipped" : result === "uncertain" ? "audit.uncertain" : "audit.failure");
+}
 
 function actionLabel(action: string): string {
   const key = auditActionKeys[action];

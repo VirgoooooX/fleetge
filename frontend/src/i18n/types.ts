@@ -4,6 +4,22 @@
  */
 
 export interface I18nSchema {
+  "audit.skipped": string;
+  "audit.uncertain": string;
+  "audit.action.autoUpdate": string;
+  "audit.action.autoUpdateConfigure": string;
+  "audit.action.autoUpdateNotify": string;
+  "audit.action.notifyHubConfigure": string;
+  "autoUpdate.label": string;
+  "autoUpdate.badge": string;
+  "autoUpdate.loadError": string;
+  "autoUpdate.saveError": string;
+  "notifyHub.help": string;
+  "notifyHub.url": string;
+  "notifyHub.recipient": string;
+  "notifyHub.recipientHint": string;
+  "notifyHub.keySaved": string;
+  "notifyHub.clearKey": string;
   // ── Nav / Shell ────────────────────────────────────────────
   "nav.dashboard": string;
   "nav.updates": string;

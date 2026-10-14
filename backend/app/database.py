@@ -111,6 +111,8 @@ def create_engine_and_tables():
     # Import models so SQLModel.metadata knows about them before create_all
     from app.models import (  # noqa: F401
         AuditLog,
+        StackAutoUpdate,
+        AutoUpdateRun,
         EnrollmentInvite,
         HostConfig,
         HostTrafficBucket,

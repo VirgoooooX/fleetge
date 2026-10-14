@@ -113,6 +113,39 @@ class ImageUpdateCache(SQLModel, table=True):
     )
 
 
+class StackAutoUpdate(SQLModel, table=True):
+    __tablename__ = "stack_auto_update"
+    __table_args__ = (UniqueConstraint("host_id", "stack_name", name="uq_stack_auto_update"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    host_id: str = Field(index=True)
+    stack_name: str
+    enabled: bool = False
+    reason: str = ""
+
+
+class AutoUpdateRun(SQLModel, table=True):
+    __tablename__ = "auto_update_run"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    host_id: str = Field(index=True)
+    stack_name: str
+    status: str = Field(default="running", index=True)
+    attempts: int = 0
+    stage: str = ""
+    detail: str = ""
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    finished_at: Optional[datetime] = None
+    notify_url: str = ""
+    notify_recipient: str = ""
+    notify_payload: str = Field(default="", sa_column=Column(Text, nullable=False))
+    notify_status: str = Field(default="none", index=True)
+    notify_attempts: int = 0
+    notify_next_at: Optional[datetime] = None
+    notify_expires_at: Optional[datetime] = None
+    notify_error: str = ""
+
+
 class Setting(SQLModel, table=True):
     __tablename__ = "settings"
 

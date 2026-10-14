@@ -1949,7 +1949,10 @@ class SnapshotManager:
 
         async def refresh_one(snap: HostSnapshot) -> None:
             async with semaphore:
-                await self._refresh_update_checks_for_snapshot(snap, force=force)
+                fresh_images = await self._refresh_update_checks_for_snapshot(snap, force=force)
+                if fresh_images:
+                    from app.services.auto_update import auto_update_manager
+                    auto_update_manager.enqueue(snap.host_config.host_id, fresh_images)
 
         results = await asyncio.gather(
             *(refresh_one(snap) for snap in list(self._snapshots.values())),
@@ -2119,10 +2122,10 @@ class SnapshotManager:
 
     async def _refresh_update_checks_for_snapshot(
         self, snap: HostSnapshot, force: bool = False
-    ) -> None:
-        """Refresh cached update-check results for a single host snapshot."""
+    ) -> list[str]:
+        """Refresh checks; return newly confirmed updatable images for this sweep."""
         if not snap.host_config:
-            return
+            return []
 
         host_id = snap.host_config.host_id
         image_refs = [
@@ -2144,7 +2147,7 @@ class SnapshotManager:
 
         if not image_refs:
             self._apply_update_cache_rows_to_snapshot(snap, rows)
-            return
+            return []
 
         rows_by_image = {row.image: row for row in rows}
         now = _utc_now()
@@ -2182,7 +2185,7 @@ class SnapshotManager:
 
         if not due_refs:
             self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
-            return
+            return []
 
         try:
             results = await run_update_check(host_id, due_refs, force=force)
@@ -2214,11 +2217,13 @@ class SnapshotManager:
                 final_rows,
                 current_images,
             )
+            return [r.image for r in results if r.status == "updatable" and snap.update_results.get(r.image) == "updatable"]
         except Exception as exc:
             logger.warning(
                 "Update check failed for %s: %s", host_id, exc, exc_info=True
             )
             self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
+            return []
 
     # ── Build summaries for API ────────────────────────────────────
 

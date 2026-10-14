@@ -1123,7 +1123,8 @@ async def execute_stack_command(websocket: WebSocket, name: str):
             await _write_audit(f"stack.{action}", "busy", stack=name, client=client)
             await websocket.send_json({
                 "type": "error",
-                "message": f"Another operation is already running for stack '{name}'."
+                "message": f"Another operation is already running for stack '{name}'.",
+                "error_code": "stack_busy",
             })
             await websocket.close()
             return
@@ -1144,12 +1145,19 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                 exit_code = await _stream_docker_command(
                     websocket, stack_path, _compose_args(stack_path, "pull"), cols=cols, rows=rows
                 )
+                stage = "pull"
+                up_executed = False
                 if exit_code == 0 and await _get_compose_project_status(name) == "running":
                     # 2) Recreate running services with new images
+                    stage = "up"
+                    up_executed = True
                     exit_code = await _stream_docker_command(
                         websocket, stack_path, _compose_args(stack_path, "up", "-d", "--remove-orphans"), cols=cols, rows=rows
                     )
-                await websocket.send_json({"type": "exit", "code": exit_code})
+                await websocket.send_json({
+                    "type": "exit", "code": exit_code,
+                    "stage": stage, "up_executed": up_executed,
+                })
                 await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"exit_code={exit_code}")
             elif action == "delete":
                 exit_code = await _stream_docker_command(

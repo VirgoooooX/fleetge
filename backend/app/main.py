@@ -17,6 +17,8 @@ from app.routers import fleet_map
 from app.routers import settings as settings_router
 from app.services.snapshot import snapshot_manager
 from app.services.enrollment_service import enrollment_monitor
+from app.services.auto_update import auto_update_manager
+from app.routers import auto_updates
 from app.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,7 @@ async def lifespan(app: FastAPI):
     snapshot_manager.load_update_check_cache_from_db()
 
     # Start background polling
+    await auto_update_manager.start()
     await snapshot_manager.start()
     await enrollment_monitor.start()
 
@@ -47,6 +50,7 @@ async def lifespan(app: FastAPI):
 
     # ── Shutdown ───────────────────────────────────────────────────
     logger.info("Shutting down Fleetge backend")
+    await auto_update_manager.stop()
     await enrollment_monitor.stop()
     await snapshot_manager.stop()
 
@@ -79,6 +83,7 @@ app.add_middleware(
 # Register routers
 app.include_router(auth.router)
 app.include_router(hosts.router)
+app.include_router(auto_updates.router)
 app.include_router(stacks.router)
 app.include_router(containers.router)
 app.include_router(updates.router)

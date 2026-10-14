@@ -166,6 +166,8 @@ class StackSummary(BaseModel):
     services: list[StackService] = []
     icon_url: Optional[str] = None  # 自定义图标 URL（网络或本地），由后端根据 host_config.stack_icons 匹配
     management_status: str = "managed"  # managed | deployed | file-only | unmanaged
+    auto_update_enabled: bool = False
+    auto_update_reason: str = ""
     title: Optional[str] = None
     app_url: Optional[str] = None
     group: Optional[str] = None

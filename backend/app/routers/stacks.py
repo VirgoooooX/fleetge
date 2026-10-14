@@ -235,7 +235,8 @@ async def list_stacks(host_id: str):
     snap = snapshot_manager.get_snapshot(host_id)
     if snap is None:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
-    return snap.stacks
+    from app.services.auto_update import stack_summaries
+    return stack_summaries(snap)
 
 
 @router.post("/compose/convert-docker-run")

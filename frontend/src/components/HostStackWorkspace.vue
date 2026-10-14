@@ -90,6 +90,7 @@
                 >
                   {{ managementStatusLabel(stack.management_status) }}
                 </span>
+                <span v-if="stack.auto_update_enabled" class="management-pill">{{ t('autoUpdate.badge') }}</span>
                 <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
               </span>
             </span>
@@ -159,6 +160,7 @@
                   >
                     {{ managementStatusLabel(stack.management_status) }}
                   </span>
+                  <span v-if="stack.auto_update_enabled" class="management-pill">{{ t('autoUpdate.badge') }}</span>
                   <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
                 </span>
               </div>
@@ -281,6 +283,12 @@
                   <span>{{ t('stackGroup.openApp') }}</span>
                 </button>
               </el-tooltip>
+              <AutoUpdateControl
+                :key="`${hostId}:${selectedStack.name}`"
+                :host-id="hostId"
+                :stack-name="selectedStack.name"
+                @refresh="$emit('refresh')"
+              />
               <UpdateBadge
                 v-if="stackUpdateStatus(selectedStack)"
                 class="detail-update-badge"
@@ -926,6 +934,7 @@ import StackOperationDock from "./StackOperationDock.vue";
 import ComposeDrawer, { type ComposeDeployPayload } from "./ComposeDrawer.vue";
 import MonacoEditor from "@/components/MonacoEditor.vue";
 import UpdateBadge from "./UpdateBadge.vue";
+import AutoUpdateControl from "./AutoUpdateControl.vue";
 import { sortStacks } from "@/utils/stackSorting";
 
 export interface StackService {
@@ -944,6 +953,8 @@ export interface StackSummary {
   services: StackService[];
   icon_url?: string;  // 自定义图标（网络 URL 或 /api/static/icons/...）
   management_status?: string;
+  auto_update_enabled?: boolean;
+  auto_update_reason?: string;
   app_url?: string;
 }
 
@@ -2981,7 +2992,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   min-width: 0;
   min-height: 32px;
 }

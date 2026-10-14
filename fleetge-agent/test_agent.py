@@ -352,7 +352,7 @@ def test_update_runs_up_only_when_compose_project_is_running(stack_base, monkeyp
         assert ws.receive_json()["type"] == "stdout"
         assert ws.receive_json()["type"] == "stdout"
         exit_msg = ws.receive_json()
-        assert exit_msg == {"type": "exit", "code": 0}
+        assert exit_msg == {"type": "exit", "code": 0, "stage": "up", "up_executed": True}
 
     assert commands == [
         ["compose", "pull"],
@@ -385,7 +385,7 @@ def test_update_skips_up_when_compose_project_is_not_running(stack_base, monkeyp
         ws.send_json({"action": "update"})
         assert ws.receive_json()["type"] == "stdout"
         exit_msg = ws.receive_json()
-        assert exit_msg == {"type": "exit", "code": 0}
+        assert exit_msg == {"type": "exit", "code": 0, "stage": "pull", "up_executed": False}
 
     assert commands == [["compose", "pull"]]
 

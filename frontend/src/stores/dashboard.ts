@@ -113,6 +113,8 @@ export interface StackSummary {
   services: StackService[];
   icon_url?: string;
   management_status?: string;
+  auto_update_enabled?: boolean;
+  auto_update_reason?: string;
   app_url?: string;
 }
 

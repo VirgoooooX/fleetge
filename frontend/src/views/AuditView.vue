@@ -35,8 +35,8 @@
       </el-table-column>
       <el-table-column :label="t('audit.result')" prop="result" width="80">
         <template #default="{ row }">
-          <el-tag :type="row.result === 'success' ? 'success' : 'danger'" size="small">
-            {{ row.result === 'success' ? t('audit.success') : t('audit.failure') }}
+          <el-tag :type="auditResultType(row.result)" size="small">
+            {{ auditResultLabel(row.result) }}
           </el-tag>
         </template>
       </el-table-column>
@@ -81,6 +81,10 @@ const { t } = useI18n();
 let limit = 50;
 
 const auditActionKeys: Record<string, string> = {
+  "stack.auto_update": "audit.action.autoUpdate",
+  "stack.auto_update.configure": "audit.action.autoUpdateConfigure",
+  "stack.auto_update.notify": "audit.action.autoUpdateNotify",
+  "notifyhub.configure": "audit.action.notifyHubConfigure",
   "stack.start": "audit.action.stack.start",
   "stack.stop": "audit.action.stack.stop",
   "stack.restart": "audit.action.stack.restart",
@@ -119,6 +123,14 @@ const actionTypes: Record<string, string> = {
   "host.stack_icons.update": "info",
   "host.test_connection": "success",
 };
+
+function auditResultType(result: string) {
+  return result === "success" ? "success" : result === "skipped" ? "info" : result === "uncertain" ? "warning" : "danger";
+}
+
+function auditResultLabel(result: string): string {
+  return t(result === "success" ? "audit.success" : result === "skipped" ? "audit.skipped" : result === "uncertain" ? "audit.uncertain" : "audit.failure");
+}
 
 function actionLabel(action: string): string {
   const key = auditActionKeys[action];

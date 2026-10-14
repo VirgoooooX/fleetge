@@ -415,6 +415,8 @@ class AgentClient:
                 exit_code = 0
                 error_msg = ""
                 job_id = ""
+                metadata: dict = {}
+                received_result = False
                 
                 # Consume lines
                 while True:
@@ -429,8 +431,12 @@ class AgentClient:
                                 await log_queue.put(chunk)
                         elif msg_type == "exit":
                             exit_code = msg.get("code", 0)
+                            metadata = {key: msg[key] for key in ("stage", "up_executed") if key in msg}
+                            received_result = True
                             break
                         elif msg_type == "error":
+                            received_result = True
+                            metadata = {"error_code": msg.get("error_code")}
                             error_msg = msg.get("message", "Unknown error")
                             if log_queue is not None:
                                 await log_queue.put(f"ERROR: {error_msg}")
@@ -448,9 +454,11 @@ class AgentClient:
                     # Put EOF sentinel
                     await log_queue.put(None)
 
+                if not received_result:
+                    return {"success": False, "ok": False, "interrupted": True, "message": "Agent connection closed before the operation result was received"}
                 if exit_code != 0:
-                    return {"success": False, "ok": False, "message": error_msg or f"Command failed with exit code {exit_code}"}
-                result = {"success": True, "ok": True, "message": "Operation completed successfully"}
+                    return {"success": False, "ok": False, "message": error_msg or f"Command failed with exit code {exit_code}", **metadata}
+                result = {"success": True, "ok": True, "message": "Operation completed successfully", **metadata}
                 if job_id:
                     result["job_id"] = job_id
                 return result
@@ -459,7 +467,7 @@ class AgentClient:
             if log_queue is not None:
                 await log_queue.put(f"WebSocket execution connection failed: {exc}")
                 await log_queue.put(None)
-            return {"success": False, "ok": False, "message": str(exc)}
+            return {"success": False, "ok": False, "interrupted": True, "message": "Agent connection failed before a confirmed operation result"}
 
     async def prune_system(
         self, log_queue: Optional[asyncio.Queue] = None
