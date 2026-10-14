@@ -63,6 +63,18 @@ class AutoUpdateApiTests(unittest.TestCase):
             self.assertEqual(self.client.put(path, json={"enabled": False}).status_code, 200)
             self.assertEqual(self.client.put(path, json={"enabled": True}).status_code, 409)
 
+    def test_deployed_stack_without_summary_compose_path_can_enable(self):
+        self.authenticate()
+        stack = SimpleNamespace(name="app", compose_file=None, management_status="deployed")
+        snap = SimpleNamespace(host_config=HostConfig(host_id="nas", agent_url="http://agent"), containers=[])
+        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app\n"}}), close=AsyncMock())
+        path = "/api/hosts/nas/stacks/app/auto-update"
+        with patch.object(router_module, "require_stack", return_value=(snap, stack)), patch.object(router_module, "AgentClient", return_value=conn):
+            self.assertEqual(self.client.get(path).json()["unavailable_reason"], "")
+            self.assertEqual(self.client.put(path, json={"enabled": True}).status_code, 200)
+            conn.get_stack.return_value = None
+            self.assertEqual(self.client.put(path, json={"enabled": True}).status_code, 409)
+
     def test_fleetge_stack_cannot_enable(self):
         self.authenticate()
         stack = SimpleNamespace(name="fleetge", compose_file="compose.yaml", management_status="managed")

@@ -35,7 +35,7 @@ def require_stack(host_id: str, stack_name: str):
 
 
 async def unavailable_reason(snap, stack) -> str:
-    if not stack.compose_file or stack.management_status == "unmanaged":
+    if stack.management_status == "unmanaged":
         return "该 Stack 没有可管理的 Compose 配置。"
     if not snap.host_config.agent_url:
         return "主机未配置 Agent。"
@@ -46,6 +46,9 @@ async def unavailable_reason(snap, stack) -> str:
             return "无法确认 Agent 所属 Stack，暂不能开启自动更新。"
         if control_stack(snap, stack.name, info):
             return "Fleetge／Agent 自身所在的 Stack 暂不支持自动更新。"
+        detail = await conn.get_stack(stack.name)
+        if not detail or not (detail.get("stack", {}).get("composeYAML") or "").strip():
+            return "该 Stack 没有可管理的 Compose 配置。"
     except Exception:
         return "无法连接 Agent 确认身份，暂不能开启自动更新。"
     finally:

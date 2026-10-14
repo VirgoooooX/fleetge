@@ -197,7 +197,7 @@ class AutoUpdateManager:
         if not snap or not snap.host_config or not snap.host_config.enabled or not snap.host_config.agent_url or snap.status != "online":
             return None
         stack = next((s for s in snap.stacks if s.name == stack_name), None)
-        return snap if stack and stack.status == "running" and stack.compose_file and stack.management_status != "unmanaged" else None
+        return snap if stack and stack.status == "running" and stack.management_status != "unmanaged" else None
 
     async def execute(self, conn: AgentClient, stack_name: str) -> tuple[dict, str]:
         queue: asyncio.Queue = asyncio.Queue()
@@ -230,6 +230,9 @@ class AutoUpdateManager:
             except Exception:
                 return  # Identity must be known before unattended updates.
             if not self_info.get("stack_name") or control_stack(snap, stack_name, self_info):
+                return
+            detail = await conn.get_stack(stack_name)
+            if not detail or not (detail.get("stack", {}).get("composeYAML") or "").strip():
                 return
             with Session(engine) as session:
                 run = AutoUpdateRun(host_id=host_id, stack_name=stack_name)

@@ -32,7 +32,7 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.snap = HostSnapshot()
         self.snap.host_config = HostConfig(host_id="nas", agent_url="http://agent", enabled=True)
         self.snap.status = "online"
-        self.snap.stacks = [SimpleNamespace(name="app", status="running", compose_file="compose.yaml", management_status="managed")]
+        self.snap.stacks = [SimpleNamespace(name="app", status="running", compose_file=None, management_status="deployed")]
         self.snap.containers = [SimpleNamespace(stack_name="app", image="example/app:latest")]
         self.snap.update_results = {"example/app:latest": "updatable"}
         self.snap.update_check_results = [SimpleNamespace(image="example/app:latest", status="updatable", last_failure_status=None)]
@@ -42,7 +42,7 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
             finalize_stack_update=AsyncMock(return_value=[SimpleNamespace(image="example/app:latest", cleared=True, verdict="digest matched")]),
         )
         self.manager.snapshots = lambda: self.snapshots
-        self.conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), close=AsyncMock(), _token="secret-token")
+        self.conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app:latest\n"}}), close=AsyncMock(), _token="secret-token")
         self.agent_patch = patch.object(module, "AgentClient", return_value=self.conn)
         self.agent_patch.start()
         module.set_policy("nas", "app", True)
@@ -62,6 +62,14 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
 
     async def run_update(self):
         await self.manager.run_stack("nas", "app", ["example/app:latest"])
+
+    async def test_real_compose_is_required_even_for_a_deployed_stack(self):
+        for detail in (None, {"stack": {"composeYAML": ""}}):
+            self.conn.get_stack.return_value = detail
+            await self.run_update()
+        self.manager.execute.assert_not_awaited()
+        self.assertIsNone(self.run_record())
+        self.assertTrue(module.stack_policy("nas", "app").enabled)
 
     async def test_pull_failure_replays_existing_update_once_then_verifies(self):
         self.manager.execute.side_effect = [({"success": False, "stage": "pull"}, "first failed"), ({"success": True, "stage": "up", "up_executed": True}, "second succeeded")]
