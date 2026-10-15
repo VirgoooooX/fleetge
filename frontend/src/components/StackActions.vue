@@ -1,5 +1,9 @@
 <template>
-  <div class="rect-dock" :class="{ 'is-large': size === 'large' }">
+  <div class="rect-dock" :class="{ 'is-large': size === 'large', 'has-settings': !!$slots.settings }">
+    <template v-if="$slots.settings">
+      <slot name="settings" />
+      <span class="capsule-divider" />
+    </template>
     <!-- Action Controls Subgroup -->
     <div class="capsule-subgroup">
       <el-tooltip :content="t('stack.action.start')" placement="top">
@@ -63,7 +67,7 @@
       </el-tooltip>
     </div>
 
-    <span class="capsule-divider" />
+    <span v-if="!managementMenu" class="capsule-divider" />
 
     <!-- Delete Control -->
     <el-tooltip v-if="!managementMenu" :content="t('stack.action.delete')" placement="top">
@@ -686,6 +690,12 @@ async function confirmAndDelete() {
 .rect-btn :deep(.el-icon),
 .rect-text-btn :deep(.el-icon) {
   font-size: 18px;
+}
+
+@media (max-width: 720px) {
+  .rect-dock.has-settings.is-large { gap: 2px; }
+  .rect-dock.has-settings.is-large .rect-btn { width: 30px; height: 32px; }
+  .rect-dock.has-settings.is-large .capsule-divider { margin: 0 3px; }
 }
 
 /* Large size variations */

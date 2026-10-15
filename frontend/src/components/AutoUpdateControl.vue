@@ -1,14 +1,17 @@
 <template>
   <el-tooltip :content="tooltip" placement="top">
-    <el-switch
-      class="auto-update-switch"
-      :active-text="t('autoUpdate.label')"
-      :model-value="state?.enabled ?? false"
-      :loading="saving || !state"
-      :disabled="!state || (!!state.unavailable_reason && !state.enabled)"
-      :aria-label="t('autoUpdate.label')"
-      @change="setEnabled(Boolean($event))"
-    />
+    <div class="auto-update-setting">
+      <span class="auto-update-caption">{{ t('autoUpdate.label') }}</span>
+      <el-switch
+        class="auto-update-switch"
+        size="small"
+        :model-value="state?.enabled ?? false"
+        :loading="saving || !state"
+        :disabled="!state || (!!state.unavailable_reason && !state.enabled)"
+        :aria-label="t('autoUpdate.label')"
+        @change="setEnabled(Boolean($event))"
+      />
+    </div>
   </el-tooltip>
 </template>
 
@@ -83,5 +86,24 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.auto-update-switch { flex-shrink: 0; }
+.auto-update-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0 6px;
+}
+.auto-update-caption {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.auto-update-switch {
+  flex-shrink: 0;
+  --el-switch-on-color: var(--accent-cyan);
+  --el-switch-off-color: var(--border-strong);
+}
+.auto-update-switch :deep(.el-switch__action) { background: var(--surface-panel); }
 </style>

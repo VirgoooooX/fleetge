@@ -923,6 +923,27 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
     # finalize_stack_update tests
     # ------------------------------------------------------------------
 
+    async def test_finalize_verifies_health_even_when_cache_is_already_latest(self):
+        from app.database import engine as db_engine, Session as DbSession
+        from app.schemas import ContainerSummary
+
+        with DbSession(db_engine) as session:
+            session.add(ImageUpdateCache(host_id=self.host_id, image="nginx:latest", status="up_to_date", current_digest="sha256:matched", registry_digest="sha256:matched"))
+            session.commit()
+        for health in ("healthy", "unhealthy"):
+            with self.subTest(health=health):
+                self.snap.containers = [ContainerSummary(
+                    id="c1", name="nginx", image="nginx:latest", image_id="sha256:img", tag_image_id="sha256:img",
+                    state="running", status="Up", created=0, repo_digests=["nginx@sha256:matched"],
+                    stack_name="my-stack", health={"Status": health},
+                )]
+                summaries = await self.manager.finalize_stack_update(self.host_id, "my-stack", ["nginx:latest"])
+                self.assertEqual(summaries[0].verified, health == "healthy")
+                self.assertFalse(summaries[0].cleared)
+                self.assertEqual(self.snap.update_results["nginx:latest"], "up_to_date")
+                if health == "unhealthy":
+                    self.assertIn("unhealthy", summaries[0].verdict)
+
     async def test_finalize_clears_tag_when_digest_matches_and_healthy(self):
         """Happy path: local digest == cached target + container healthy -> cleared."""
         from app.database import engine as db_engine, Session as DbSession

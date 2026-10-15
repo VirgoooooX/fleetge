@@ -14,7 +14,8 @@ export interface I18nSchema {
   "autoUpdate.badge": string;
   "autoUpdate.loadError": string;
   "autoUpdate.saveError": string;
-  "notifyHub.help": string;
+  "notifyHub.urlHelp": string;
+  "notifyHub.keyHelp": string;
   "notifyHub.url": string;
   "notifyHub.recipient": string;
   "notifyHub.recipientHint": string;

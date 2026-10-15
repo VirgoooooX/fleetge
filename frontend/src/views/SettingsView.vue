@@ -1959,90 +1959,12 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
-.form-cluster {
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--surface-panel-raised);
-  padding: 16px;
-}
-
-.params-settings-form .form-cluster {
-  overflow: hidden;
-  padding: 0;
-}
-
-.cluster-title,
 .section-kicker {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
   margin-bottom: 12px;
-}
-
-.params-settings-form .cluster-title {
-  margin: 0;
-  padding: 11px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--surface-panel) 68%, transparent);
-}
-
-.settings-field-list {
-  display: flex;
-  flex-direction: column;
-}
-
-.settings-field-row {
-  margin: 0;
-  padding: 13px 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.settings-field-row:first-child {
-  border-top: 0;
-}
-
-.settings-field-row :deep(.el-form-item__label) {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  height: auto;
-  padding: 0;
-  margin: 0;
-  line-height: 1.35;
-  text-align: left;
-}
-
-.settings-field-row :deep(.el-form-item__content) {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.settings-field-label {
-  color: var(--text-primary);
-  font-size: 13px;
-  font-weight: 700;
-  white-space: normal;
-}
-
-.settings-field-help {
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.45;
-  white-space: normal;
-}
-
-.params-settings-form :deep(.el-input-number) {
-  width: 148px;
-}
-
-.params-settings-form :deep(.el-input) {
-  width: min(360px, 100%);
 }
 
 .form-grid {
@@ -2070,29 +1992,6 @@ onBeforeUnmount(() => {
   margin-top: 6px;
 }
 
-@media (min-width: 860px) {
-  .settings-field-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
-    align-items: center;
-    column-gap: 22px;
-  }
-
-  .settings-field-row :deep(.el-form-item__label) {
-    grid-column: 1;
-  }
-
-  .settings-field-row :deep(.el-form-item__content) {
-    grid-column: 2;
-  }
-}
-
-@media (max-width: 859px) {
-  .settings-field-row :deep(.el-form-item__content) {
-    justify-content: flex-start;
-    margin-top: 10px;
-  }
-}
 
 .settings-inline-details {
   border: 1px solid var(--border-subtle);

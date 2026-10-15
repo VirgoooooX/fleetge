@@ -90,7 +90,7 @@
                 >
                   {{ managementStatusLabel(stack.management_status) }}
                 </span>
-                <span v-if="stack.auto_update_enabled" class="management-pill">{{ t('autoUpdate.badge') }}</span>
+                <span v-if="stack.auto_update_enabled" class="management-pill auto-update-pill">{{ t('autoUpdate.badge') }}</span>
                 <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
               </span>
             </span>
@@ -160,7 +160,7 @@
                   >
                     {{ managementStatusLabel(stack.management_status) }}
                   </span>
-                  <span v-if="stack.auto_update_enabled" class="management-pill">{{ t('autoUpdate.badge') }}</span>
+                  <span v-if="stack.auto_update_enabled" class="management-pill auto-update-pill">{{ t('autoUpdate.badge') }}</span>
                   <UpdateBadge v-if="stackUpdateStatus(stack)" :status="stackUpdateStatus(stack)!" />
                 </span>
               </div>
@@ -283,12 +283,6 @@
                   <span>{{ t('stackGroup.openApp') }}</span>
                 </button>
               </el-tooltip>
-              <AutoUpdateControl
-                :key="`${hostId}:${selectedStack.name}`"
-                :host-id="hostId"
-                :stack-name="selectedStack.name"
-                @refresh="$emit('refresh')"
-              />
               <UpdateBadge
                 v-if="stackUpdateStatus(selectedStack)"
                 class="detail-update-badge"
@@ -315,7 +309,16 @@
               @terminal-chunk="onTerminalChunk"
               @operation-complete="handleOperationComplete"
               @compose="openCompose(selectedStack.name)"
-            />
+            >
+              <template #settings>
+                <AutoUpdateControl
+                  :key="`${hostId}:${selectedStack.name}`"
+                  :host-id="hostId"
+                  :stack-name="selectedStack.name"
+                  @refresh="$emit('refresh')"
+                />
+              </template>
+            </StackActions>
           </div>
         </header>
 
@@ -2565,6 +2568,12 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+.auto-update-pill {
+  border-color: color-mix(in srgb, var(--accent-cyan) 25%, transparent);
+  background: color-mix(in srgb, var(--accent-cyan) 8%, transparent);
+  color: var(--accent-cyan);
+}
+
 .management-unmanaged {
   border-color: rgba(168, 85, 247, 0.28);
   background: rgba(168, 85, 247, 0.10);
@@ -2971,6 +2980,7 @@ onUnmounted(() => {
 
 .detail-hero {
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .detail-title-block {
@@ -2979,6 +2989,11 @@ onUnmounted(() => {
 }
 
 .detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
   flex: 0 0 auto;
 }
 

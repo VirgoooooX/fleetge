@@ -265,11 +265,21 @@ class AutoUpdateManager:
                     if result.get("up_executed") is False:
                         self.finish(run_id, "skipped", "拉取完成时 Stack 已不处于正常运行状态，未执行 up。")
                         return
+                    # The cached containers can still be healthy instances of the
+                    # OLD image. Refresh after up before trusting convergence.
+                    previous_refresh = self.snapshots().get_snapshot(host_id).containers_updated
+                    await self.snapshots().refresh_host_docker(host_id, trigger_initial_update_check=False)
+                    refreshed = self.snapshots().get_snapshot(host_id)
+                    if not refreshed or refreshed.status != "online" or refreshed.containers_updated <= previous_refresh:
+                        self.finish(run_id, "uncertain", "更新命令已完成，但无法取得更新后的容器状态。已暂停自动升级，请查看实际运行状态。", logs)
+                        return
+                    with Session(engine) as session:
+                        run = session.get(AutoUpdateRun, run_id)
+                        run.stage = "verify"
+                        session.add(run)
+                        session.commit()
                     summaries = await self.snapshots().finalize_stack_update(host_id, stack_name, targets, wait_timeout=45.0)
-                    current = self.snapshots().get_snapshot(host_id)
-                    verified = len(summaries) == len(set(targets)) and all(
-                        s.cleared or (current and current.update_results.get(s.image) == "up_to_date") for s in summaries
-                    )
+                    verified = len(summaries) == len(set(targets)) and all(s.verified for s in summaries)
                     detail = "\n".join(s.verdict for s in summaries) or "无法取得更新验证结果。"
                     self.finish(run_id, "success" if verified else "failed", detail, logs)
                     return

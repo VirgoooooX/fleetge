@@ -69,6 +69,7 @@ class FinalizeSummary:
     image: str
     cleared: bool
     verdict: str
+    verified: bool = False
 
 
 # Container states that block tag clearing: the stack has not converged to a
@@ -763,9 +764,9 @@ class SnapshotManager:
             row = rows_by_image.get(image)
             containers = containers_by_image.get(image, [])
 
-            if not row or row.status != "updatable":
-                # Nothing to clear (already up_to_date, or a non-conclusive
-                # cache row). Still report so the terminal confirms the state.
+            if not row or row.status not in {"updatable", "up_to_date"}:
+                # Unknown/failed checks cannot prove an update. An up-to-date
+                # cache row still needs running-image and health verification.
                 status = row.status if row else "unknown"
                 summaries.append(FinalizeSummary(
                     image=image,
@@ -829,7 +830,8 @@ class SnapshotManager:
                 self._clear_updatable_tag(host_id, image, local_candidates[0])
                 summaries.append(FinalizeSummary(
                     image=image,
-                    cleared=True,
+                    cleared=row.status == "updatable",
+                    verified=True,
                     verdict=f"{image}: up to date (digest matched)",
                 ))
                 continue
@@ -849,7 +851,8 @@ class SnapshotManager:
                 self._clear_updatable_tag(host_id, image, local_candidates[0])
                 summaries.append(FinalizeSummary(
                     image=image,
-                    cleared=True,
+                    cleared=row.status == "updatable",
+                    verified=True,
                     verdict=(
                         f"{image}: up to date (tag advanced since last check; "
                         f"re-confirmed against registry)"

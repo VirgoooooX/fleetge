@@ -335,3 +335,92 @@
   border-color: var(--border-subtle) !important;
   color: var(--text-muted) !important;
 }
+
+/* Shared parameter-setting rows, including the Notify Hub form. */
+.params-settings-form .form-cluster {
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-panel-raised);
+}
+
+.params-settings-form .cluster-title {
+  margin: 0;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-panel) 68%, transparent);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.params-settings-form .settings-field-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.params-settings-form .settings-field-row {
+  margin: 0;
+  padding: 13px 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.params-settings-form .settings-field-row:first-child { border-top: 0; }
+
+.params-settings-form .settings-field-row .el-form-item__label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  height: auto;
+  padding: 0;
+  margin: 0;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.params-settings-form .settings-field-row .el-form-item__content {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.params-settings-form .settings-field-label {
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: 700;
+  white-space: normal;
+}
+
+.params-settings-form .settings-field-help {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: normal;
+}
+
+.params-settings-form .el-input-number { width: 148px; }
+.params-settings-form .el-input { width: min(360px, 100%); }
+
+@media (min-width: 860px) {
+  .params-settings-form .settings-field-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, auto);
+    align-items: center;
+    column-gap: 22px;
+  }
+  .params-settings-form .settings-field-row .el-form-item__label { grid-column: 1; }
+  .params-settings-form .settings-field-row .el-form-item__content { grid-column: 2; }
+}
+
+@media (max-width: 859px) {
+  .params-settings-form .settings-field-row .el-form-item__content {
+    justify-content: flex-start;
+    margin-top: 10px;
+  }
+}

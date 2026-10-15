@@ -36,10 +36,13 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.snap.containers = [SimpleNamespace(stack_name="app", image="example/app:latest")]
         self.snap.update_results = {"example/app:latest": "updatable"}
         self.snap.update_check_results = [SimpleNamespace(image="example/app:latest", status="updatable", last_failure_status=None)]
+        async def refresh_snapshot(*args, **kwargs):
+            self.snap.containers_updated += 1
+
         self.snapshots = SimpleNamespace(
             get_snapshot=MagicMock(return_value=self.snap),
-            refresh_host_docker=AsyncMock(),
-            finalize_stack_update=AsyncMock(return_value=[SimpleNamespace(image="example/app:latest", cleared=True, verdict="digest matched")]),
+            refresh_host_docker=AsyncMock(side_effect=refresh_snapshot),
+            finalize_stack_update=AsyncMock(return_value=[SimpleNamespace(image="example/app:latest", cleared=True, verified=True, verdict="digest matched")]),
         )
         self.manager.snapshots = lambda: self.snapshots
         self.conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app:latest\n"}}), close=AsyncMock(), _token="secret-token")
@@ -62,6 +65,66 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
 
     async def run_update(self):
         await self.manager.run_stack("nas", "app", ["example/app:latest"])
+
+    async def test_up_refreshes_old_healthy_snapshot_before_real_verification(self):
+        from app.models import ImageUpdateCache
+        from app.schemas import ContainerSummary
+        from app.services.snapshot import SnapshotManager
+        from app.services import snapshot as snapshot_module
+
+        real_manager = SnapshotManager()
+        real_manager._snapshots = {"nas": self.snap}
+        with Session(self.engine) as session:
+            session.add(ImageUpdateCache(host_id="nas", image="example/app:latest", current_digest="sha256:old", registry_digest="sha256:new", status="updatable"))
+            session.commit()
+        applied = False
+        events = []
+
+        async def execute(*args):
+            nonlocal applied
+            applied = True
+            events.append("up")
+            return {"success": True, "stage": "up", "up_executed": True}, ""
+
+        async def refresh(*args, **kwargs):
+            digest = "sha256:new" if applied else "sha256:old"
+            self.snap.containers = [ContainerSummary(id="container", name="app", image="example/app:latest", image_id=digest, tag_image_id=digest, repo_digests=["example/app@" + digest], state="running", status="Up", created=0, stack_name="app", health={"Status": "healthy"})]
+            self.snap.containers_updated += 1
+            events.append("refresh-new" if applied else "refresh-old")
+
+        async def finalize(*args, **kwargs):
+            events.append("verify")
+            return await real_manager.finalize_stack_update(*args, wait_timeout=0)
+
+        self.manager.execute.side_effect = execute
+        self.snapshots.refresh_host_docker.side_effect = refresh
+        self.snapshots.finalize_stack_update.side_effect = finalize
+        with patch.object(snapshot_module, "engine", self.engine):
+            await self.run_update()
+        self.assertEqual(events[:4], ["refresh-old", "up", "refresh-new", "verify"])
+        self.assertEqual(self.run_record().status, "success")
+        self.assertTrue(module.stack_policy("nas", "app").enabled)
+        self.assertEqual(self.snap.update_results["example/app:latest"], "up_to_date")
+
+    async def test_unavailable_post_update_snapshot_is_uncertain(self):
+        async def refresh(*args, **kwargs):
+            if not self.manager.execute.await_count:
+                self.snap.containers_updated += 1
+        self.snapshots.refresh_host_docker.side_effect = refresh
+        await self.run_update()
+        self.assertEqual(self.run_record().status, "uncertain")
+        self.assertFalse(module.stack_policy("nas", "app").enabled)
+        self.snapshots.finalize_stack_update.assert_not_awaited()
+
+    async def test_latest_cache_is_not_a_substitute_for_health_verification(self):
+        self.snap.update_results["example/app:latest"] = "updatable"
+        async def finalize(*args, **kwargs):
+            self.snap.update_results["example/app:latest"] = "up_to_date"
+            return [SimpleNamespace(image="example/app:latest", cleared=False, verified=False, verdict="container is unhealthy")]
+        self.snapshots.finalize_stack_update.side_effect = finalize
+        await self.run_update()
+        self.assertEqual(self.run_record().status, "failed")
+        self.assertFalse(module.stack_policy("nas", "app").enabled)
 
     async def test_real_compose_is_required_even_for_a_deployed_stack(self):
         for detail in (None, {"stack": {"composeYAML": ""}}):
@@ -110,7 +173,7 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(module.stack_policy("nas", "app").enabled)
 
     async def test_failed_verification_pauses_despite_command_success(self):
-        self.snapshots.finalize_stack_update.return_value = [SimpleNamespace(image="example/app:latest", cleared=False, verdict="container is restarting")]
+        self.snapshots.finalize_stack_update.return_value = [SimpleNamespace(image="example/app:latest", cleared=False, verified=False, verdict="container is restarting")]
         await self.run_update()
         self.assertEqual(self.run_record().status, "failed")
         self.assertIn("restarting", module.stack_policy("nas", "app").reason)

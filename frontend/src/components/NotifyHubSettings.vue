@@ -1,23 +1,44 @@
 <template>
-  <div class="form-cluster" v-loading="loading">
-    <div class="cluster-title">Notify Hub</div>
-    <p class="notify-help">{{ t('notifyHub.help') }}</p>
-    <el-form label-position="top" @submit.prevent="save">
-      <el-form-item :label="t('notifyHub.url')">
-        <el-input v-model="form.url" placeholder="http://192.168.31.100:8788" />
-      </el-form-item>
-      <el-form-item :label="t('notifyHub.recipient')">
-        <el-input v-model="form.recipient" :placeholder="t('notifyHub.recipientHint')" />
-      </el-form-item>
-      <el-form-item label="API Key">
-        <el-input v-model="form.api_key" type="password" show-password autocomplete="new-password" :placeholder="keyConfigured ? t('notifyHub.keySaved') : 'nfy_…'" />
-      </el-form-item>
-      <el-checkbox v-if="keyConfigured" v-model="clearKey">{{ t('notifyHub.clearKey') }}</el-checkbox>
+  <el-form
+    class="settings-form params-settings-form notify-hub-settings"
+    label-position="top"
+    :model="form"
+    v-loading="loading"
+    @submit.prevent="save"
+  >
+    <div class="form-cluster">
+      <div class="cluster-title">Notify Hub</div>
+      <div class="settings-field-list">
+        <el-form-item class="settings-field-row">
+          <template #label>
+            <span class="settings-field-label">{{ t('notifyHub.url') }}</span>
+            <span class="settings-field-help">{{ t('notifyHub.urlHelp') }}</span>
+          </template>
+          <el-input v-model="form.url" placeholder="http://192.168.31.100:8788" />
+        </el-form-item>
+        <el-form-item class="settings-field-row">
+          <template #label>
+            <span class="settings-field-label">{{ t('notifyHub.recipient') }}</span>
+            <span class="settings-field-help">{{ t('notifyHub.recipientHint') }}</span>
+          </template>
+          <el-input v-model="form.recipient" :placeholder="t('notifyHub.recipient')" />
+        </el-form-item>
+        <el-form-item class="settings-field-row">
+          <template #label>
+            <span class="settings-field-label">API Key</span>
+            <span class="settings-field-help">{{ keyConfigured ? t('notifyHub.keySaved') : t('notifyHub.keyHelp') }}</span>
+          </template>
+          <div class="notify-key-field">
+            <el-input v-model="form.api_key" type="password" show-password autocomplete="new-password" :placeholder="keyConfigured ? t('notifyHub.keySaved') : 'nfy_…'" />
+            <el-checkbox v-if="keyConfigured" v-model="clearKey">{{ t('notifyHub.clearKey') }}</el-checkbox>
+          </div>
+        </el-form-item>
+      </div>
       <div class="notify-save">
         <el-button type="primary" class="ui-button ui-button--primary" :loading="saving" native-type="submit">{{ t('settings.params.save') }}</el-button>
       </div>
-    </el-form>
-  </div>
+    </div>
+  </el-form>
 </template>
 
 <script setup lang="ts">
@@ -69,8 +90,18 @@ async function save() {
 </script>
 
 <style scoped>
-.form-cluster { border-top: 1px solid var(--border-subtle); padding: 20px 0 0; margin-top: 20px; }
-.cluster-title { font-weight: 600; }
-.notify-help { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
-.notify-save { margin-top: 12px; }
+.notify-hub-settings { margin-top: 12px; }
+.notify-key-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: min(360px, 100%);
+}
+.notify-save {
+  display: flex;
+  justify-content: flex-end;
+  padding: 11px 16px;
+  border-top: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--surface-panel) 68%, transparent);
+}
 </style>
