@@ -1041,8 +1041,21 @@ async def _run_finalize(
         yield _sse_event("chunk", {"raw": f"{marker} {s.verdict}\n"})
 
 
-async def _stream_update_run(host_id: str, request_id: str, stack_name: str) -> AsyncGenerator[str, None]:
-    last_tail = ""
+@router.get("/hosts/{host_id}/stacks/{stack_name}/update-runs/{request_id}/stream")
+async def stream_existing_update_run(host_id: str, stack_name: str, request_id: str, after: int = 0):
+    batch = auto_update_manager.get_batch(host_id, request_id)
+    if not batch or not any(item["stack_name"] == stack_name for item in batch["items"]):
+        raise HTTPException(404, "Update run not found")
+    return StreamingResponse(
+        _stream_update_run(host_id, request_id, stack_name, after=max(0, after)),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _stream_update_run(host_id: str, request_id: str, stack_name: str, after: int = 0) -> AsyncGenerator[str, None]:
+    replayed_tail = False
+    last_stage = ""
     while True:
         batch = auto_update_manager.get_batch(host_id, request_id)
         if batch is None:
@@ -1052,21 +1065,24 @@ async def _stream_update_run(host_id: str, request_id: str, stack_name: str) -> 
         if run is None:
             yield _sse_event("error", {"message": "Update run does not include this Stack."})
             return
-        current_tail = run.get("log_tail") or ""
-        if current_tail != last_tail:
-            delta = current_tail[len(last_tail):] if current_tail.startswith(last_tail) else current_tail
-            if delta:
-                yield _sse_event("chunk", {"raw": delta})
-            last_tail = current_tail
+        chunks = auto_update_manager.read_run_output(run["id"], after)
+        if chunks is None and not replayed_tail and run.get("log_tail"):
+            yield _sse_event("chunk", {"raw": run["log_tail"]})
+            replayed_tail = True
+        for sequence, text in chunks or []:
+            yield _sse_event("chunk", {"raw": text, "cursor": sequence})
+            after = sequence
+        if run["stage"] != last_stage:
+            yield _sse_event("stage", {"stage": run["stage"], "status": run["status"]})
+            last_stage = run["stage"]
         if run["status"] in {"success", "failed", "uncertain", "skipped"}:
-            message = run.get("detail") or run["status"]
             yield _sse_event("complete", {
                 "status": "success" if run["status"] == "success" else "error",
                 "outcome": run["status"],
-                "message": message,
+                "message": run.get("detail") or run["status"],
             })
             return
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.2)
 
 
 async def _fresh_check_fleetge_services(

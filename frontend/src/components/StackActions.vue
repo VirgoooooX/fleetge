@@ -185,9 +185,10 @@ import {
 } from "@element-plus/icons-vue";
 import { streamSse } from "@/api/sse";
 import { useConfirm, STACK_TONE_MAP } from "@/composables/useConfirm";
-import { useDashboardStore } from "@/stores/dashboard";
+import { useDashboardStore, type UpdateRunItem } from "@/stores/dashboard";
 
 export type OperationState = {
+  hostId?: string;
   action: string;
   status: "running" | "success" | "error" | "timeout" | "uncertain" | "skipped";
   message: string;
@@ -197,6 +198,7 @@ export type OperationState = {
 };
 
 export type TerminalChunkEvent = {
+  hostId?: string;
   action: string;
   chunk: string;
 };
@@ -212,6 +214,7 @@ const props = withDefaults(
     size?: "default" | "large";
     appUrl?: string;
     managementMenu?: boolean;
+    restoreCompletedUpdate?: boolean;
   }>(),
   {
     showCompose: false,
@@ -221,6 +224,7 @@ const props = withDefaults(
     size: "default",
     appUrl: "",
     managementMenu: false,
+    restoreCompletedUpdate: false,
   }
 );
 
@@ -306,6 +310,7 @@ async function confirmAndRun(action: string, label: string) {
   }
 
   const currentStackName = props.stackName;
+  const currentHostId = props.hostId;
   if (action === "update") {
     void submitManualUpdate(currentStackName, label);
     return;
@@ -315,6 +320,7 @@ async function confirmAndRun(action: string, label: string) {
   sseAbortController = controller;
 
   const runningState: OperationState = {
+    hostId: currentHostId,
     action,
     status: "running",
     message: t("stack.confirm.running", { action: label }),
@@ -332,7 +338,7 @@ async function confirmAndRun(action: string, label: string) {
   try {
     const cols = props.showDetail ? 55 : 110;
     const rows = props.showDetail ? 15 : 24;
-    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(currentStackName)}/${action}?cols=${cols}&rows=${rows}`;
+    const url = `/api/hosts/${currentHostId}/stacks/${encodeURIComponent(currentStackName)}/${action}?cols=${cols}&rows=${rows}`;
 
     await streamSse({
       url,
@@ -352,19 +358,23 @@ async function confirmAndRun(action: string, label: string) {
         ElMessage.warning(timeoutState.message);
       },
       onEvent: (ev) => {
+        if (props.hostId !== currentHostId || props.stackName !== currentStackName) return;
         if (ev.event === "chunk") {
-          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.raw ?? ev.rawData });
+          emit("terminal-chunk", currentStackName, { hostId: currentHostId, action, chunk: ev.data?.raw ?? ev.rawData });
         } else if (ev.event === "line") {
-          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.text ?? ev.rawData });
+          emit("terminal-chunk", currentStackName, { hostId: currentHostId, action, chunk: ev.data?.text ?? ev.rawData });
         } else if (ev.event === "complete") {
           completed = true;
 
           const data = ev.data || {};
           const finalStatus = data.status === "success" ? "success" : "error";
           const completeState: OperationState = {
+            hostId: currentHostId,
             action,
             status: finalStatus,
-            message: data.message || t(finalStatus === "success" ? "stack.confirm.success" : "stack.confirm.failure", { action: label }),
+            message: finalStatus === "success"
+              ? t("stack.confirm.success", { action: label })
+              : data.message || t("stack.confirm.failure", { action: label }),
             updatedAt: Date.now(),
           };
           emit("operation-complete", currentStackName, completeState);
@@ -402,15 +412,15 @@ async function confirmAndRun(action: string, label: string) {
         emit("operation-complete", currentStackName, cancelState);
         return;
       }
-      const successState: OperationState = {
+      const errorState: OperationState = {
+        hostId: currentHostId,
         action,
-        status: "success",
-        message: t("stack.confirm.success", { action: label }),
+        status: "error",
+        message: t("stack.confirm.noResult"),
         updatedAt: Date.now(),
       };
-      emit("operation-complete", currentStackName, successState);
-      ElMessage.success(successState.message);
-      emit("refresh");
+      emit("operation-complete", currentStackName, errorState);
+      ElMessage.warning(errorState.message);
     }
   } catch (e: any) {
     if (completed) return;
@@ -446,87 +456,104 @@ async function confirmAndRun(action: string, label: string) {
   }
 }
 
+let updateViewId: number | null = null;
+let updateViewController: AbortController | null = null;
+
+watch(
+  () => ({ hostId: props.hostId, stackName: props.stackName, run: dashboardStore.updateRunForStack(props.hostId, props.stackName) }),
+  (current, previous) => {
+    if (previous && (current.hostId !== previous.hostId || current.stackName !== previous.stackName)) {
+      updateViewController?.abort();
+      updateViewId = null;
+    }
+    const run = current.run;
+    const restoreCompleted = props.restoreCompletedUpdate && run
+      && dashboardStore.observedUpdateRunIds[`${current.hostId}/${current.stackName}`] === run.id;
+    if (run && (run.status === "running" || restoreCompleted) && run.id !== updateViewId) {
+      void viewUpdateRun(run);
+    }
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => updateViewController?.abort());
+
+async function viewUpdateRun(run: UpdateRunItem) {
+  if (updateViewId === run.id) return;
+  updateViewController?.abort();
+  updateViewId = run.id;
+  const controller = new AbortController();
+  updateViewController = controller;
+  const hostId = run.host_id;
+  const stackName = run.stack_name;
+  const isCurrent = () => !controller.signal.aborted && props.hostId === hostId && props.stackName === stackName;
+  let cursor = 0;
+  let completed = false;
+  let reportedDisconnect = false;
+  emit("operation-start", stackName, {
+    hostId, action: "update", status: "running",
+    message: t(run.status === "queued" ? "workspace.updateRunStatus.queued" : "stack.confirm.running", { action: t("stack.action.update") }),
+    updatedAt: Date.now(),
+    abort: () => controller.abort(),
+  });
+  while (isCurrent() && !completed) {
+    try {
+      await streamSse({
+        url: `/api/hosts/${encodeURIComponent(hostId)}/stacks/${encodeURIComponent(stackName)}/update-runs/${encodeURIComponent(run.request_id)}/stream?after=${cursor}`,
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (!isCurrent()) return;
+          if (event.event === "chunk") {
+            emit("terminal-chunk", stackName, { hostId, action: "update", chunk: event.data?.raw || "" });
+            cursor = event.data?.cursor ?? cursor;
+          } else if (event.event === "complete") {
+            completed = true;
+            const outcome = event.data?.outcome;
+            const status: OperationState["status"] = outcome === "success" ? "success"
+              : outcome === "uncertain" ? "uncertain" : outcome === "skipped" ? "skipped" : "error";
+            const message = t(outcome === "success" ? "stack.confirm.updateVerified"
+              : outcome === "uncertain" ? "stack.confirm.updateUncertain"
+                : outcome === "skipped" ? "workspace.updateRunStatus.skipped" : "stack.confirm.failure", { action: t("stack.action.update") });
+            if (outcome !== "success" && event.data?.message) {
+              emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${event.data.message}\r\n` });
+            }
+            emit("operation-complete", stackName, { hostId, action: "update", status, message, updatedAt: Date.now() });
+            if (status === "success") { ElMessage.success(message); emit("refresh"); }
+            else if (status === "error") ElMessage.error(message);
+            else ElMessage.warning(message);
+            void dashboardStore.fetchUpdateRuns(hostId).catch(() => undefined);
+          }
+        },
+      });
+    } catch { /* A lost viewer does not change the backend run result. */ }
+    if (!isCurrent() || completed) break;
+    if (!reportedDisconnect) {
+      emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${t("stack.confirm.reconnectingUpdate")}\r\n` });
+      reportedDisconnect = true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+}
+
 async function submitManualUpdate(stackName: string, label: string) {
   loading.value = "update";
-  const startedAt = Date.now();
+  const hostId = props.hostId;
   emit("operation-start", stackName, {
-    action: "update",
-    status: "running",
-    message: t("workspace.updateSubmitting"),
-    updatedAt: startedAt,
+    hostId, action: "update", status: "running", message: t("workspace.updateSubmitting"), updatedAt: Date.now(),
   });
-
-  let requestId = "";
-  let lastTail = "";
-  let completed = false;
-  const observeRun = (id: string) => {
-    watch(
-      () => dashboardStore.updateRunForStack(props.hostId, stackName),
-      (run) => {
-        if (!run || run.request_id !== id) return;
-        const tail = run.log_tail || "";
-        const delta = tail.startsWith(lastTail) ? tail.slice(lastTail.length) : tail;
-        if (delta) emit("terminal-chunk", stackName, { action: "update", chunk: delta });
-        lastTail = tail;
-        if (run.status === "queued" || run.status === "running" || completed) return;
-        completed = true;
-        const finalStatus: OperationState["status"] = run.status === "success"
-          ? "success"
-          : run.status === "uncertain"
-            ? "uncertain"
-            : run.status === "skipped"
-              ? "skipped"
-              : "error";
-        const finalState: OperationState = {
-          action: "update",
-          status: finalStatus,
-          message: run.detail || t(`workspace.updateRunStatus.${run.status}`),
-          logTail: tail,
-          updatedAt: Date.now(),
-        };
-        emit("operation-complete", stackName, finalState);
-        loading.value = null;
-        if (run.status === "success") {
-          ElMessage.success(finalState.message);
-          emit("refresh");
-        } else if (run.status === "uncertain") {
-          ElMessage.warning(finalState.message);
-        } else if (run.status === "skipped") {
-          ElMessage.info(finalState.message);
-        } else {
-          ElMessage.error(finalState.message);
-        }
-      },
-      { immediate: true },
-    );
-  };
-
   try {
-    let batch;
-    try {
-      batch = await dashboardStore.submitUpdateRuns(props.hostId, "manual", [stackName]);
-    } catch (firstError: any) {
-      requestId = firstError?.requestId || "";
-      if (!requestId) throw firstError;
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      batch = await dashboardStore.submitUpdateRuns(props.hostId, "manual", [stackName]);
-    }
-    requestId = batch.request_id;
+    const batch = await dashboardStore.submitUpdateRuns(hostId, "manual", [stackName]);
     const run = batch.items.find((item) => item.stack_name === stackName);
     if (!run) throw new Error(t("workspace.updateRunMissing"));
-    observeRun(requestId);
+    if (props.hostId === hostId && props.stackName === stackName) void viewUpdateRun(run);
   } catch (error: any) {
-    completed = true;
+    if (props.hostId !== hostId || props.stackName !== stackName) return;
     const detail = error?.response?.data?.detail;
-    const message = typeof detail === "string" ? detail : detail?.message;
-    emit("operation-complete", stackName, {
-      action: "update",
-      status: "error",
-      message: `${message || error?.message || t("stack.confirm.failure", { action: label })}${requestId ? ` (request ${requestId})` : ""}`,
-      updatedAt: Date.now(),
-    });
+    const message = (typeof detail === "string" ? detail : detail?.message) || error?.message || t("stack.confirm.failure", { action: label });
+    emit("operation-complete", stackName, { hostId, action: "update", status: "error", message, updatedAt: Date.now() });
+    ElMessage.error(message);
+  } finally {
     loading.value = null;
-    ElMessage.error(message || error?.message || t("workspace.updateBatchFailed"));
   }
 }
 

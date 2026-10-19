@@ -13,7 +13,10 @@
           <el-icon v-else-if="status === 'error'"><WarningFilled /></el-icon>
           {{ statusLabel }}
         </span>
-        <el-button v-if="status === 'running'" type="danger" link size="small" @click.stop="$emit('cancel')">
+        <el-button v-if="status === 'running' && canStopPending" type="danger" link size="small" @click.stop="$emit('stop-pending')">
+          {{ t("workspace.stopPendingUpdates") }}
+        </el-button>
+        <el-button v-if="status === 'running' && action !== 'update'" type="danger" link size="small" @click.stop="$emit('cancel')">
           {{ t("stack.confirm.cancel") }}
         </el-button>
         <el-button v-if="lines.length > 0" class="ui-button ui-button--compact" size="small" text @click.stop="copyOutput">
@@ -45,12 +48,14 @@ const props = withDefaults(defineProps<{
   status: "running" | "success" | "error" | "idle";
   message: string;
   compact?: boolean;
+  canStopPending?: boolean;
 }>(), {
   action: "",
   compact: false,
+  canStopPending: false,
 });
 
-defineEmits<{ close: [], cancel: [] }>();
+defineEmits<{ close: [], cancel: [], "stop-pending": [] }>();
 
 const { t } = useI18n();
 
@@ -59,6 +64,7 @@ const copied = ref(false);
 let terminal: XtermTerminal | null = null;
 let fitAddon: FitAddon | null = null;
 let renderedChunkCount = 0;
+let renderedCompletion = "";
 let resizeObserver: ResizeObserver | null = null;
 let themeObserver: MutationObserver | null = null;
 
@@ -154,23 +160,14 @@ onBeforeUnmount(() => {
 });
 
 watch(
-  () => [props.stackName, props.action],
+  () => [props.stackName, props.action, props.lines],
   () => {
     renderedChunkCount = 0;
-    terminal?.clear();
-    terminal?.reset();
+    renderedCompletion = "";
+    terminal?.write("\x1bc");
     writeChunks(0, true);
   },
-);
-
-watch(
-  () => props.lines,
-  () => {
-    renderedChunkCount = 0;
-    terminal?.clear();
-    terminal?.reset();
-    writeChunks(0, true);
-  }
+  { flush: "post" },
 );
 
 watch(
@@ -178,6 +175,12 @@ watch(
   () => {
     writeChunks(renderedChunkCount);
   },
+  { flush: "post" },
+);
+
+watch(
+  () => [props.status, props.message],
+  () => writeChunks(renderedChunkCount),
   { flush: "post" },
 );
 
@@ -207,20 +210,31 @@ function writeChunks(startIndex: number, force = false) {
     renderedChunkCount = 0;
     if (force) {
       terminal.clear();
-      terminal.write("\x1b[2m" + t("stackOp.waitingOutput") + "\x1b[0m\r\n");
+      if (props.status === "running") terminal.write("\x1b[2m" + t("stackOp.waitingOutput") + "\x1b[0m\r\n");
     }
+    writeCompletion();
     return;
   }
 
   if (startIndex === 0 && renderedChunkCount === 0) {
-    terminal.clear();
+    terminal.write("\x1b[2J\x1b[H");
   }
 
   for (let i = startIndex; i < props.lines.length; i++) {
     terminal.write(props.lines[i]);
   }
   renderedChunkCount = props.lines.length;
+  writeCompletion();
   fitTerminal();
+}
+
+function writeCompletion() {
+  if (!terminal || props.status === "running" || !props.message) return;
+  const key = `${props.stackName}:${props.action}:${props.status}:${props.message}`;
+  if (renderedCompletion === key) return;
+  renderedCompletion = key;
+  const color = props.status === "success" ? "32" : props.status === "error" ? "31" : "33";
+  terminal.write(`\r\n\x1b[${color}m[Fleetge] ${props.message}\x1b[0m\r\n`);
 }
 
 function getTerminalPlainText(): string {

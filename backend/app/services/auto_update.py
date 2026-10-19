@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+from collections import OrderedDict, deque
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -127,10 +128,11 @@ def control_stack(snap, stack_name: str, self_info: dict) -> bool:
     return False
 
 
-def scrub_log(text: str, token: str = "") -> str:
+def scrub_log(text: str, token: str = "", *, terminal: bool = False) -> str:
     if token:
         text = text.replace(token, "[redacted]")
-    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+    if not terminal:
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
     text = re.sub(r"(?i)((?:password|token|api[_-]?key|authorization)\s*[:=]\s*)\S+", r"\1[redacted]", text)
     text = re.sub(r"(https?://)[^\s/@]+:[^\s/@]+@", r"\1[redacted]@", text)
     return text[-6000:]
@@ -143,6 +145,10 @@ class AutoUpdateManager:
         self.workers: dict[str, asyncio.Task] = {}
         self.active: set[tuple[str, str]] = set()
         self.notify_task: asyncio.Task | None = None
+        # Replay recent raw terminal chunks to viewers without owning execution.
+        # Persistent audit tails remain plain text and separately bounded.
+        self.output: OrderedDict[int, deque[tuple[int, str]]] = OrderedDict()
+        self.output_sequences: dict[int, int] = {}
 
     @staticmethod
     def snapshots():
@@ -462,6 +468,7 @@ class AutoUpdateManager:
             run = session.get(AutoUpdateRun, run_id)
             if not run or run.status not in {"queued", "running"}:
                 return
+            changed_stage = run.stage != stage
             run.status = "running"
             run.stage = stage
             if attempts is not None:
@@ -470,8 +477,28 @@ class AutoUpdateManager:
                 run.targets_json = json.dumps(targets, ensure_ascii=False)
             session.add(run)
             session.commit()
+        if changed_stage and stage == "verify":
+            self._append_run_log(run_id, "\r\n[Fleetge] 正在校验运行镜像与容器健康状态…\r\n")
 
-    def _append_run_log(self, run_id: int, text: str, token: str = "") -> str:
+    def _publish_run_output(self, run_id: int, text: str, token: str = "") -> None:
+        if not text:
+            return
+        if run_id not in self.output:
+            self.output[run_id] = deque(maxlen=256)
+            if len(self.output) > 50:
+                removed_id, _ = self.output.popitem(last=False)
+                self.output_sequences.pop(removed_id, None)
+        sequence = self.output_sequences.get(run_id, 0) + 1
+        self.output_sequences[run_id] = sequence
+        self.output[run_id].append((sequence, scrub_log(text, token, terminal=True)))
+
+    def read_run_output(self, run_id: int, after: int = 0) -> list[tuple[int, str]] | None:
+        chunks = self.output.get(run_id)
+        return None if chunks is None else [(sequence, text) for sequence, text in chunks if sequence > after]
+
+    def _append_run_log(self, run_id: int, text: str, token: str = "", *, publish: bool = True) -> str:
+        if publish:
+            self._publish_run_output(run_id, text, token)
         with Session(get_engine()) as session:
             run = session.get(AutoUpdateRun, run_id)
             if not run:
@@ -493,17 +520,22 @@ class AutoUpdateManager:
                     chunk = await queue.get()
                     if chunk is None:
                         break
+                    if run_id is not None:
+                        self._publish_run_output(run_id, chunk, getattr(conn, "_token", ""))
                     unsaved += chunk
                     tail = (tail + chunk)[-6000:]
                     if run_id is not None and asyncio.get_running_loop().time() - last_saved >= 1.0:
-                        self._append_run_log(run_id, unsaved, getattr(conn, "_token", ""))
+                        self._append_run_log(run_id, unsaved, getattr(conn, "_token", ""), publish=False)
                         unsaved = ""
                         last_saved = asyncio.get_running_loop().time()
                 if run_id is not None and unsaved:
-                    self._append_run_log(run_id, unsaved, getattr(conn, "_token", ""))
+                    self._append_run_log(run_id, unsaved, getattr(conn, "_token", ""), publish=False)
+                    unsaved = ""
                 result = await task
             return result, scrub_log(tail, getattr(conn, "_token", ""))
         finally:
+            if run_id is not None and unsaved:
+                self._append_run_log(run_id, unsaved, getattr(conn, "_token", ""), publish=False)
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -725,9 +757,9 @@ class AutoUpdateManager:
             before_update = getattr(snap, "containers_updated", 0)
             final_logs = ""
             for attempt in (1, 2):
+                self._append_run_log(run_id, f"\r\n--- attempt {attempt} ---\r\n", getattr(conn, "_token", ""))
                 self._set_run_stage(run_id, "pull", attempts=attempt)
-                result, tail = await self.execute(conn, stack_name)
-                final_logs = self._append_run_log(run_id, f"\n--- attempt {attempt} ---\n", getattr(conn, "_token", ""))
+                result, tail = await self.execute(conn, stack_name, run_id)
                 stage = result.get("stage") or "unknown"
                 self._set_run_stage(run_id, stage)
                 if result.get("error_code") == "stack_busy":

@@ -204,6 +204,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const hostDetailsById = ref<Record<string, HostDetailCache>>({});
   const trafficByHost = ref<Record<string, HostTrafficState>>({});
   const updateRunsByHost = ref<Record<string, HostUpdateRuns>>({});
+  const observedUpdateRunIds = ref<Record<string, number>>({});
   const trafficRequests = new Map<string, Promise<HostTrafficSummary | null>>();
   const updateRunRequests = new Map<string, Promise<void>>();
   const pendingUpdateSubmissions = new Map<string, string>();
@@ -244,6 +245,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   function upsertUpdateRunBatch(batch: UpdateRunBatch) {
+    batch.items.filter((item) => item.status === "queued" || item.status === "running")
+      .forEach((item) => { observedUpdateRunIds.value[`${item.host_id}/${item.stack_name}`] = item.id; });
     const existing = updateRunsByHost.value[batch.host_id] || { active: [], recent: [] };
     const byId = new Map<number, UpdateRunItem>();
     [...existing.active, ...existing.recent, ...batch.items].forEach((item) => byId.set(item.id, item));
@@ -261,7 +264,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
   function updateRunForStack(hostId: string, stackName: string): UpdateRunItem | null {
     const state = updateRunsByHost.value[hostId];
     if (!state) return null;
-    return [...state.active, ...state.recent].reverse().find((item) => item.stack_name === stackName) || null;
+    return state.active.find((item) => item.stack_name === stackName)
+      || state.recent.filter((item) => item.stack_name === stackName).sort((a, b) => b.id - a.id)[0]
+      || null;
   }
 
   function updateRunBatchForRequest(hostId: string, requestId: string): UpdateRunBatch | null {
@@ -288,7 +293,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
       if (document.hidden) return;
       Object.entries(updateRunsByHost.value)
         .filter(([, state]) => state.active.length > 0)
-        .forEach(([hostId]) => { void fetchUpdateRuns(hostId); });
+        .forEach(([hostId]) => { void fetchUpdateRuns(hostId).catch(() => undefined); });
     }, 2000);
   }
 
@@ -297,6 +302,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
     if (existing) return existing;
     const request = apiClient.get(`/api/hosts/${encodeURIComponent(hostId)}/update-runs`)
       .then((response) => {
+        (response.data as HostUpdateRuns).active.forEach((item) => {
+          observedUpdateRunIds.value[`${item.host_id}/${item.stack_name}`] = item.id;
+        });
         updateRunsByHost.value = {
           ...updateRunsByHost.value,
           [hostId]: response.data as HostUpdateRuns,
@@ -690,6 +698,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     patchHostDetailUpdateResults,
     hostDetailsById,
     updateRunsByHost,
+    observedUpdateRunIds,
     getHostTrafficState,
     fetchHostTrafficSummary,
     getHostUpdateCount,

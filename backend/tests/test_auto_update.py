@@ -144,6 +144,30 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(module.stack_policy("nas", "app").enabled)
         self.snapshots.finalize_stack_update.assert_awaited_once_with("nas", "app", ["example/app:latest"], wait_timeout=45.0)
 
+    async def test_live_update_keeps_terminal_frames_and_persists_logs_once(self):
+        chunks = ["\x1b[32mPulling\x1b[0m\r\n", "\x1b[1A\x1b[2KDownloaded\r\n", "Container app Started secret-token\r\n"]
+        async def action(name, action, log_queue):
+            for chunk in chunks:
+                await log_queue.put(chunk)
+            await log_queue.put(None)
+            return {"success": True, "stage": "up", "up_executed": True}
+        self.conn.stack_action = action
+        self.manager.execute = module.AutoUpdateManager.execute.__get__(self.manager)
+        await self.run_update()
+        run = self.run_record()
+        self.assertEqual(run.status, "success")
+        self.assertEqual(run.log_tail.count("attempt 1"), 1)
+        self.assertEqual(run.log_tail.count("Downloaded"), 1)
+        self.assertNotIn("secret-token", run.log_tail)
+        self.assertNotIn("\x1b", run.log_tail)
+        frames = self.manager.read_run_output(run.id)
+        raw = "".join(text for _, text in frames)
+        self.assertIn("\x1b[1A\x1b[2KDownloaded", raw)
+        self.assertNotIn("secret-token", raw)
+        self.assertEqual(raw.count("Downloaded"), 1)
+        after = frames[-1][0]
+        self.assertEqual(self.manager.read_run_output(run.id, after), [])
+
     async def test_two_pull_failures_pause(self):
         self.manager.execute.return_value = ({"success": False, "stage": "pull"}, "registry failed")
         await self.run_update()

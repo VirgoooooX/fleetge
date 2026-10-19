@@ -100,44 +100,6 @@
     </aside>
 
     <main class="workspace-main">
-      <section v-if="activeUpdateRuns.length || attentionUpdateRuns.length" class="update-run-panel">
-        <div v-if="activeUpdateRuns.length" class="update-run-group">
-          <h4>{{ t('workspace.updateRunsActive', { count: activeUpdateRuns.length }) }}</h4>
-          <div v-for="run in activeUpdateRuns" :key="run.id" class="update-run-row">
-            <div class="update-run-copy">
-              <strong>{{ run.stack_name }}</strong>
-              <span class="update-run-state" :class="`run-${run.status}`">{{ updateRunStatusLabel(run.status) }}</span>
-              <span class="update-run-stage">{{ run.stage }}</span>
-            </div>
-            <el-button
-              v-if="run.source === 'bulk' && run.status === 'queued'"
-              size="small"
-              text
-              @click="stopQueuedUpdateBatch(run.request_id)"
-            >{{ t('workspace.stopPendingUpdates') }}</el-button>
-          </div>
-        </div>
-        <div v-if="attentionUpdateRuns.length" class="update-run-group update-run-attention">
-          <h4>{{ t('workspace.updateRunsAttention') }}</h4>
-          <div v-for="run in attentionUpdateRuns" :key="run.id" class="update-run-row update-run-notice" :class="`notice-${run.status}`">
-            <div class="update-run-copy">
-              <div class="update-run-title">
-                <strong>{{ run.stack_name }}</strong>
-                <span class="update-run-state" :class="`run-${run.status}`">{{ updateRunStatusLabel(run.status) }}</span>
-              </div>
-              <p class="update-run-summary">{{ updateRunSummary(run.status, run.detail) }}</p>
-              <details v-if="run.detail" class="update-run-diagnostics">
-                <summary>{{ t('workspace.updateRunDetails') }}</summary>
-                <pre>{{ run.detail }}</pre>
-              </details>
-            </div>
-            <div class="update-run-actions">
-              <el-button size="small" @click="selectStack(run.stack_name)">{{ t('workspace.reviewUpdateRun') }}</el-button>
-              <el-button size="small" text @click="acknowledgeUpdateRun(run.id)">{{ t('workspace.acknowledgeUpdateRun') }}</el-button>
-            </div>
-          </div>
-        </div>
-      </section>
       <div v-if="!selectedStack" class="all-stacks-view">
         <div class="workspace-headline">
           <div>
@@ -230,7 +192,9 @@
               :lines="terminalOutputs[stack.name] || []"
               :status="operationPanelStatus"
               :message="operationPanelMessage"
+              :can-stop-pending="Boolean(pendingBulkRequest) && operationPanelAction === 'update'"
               compact
+              @stop-pending="pendingBulkRequest && stopQueuedUpdateBatch(pendingBulkRequest)"
               @close="handleDockClose(stack.name)"
               @cancel="cancelOperation(stack.name)"
               @click.stop
@@ -340,6 +304,7 @@
               :stack-name="selectedStack.name"
               show-compose
               management-menu
+              restore-completed-update
               size="large"
               :can-edit-compose="selectedStack.management_status !== 'unmanaged'"
               @refresh="$emit('refresh')"
@@ -368,6 +333,8 @@
           :lines="terminalOutputs[selectedStack.name] || []"
           :status="operationPanelStatus"
           :message="operationPanelMessage"
+          :can-stop-pending="Boolean(pendingBulkRequest) && operationPanelAction === 'update'"
+          @stop-pending="pendingBulkRequest && stopQueuedUpdateBatch(pendingBulkRequest)"
           @close="handleDockClose(selectedStack.name)"
           @cancel="cancelOperation(selectedStack.name)"
         />
@@ -1222,40 +1189,9 @@ const composeDrawerMode = ref<"edit" | "create">("edit");
 const pruneLoading = ref(false);
 const bulkUpdateLoading = ref(false);
 
-const ACKNOWLEDGED_UPDATES_KEY = "fleetge.acknowledged-update-runs";
-const acknowledgedUpdateRuns = ref<string[]>((() => {
-  try {
-    const stored = JSON.parse(localStorage.getItem(ACKNOWLEDGED_UPDATES_KEY) || "[]");
-    return Array.isArray(stored) ? stored.filter((key): key is string => typeof key === "string") : [];
-  } catch {
-    return [];
-  }
-})());
-
-const activeUpdateRuns = computed(() => dashboardStore.updateRunsByHost[props.hostId]?.active || []);
-const attentionUpdateRuns = computed(() => {
-  const recent = dashboardStore.updateRunsByHost[props.hostId]?.recent || [];
-  return recent.filter((run) =>
-    (run.status === "uncertain" || run.status === "failed")
-    && !acknowledgedUpdateRuns.value.includes(`${props.hostId}:${run.id}`),
-  ).slice(-8).reverse();
-});
-
-function acknowledgeUpdateRun(runId: number) {
-  acknowledgedUpdateRuns.value = [...acknowledgedUpdateRuns.value, `${props.hostId}:${runId}`];
-  try {
-    localStorage.setItem(ACKNOWLEDGED_UPDATES_KEY, JSON.stringify(acknowledgedUpdateRuns.value));
-  } catch { /* Keep dismissal working for this page when browser storage is unavailable. */ }
-}
-
-function updateRunSummary(status: string, detail: string) {
-  if (detail.includes("digest does not match target")) return t("workspace.updateDigestMismatch");
-  return t(status === "uncertain" ? "workspace.updateUncertainSummary" : "workspace.updateFailedSummary");
-}
-
-function updateRunStatusLabel(status: string) {
-  return t(`workspace.updateRunStatus.${status}`);
-}
+const pendingBulkRequest = computed(() =>
+  dashboardStore.updateRunsByHost[props.hostId]?.active.find((run) => run.source === "bulk" && run.status === "queued")?.request_id,
+);
 
 watch(() => props.hostId, (hostId) => {
   if (hostId) void dashboardStore.fetchUpdateRuns(hostId).catch(() => undefined);
@@ -1954,7 +1890,11 @@ function cancelOperation(stackName: string) {
 }
 
 function handleDockClose(stackName: string) {
-  if (runningOperations[stackName]) {
+  const operation = runningOperations[stackName];
+  if (operation?.action === "update") {
+    operation.abort(); // Stop viewing only; the backend owns execution.
+    delete runningOperations[stackName];
+  } else if (operation) {
     cancelOperation(stackName);
   }
   closeOperationDock();
@@ -2110,6 +2050,7 @@ function logLevel(text: string): StackLogLine["level"] {
 }
 
 function onTerminalChunk(stackName: string, payload: TerminalChunkEvent) {
+  if (payload.hostId && payload.hostId !== props.hostId) return;
   if (!terminalOutputs[stackName]) {
     terminalOutputs[stackName] = [];
   }
@@ -2124,6 +2065,7 @@ function onTerminalChunk(stackName: string, payload: TerminalChunkEvent) {
 }
 
 function onOperationStart(stackName: string, state: OperationState) {
+  if (state.hostId && state.hostId !== props.hostId) return;
   clearOperationAutoClose();
   terminalOutputs[stackName] = [];
   operationPanelStack.value = stackName;
@@ -2151,9 +2093,14 @@ function onOperationStart(stackName: string, state: OperationState) {
 }
 
 function onOperationComplete(stackName: string, state: OperationState) {
+  if (state.hostId && state.hostId !== props.hostId) return;
+  if (operationPanelStack.value !== stackName) {
+    delete runningOperations[stackName];
+    return;
+  }
   operationPanelStatus.value = state.status === "success"
     ? "success"
-    : state.status === "error"
+    : state.status === "error" || state.status === "uncertain" || state.status === "timeout"
       ? "error"
       : "idle";
   operationPanelMessage.value = state.message;
@@ -2557,134 +2504,6 @@ onUnmounted(() => {
   padding: 12px;
   overflow-x: hidden;
   overflow-y: auto;
-}
-
-.update-run-panel {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.update-run-group {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.update-run-group h4 {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.update-run-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--surface-panel);
-}
-
-.update-run-notice.notice-failed {
-  border-color: color-mix(in srgb, var(--danger) 24%, var(--border-subtle));
-  background: color-mix(in srgb, var(--danger) 5%, var(--surface-panel));
-}
-
-.update-run-notice.notice-uncertain {
-  border-color: color-mix(in srgb, var(--warning) 30%, var(--border-subtle));
-  background: color-mix(in srgb, var(--warning) 6%, var(--surface-panel));
-}
-
-.update-run-copy {
-  flex: 1 1 240px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.update-run-title {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.update-run-copy strong {
-  font-size: 14px;
-}
-
-.update-run-state {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.5;
-  color: var(--accent-blue);
-  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
-}
-
-.update-run-state.run-failed {
-  color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
-}
-
-.update-run-state.run-uncertain {
-  color: var(--warning);
-  background: color-mix(in srgb, var(--warning) 12%, transparent);
-}
-
-.update-run-stage {
-  margin-inline-start: 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.update-run-summary {
-  margin: 6px 0;
-  line-height: 1.6;
-  font-size: 13px;
-  color: var(--text-secondary);
-}
-
-.update-run-diagnostics {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.update-run-diagnostics summary {
-  width: fit-content;
-  cursor: pointer;
-  color: var(--accent-blue);
-}
-
-.update-run-diagnostics pre {
-  margin: 8px 0 0;
-  padding: 10px;
-  border-radius: 6px;
-  background: var(--surface-panel);
-  font-family: var(--font-mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-}
-
-.update-run-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin-inline-start: auto;
-}
-
-.update-run-actions :deep(.el-button + .el-button) {
-  margin-left: 0;
 }
 
 .stack-detail-view {
