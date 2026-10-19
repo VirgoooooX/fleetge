@@ -985,6 +985,11 @@ class SnapshotManager:
                             elif health_status != "healthy":
                                 failure_reasons.append(f"{service_name}/{container.name}: health is {health_status}")
                 if not failure_reasons and not missing_evidence and not pending_health:
+                    # Deployment verification and registry badges are separate:
+                    # refresh only the participating references after success.
+                    await self._refresh_update_checks_for_snapshot(
+                        snap, refresh_images={target["image"] for target in targets.values() if target.get("image")},
+                    )
                     return "success", "All updated services match the pulled image IDs and are healthy."
                 last_reason = "; ".join(failure_reasons + missing_evidence) or "Container healthchecks are still starting."
                 uncertain_reason = "; ".join(missing_evidence)
@@ -1280,6 +1285,10 @@ class SnapshotManager:
         if not snap or not snap.host_config:
             return
         cfg = snap.host_config
+        previous_images = {
+            (container.id, container.image, container.image_id)
+            for container in snap.containers
+        }
         if not cfg.agent_url:
             logger.warning("Host %s has no agent_url configured", host_id)
             return
@@ -1523,6 +1532,16 @@ class SnapshotManager:
 
             snap.status = "online"
             snap.error_message = ""
+
+            # A recreated container can have a new running image while its tag's
+            # registry cache is still within the normal check interval.
+            changed_images = {
+                container.image for container in snap.containers
+                if (container.id, container.image, container.image_id) not in previous_images
+                and container.image and container.inspection_complete
+            }
+            if trigger_initial_update_check and changed_images:
+                await self._refresh_update_checks_for_snapshot(snap, refresh_images=changed_images)
 
             # Container stats are useful but must not block stack refresh
             # or the host's online status. Collect them after the core
@@ -2271,7 +2290,7 @@ class SnapshotManager:
         return existing
 
     async def _refresh_update_checks_for_snapshot(
-        self, snap: HostSnapshot, force: bool = False
+        self, snap: HostSnapshot, force: bool = False, *, refresh_images: set[str] | None = None
     ) -> list[str]:
         """Refresh checks; return newly confirmed updatable images for this sweep."""
         if not snap.host_config:
@@ -2325,11 +2344,9 @@ class SnapshotManager:
                 info["platform"],
             )
             for image_ref, info in merged_refs.items()
-            if self._is_update_cache_due(
-                rows_by_image.get(image_ref),
-                now,
-                interval,
-                force,
+            if (
+                image_ref in refresh_images if refresh_images is not None
+                else self._is_update_cache_due(rows_by_image.get(image_ref), now, interval, force)
             )
         ]
 

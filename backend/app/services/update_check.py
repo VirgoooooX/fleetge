@@ -321,7 +321,7 @@ def _append_digest(values: list[str], value: str | None) -> None:
 
 def _parse_platform(platform: str | None) -> dict[str, str]:
     if not platform:
-        return {"os": "linux", "architecture": "amd64"}
+        return {}
     parts = platform.split("/")
     parsed: dict[str, str] = {}
     if len(parts) >= 1 and parts[0]:
@@ -330,8 +330,6 @@ def _parse_platform(platform: str | None) -> dict[str, str]:
         parsed["architecture"] = parts[1].lower()
     if len(parts) >= 3 and parts[2]:
         parsed["variant"] = parts[2].lower()
-    parsed.setdefault("os", "linux")
-    parsed.setdefault("architecture", "amd64")
     return parsed
 
 
@@ -635,26 +633,20 @@ async def check_image(
     matched_local: Optional[str] = None
     matched_registry: Optional[str] = None
 
-    if local_repo_candidates and (platform or lookup.digests.resolved_platform or lookup.digests.repo_digests):
-        matched_registry = next(
-            (digest for digest in lookup.digests.repo_digests if digest in local_repo_candidates),
-            None,
-        )
-        if matched_registry:
-            matched_field = "repo_digest"
-            matched_local = matched_registry
-
-    if matched_field is None and local_config and lookup.digests.config_digest:
+    # Compare config IDs first; matching an index cannot override a different
+    # running image. RepoDigests are only a fallback for a platform manifest.
+    if local_config and lookup.digests.config_digest:
         matched_registry = lookup.digests.config_digest
         matched_local = local_config
         if local_config == lookup.digests.config_digest:
             matched_field = "config_digest"
+    elif lookup.digests.manifest_digest and (platform or lookup.digests.resolved_platform):
+        matched_registry = lookup.digests.manifest_digest
+        if matched_registry in local_repo_candidates:
+            matched_field = "repo_digest"
+            matched_local = matched_registry
 
-    target_digest = (
-        lookup.digests.config_digest
-        or lookup.digests.manifest_digest
-        or (lookup.digests.repo_digests[0] if lookup.digests.repo_digests else None)
-    )
+    target_digest = lookup.digests.config_digest or lookup.digests.manifest_digest
     effective_local = matched_local or local_config or (local_repo_candidates[0] if local_repo_candidates else None)
     registry_digest = matched_registry or target_digest
 
@@ -665,7 +657,7 @@ async def check_image(
         status = "up_to_date"
     elif target_digest and (
         (local_config and lookup.digests.config_digest)
-        or (local_repo_candidates and (platform or lookup.digests.resolved_platform or lookup.digests.repo_digests))
+        or (local_repo_candidates and lookup.digests.manifest_digest and (platform or lookup.digests.resolved_platform))
     ):
         status = "updatable"
     else:

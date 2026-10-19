@@ -542,7 +542,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.services.update_check._lookup_registry_identity", new_callable=AsyncMock) as mock_lookup:
             mock_lookup.return_value = update_check.RegistryLookupResult(
-                digests=update_check.RegistryDigests(repo_digests=["sha256:new"]),
+                digests=update_check.RegistryDigests(repo_digests=["sha256:new"], manifest_digest="sha256:new", resolved_platform="linux/amd64"),
             )
             result = await update_check.check_image(
                 self.host_id,
@@ -764,9 +764,9 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 force=True,
             )
 
-        self.assertEqual(result.status, "up_to_date")
-        self.assertEqual(result.registry_digest, "sha256:manifest-digest")
-        self.assertEqual(result.matched_field, "repo_digest")
+        self.assertEqual(result.status, "updatable")
+        self.assertEqual(result.registry_digest, "sha256:config-digest")
+        self.assertIsNone(result.matched_field)
 
     async def test_digest_pinned_image_skips_registry_lookup(self):
         from app.services import update_check
@@ -913,6 +913,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 "ghcr.io",
                 "virgooooox/fleetge",
                 "latest",
+                platform="linux/amd64",
             )
 
         self.assertEqual(error_status, None)
