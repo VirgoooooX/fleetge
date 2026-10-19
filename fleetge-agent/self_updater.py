@@ -11,7 +11,10 @@ import argparse
 import json
 import os
 import subprocess
+import threading
 from datetime import datetime, timezone
+
+from compose_identity import capture_pulled_images
 
 
 def utc_now() -> str:
@@ -35,6 +38,13 @@ def write_status(jobs_dir: str, job_id: str, **updates) -> None:
                 current.update(loaded)
         except Exception:
             pass
+    requested_status = updates.get("status")
+    if current.get("status") in {"success", "error", "uncertain", "skipped"} and requested_status != current.get("status"):
+        updates.pop("status", None)
+        updates.pop("phase", None)
+    elif current.get("status") == "running" and requested_status == "handoff":
+        updates.pop("status", None)
+        updates.pop("phase", None)
     current.update(updates)
     current["updated_at"] = utc_now()
     tmp_path = f"{status_path}.tmp"
@@ -77,9 +87,26 @@ def run_command(jobs_dir: str, job_id: str, stack_dir: str, args: list[str]) -> 
         return 1
 
     assert proc.stdout is not None
-    for line in proc.stdout:
-        append_log(jobs_dir, job_id, line)
-    code = proc.wait()
+    timed_out = threading.Event()
+
+    def kill_on_timeout() -> None:
+        timed_out.set()
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    timer = threading.Timer(600.0, kill_on_timeout)
+    timer.start()
+    try:
+        for line in proc.stdout:
+            append_log(jobs_dir, job_id, line)
+        code = proc.wait()
+    finally:
+        timer.cancel()
+    if timed_out.is_set():
+        append_log(jobs_dir, job_id, "\nDocker command timed out after 600 seconds.\n")
+        return 124
     append_log(jobs_dir, job_id, f"\nCommand exited with code {code}\n")
     return code
 
@@ -110,8 +137,32 @@ def main() -> int:
         stack_dir,
         compose_args(stack_dir, "pull", *services),
     )
+    stage = "pull"
+    pulled_images: list[dict] = []
     if exit_code == 0:
-        write_status(args.jobs_dir, args.job_id, status="running", phase="up")
+        stage = "target"
+        try:
+            pulled_images = capture_pulled_images(
+                stack_dir,
+                compose_args(stack_dir, "config", "--format", "json"),
+            )
+            pulled_images = [item for item in pulled_images if item.get("service") in services]
+            if len(pulled_images) != len(services):
+                raise RuntimeError("Could not resolve every requested service image.")
+            write_status(args.jobs_dir, args.job_id, pulled_images=pulled_images, up_executed=False)
+        except Exception as exc:
+            write_status(
+                args.jobs_dir,
+                args.job_id,
+                status="error",
+                phase="target",
+                message=str(exc),
+                finished_at=utc_now(),
+            )
+            append_log(args.jobs_dir, args.job_id, f"\n{exc}\n")
+            return 1
+        stage = "up"
+        write_status(args.jobs_dir, args.job_id, status="running", phase=stage, up_executed=True)
         exit_code = run_command(
             args.jobs_dir,
             args.job_id,
@@ -119,7 +170,16 @@ def main() -> int:
             compose_args(stack_dir, "up", "-d", "--no-deps", *services),
         )
 
-    if exit_code == 0:
+    if exit_code == 124:
+        write_status(
+            args.jobs_dir,
+            args.job_id,
+            status="uncertain",
+            phase="uncertain",
+            message=f"Docker {stage} command timed out; result is unknown.",
+            finished_at=utc_now(),
+        )
+    elif exit_code == 0:
         write_status(
             args.jobs_dir,
             args.job_id,
@@ -134,7 +194,7 @@ def main() -> int:
             args.jobs_dir,
             args.job_id,
             status="error",
-            phase="failed",
+            phase=stage,
             exit_code=exit_code,
             finished_at=utc_now(),
         )

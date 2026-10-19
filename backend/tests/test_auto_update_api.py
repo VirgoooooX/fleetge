@@ -83,3 +83,78 @@ class AutoUpdateApiTests(unittest.TestCase):
         with patch.object(router_module, "require_stack", return_value=(snap, stack)), patch.object(router_module, "AgentClient", return_value=conn):
             response = self.client.put("/api/hosts/nas/stacks/fleetge/auto-update", json={"enabled": True})
         self.assertEqual(response.status_code, 409)
+
+    def test_submit_manual_and_bulk_update_runs_api(self):
+        self.authenticate()
+        service.auto_update_manager.started = True
+        snap = SimpleNamespace(
+            host_config=HostConfig(host_id="nas", agent_url="http://agent", enabled=True),
+            status="online",
+            stacks=[
+                SimpleNamespace(name="app1", status="running", management_status="managed"),
+                SimpleNamespace(name="app2", status="running", management_status="managed"),
+                SimpleNamespace(name="fleetge", status="running", management_status="managed"),
+            ],
+            containers=[
+                SimpleNamespace(stack_name="app1", image="img1:latest"),
+                SimpleNamespace(stack_name="app2", image="img2:latest"),
+                SimpleNamespace(stack_name="fleetge", image="ghcr.io/virgooooox/fleetge:latest"),
+            ],
+            update_results={},
+        )
+        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), close=AsyncMock())
+        req_id = "11111111-1111-1111-1111-111111111111"
+        with patch.object(service.auto_update_manager, "snapshots") as snaps, patch.object(router_module, "snapshot_manager") as router_snaps, patch.object(service, "AgentClient", return_value=conn), patch.object(service.auto_update_manager, "_start_worker"):
+            snaps.return_value.get_snapshot.return_value = snap
+            router_snaps.get_snapshot.return_value = snap
+            snaps.return_value.refresh_host_docker = AsyncMock()
+            # Submit bulk runs
+            res = self.client.post("/api/hosts/nas/update-runs", json={
+                "request_id": req_id,
+                "mode": "bulk",
+                "stack_names": ["app1", "app2", "fleetge"],
+            })
+            self.assertEqual(res.status_code, 202)
+            data = res.json()
+            self.assertEqual(data["mode"], "bulk")
+            self.assertEqual(len(data["items"]), 3)
+            # fleetge stack is skipped
+            fleetge_run = next(item for item in data["items"] if item["stack_name"] == "fleetge")
+            self.assertEqual(fleetge_run["status"], "skipped")
+            self.assertIn("Fleetge", fleetge_run["detail"])
+
+            # Idempotent re-submission returns existing batch
+            res2 = self.client.post("/api/hosts/nas/update-runs", json={
+                "request_id": req_id,
+                "mode": "bulk",
+                "stack_names": ["app1", "app2", "fleetge"],
+            })
+            self.assertEqual(res2.status_code, 202)
+            self.assertEqual(res2.json()["request_id"], req_id)
+
+            # Different parameters return 409
+            res3 = self.client.post("/api/hosts/nas/update-runs", json={
+                "request_id": req_id,
+                "mode": "bulk",
+                "stack_names": ["app1"],
+            })
+            self.assertEqual(res3.status_code, 409)
+
+            # Query batch by request_id
+            batch_res = self.client.get(f"/api/hosts/nas/update-runs/{req_id}")
+            self.assertEqual(batch_res.status_code, 200)
+            self.assertEqual(batch_res.json()["request_id"], req_id)
+
+            # Stop pending
+            stop_res = self.client.post(f"/api/hosts/nas/update-runs/{req_id}/stop-pending")
+            self.assertEqual(stop_res.status_code, 200)
+            stopped_items = stop_res.json()["items"]
+            for item in stopped_items:
+                if item["stack_name"] in ["app1", "app2"]:
+                    self.assertEqual(item["status"], "skipped")
+
+            # List runs
+            list_res = self.client.get("/api/hosts/nas/update-runs")
+            self.assertEqual(list_res.status_code, 200)
+            self.assertIn("active", list_res.json())
+            self.assertIn("recent", list_res.json())

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import shlex
+import uuid
 from typing import Any, AsyncGenerator, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -24,6 +25,7 @@ from app.schemas import (
     UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
+from app.services.auto_update import UpdateRunError, auto_update_manager
 from app.services.snapshot import snapshot_manager
 from app.services.update_check import FAILURE_STATUSES, run_update_check
 
@@ -1039,6 +1041,34 @@ async def _run_finalize(
         yield _sse_event("chunk", {"raw": f"{marker} {s.verdict}\n"})
 
 
+async def _stream_update_run(host_id: str, request_id: str, stack_name: str) -> AsyncGenerator[str, None]:
+    last_tail = ""
+    while True:
+        batch = auto_update_manager.get_batch(host_id, request_id)
+        if batch is None:
+            yield _sse_event("error", {"message": "Update run could not be found."})
+            return
+        run = next((item for item in batch["items"] if item["stack_name"] == stack_name), None)
+        if run is None:
+            yield _sse_event("error", {"message": "Update run does not include this Stack."})
+            return
+        current_tail = run.get("log_tail") or ""
+        if current_tail != last_tail:
+            delta = current_tail[len(last_tail):] if current_tail.startswith(last_tail) else current_tail
+            if delta:
+                yield _sse_event("chunk", {"raw": delta})
+            last_tail = current_tail
+        if run["status"] in {"success", "failed", "uncertain", "skipped"}:
+            message = run.get("detail") or run["status"]
+            yield _sse_event("complete", {
+                "status": "success" if run["status"] == "success" else "error",
+                "outcome": run["status"],
+                "message": message,
+            })
+            return
+        await asyncio.sleep(1.0)
+
+
 async def _fresh_check_fleetge_services(
     host_id: str,
     stack_name: str,
@@ -1294,6 +1324,20 @@ async def stack_action(
             request.client.host if request.client else None,
         )
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
+
+    if action == "update":
+        request_id = str(uuid.uuid4())
+        try:
+            await auto_update_manager.submit(host_id, request_id, "manual", [stack_name], username)
+        except UpdateRunError as exc:
+            detail = {"message": exc.detail}
+            if exc.existing_id is not None:
+                detail["existing_run_id"] = exc.existing_id
+            raise HTTPException(exc.status_code, detail=detail) from exc
+        return StreamingResponse(
+            _stream_update_run(host_id, request_id, stack_name),
+            media_type="text/event-stream",
+        )
 
     socket_event = ALLOWED_ACTIONS[action]
     ip = request.client.host if request.client else None

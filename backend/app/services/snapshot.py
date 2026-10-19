@@ -36,7 +36,7 @@ from app.schemas import (
     UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
-from app.services.update_check import _extract_local_digest, run_update_check
+from app.services.update_check import _extract_local_digest, _parse_platform, _platform_matches, run_update_check
 
 logger = logging.getLogger(__name__)
 
@@ -617,12 +617,17 @@ class SnapshotManager:
             and (current_images is None or row.image in current_images)
         ]
         snap.update_results.clear()
-        snap.update_check_results = [
-            UpdateCheckResult(
+
+        def to_result(row: ImageUpdateCache) -> UpdateCheckResult:
+            return UpdateCheckResult(
                 host_id=row.host_id,
                 image=row.image,
                 current_digest=row.current_digest,
                 registry_digest=row.registry_digest,
+                registry_index_digest=row.registry_index_digest,
+                registry_manifest_digest=row.registry_manifest_digest,
+                registry_config_digest=row.registry_config_digest,
+                identity_error=row.identity_error,
                 registry=row.registry,
                 platform=row.platform,
                 http_status=row.http_status,
@@ -635,30 +640,61 @@ class SnapshotManager:
                 last_failure_at=row.last_failure_at,
                 status=row.status,
             )
-            for row in scoped_rows
-        ]
+
+        snap.update_check_results = [to_result(row) for row in scoped_rows]
         for row in visible_rows:
-            result = UpdateCheckResult(
-                host_id=row.host_id,
-                image=row.image,
-                current_digest=row.current_digest,
-                registry_digest=row.registry_digest,
-                registry=row.registry,
-                platform=row.platform,
-                http_status=row.http_status,
-                matched_field=row.matched_field,
-                retry_after=row.retry_after,
-                failure_count=row.failure_count,
-                last_failure_status=row.last_failure_status,
-                last_failure_http_status=row.last_failure_http_status,
-                last_failure_retry_after=row.last_failure_retry_after,
-                last_failure_at=row.last_failure_at,
-                status=row.status,
-            )
+            result = to_result(row)
             snap.update_results[result.image] = result.status
         snap.update_count = sum(
             1 for row in visible_rows if row.status == "updatable"
         )
+        self._enforce_runtime_update_status(snap)
+
+    def _enforce_runtime_update_status(self, snap: HostSnapshot) -> None:
+        """Keep a shared image tag actionable while any instance is still old."""
+        results = {result.image: result for result in snap.update_check_results}
+        for image, status in list(snap.update_results.items()):
+            result = results.get(image)
+            if status != "up_to_date" or result is None:
+                continue
+            containers = [container for container in snap.containers if container.image == image]
+            if not containers:
+                continue
+            if result.registry_config_digest:
+                all_match = all(
+                    container.inspection_complete
+                    and _normalize_image_id(container.image_id) == _normalize_image_id(result.registry_config_digest)
+                    for container in containers
+                )
+            elif result.registry_manifest_digest and result.platform:
+                requested_platform = _parse_platform(result.platform)
+                all_match = all(
+                    container.inspection_complete
+                    and _platform_matches(
+                        dict(zip(("os", "architecture", "variant"), (container.platform or "").split("/"))),
+                        requested_platform,
+                        exact_variant=False,
+                    )
+                    and result.registry_manifest_digest.lower() in {
+                        digest.split("@", 1)[-1].lower()
+                        for digest in (container.repo_digests or [])
+                    }
+                    for container in containers
+                )
+            elif result.registry_digest:
+                target = _normalize_image_id(result.registry_digest)
+                all_match = all(
+                    target == _normalize_image_id(container.image_id)
+                    or any(target == _normalize_image_id(d.split("@", 1)[-1]) for d in (container.repo_digests or []))
+                    for container in containers
+                )
+            else:
+                all_match = False
+            if not all_match:
+                snap.update_results[image] = "updatable"
+                result.status = "updatable"
+        snap.update_count = sum(1 for status in snap.update_results.values() if status == "updatable")
+
 
     def persist_update_check_results(
         self,
@@ -882,6 +918,83 @@ class SnapshotManager:
             ).all()
         self._apply_update_cache_rows_to_snapshot(snap, rows, current_images)
         return summaries
+
+    async def verify_update_targets(
+        self,
+        host_id: str,
+        stack_name: str,
+        targets: dict[str, dict],
+        *,
+        not_before: float = 0.0,
+        wait_timeout: float = 180.0,
+        wait_interval: float = 2.0,
+    ) -> tuple[str, str]:
+        """Verify every preflight service against the images captured after pull."""
+        deadline = time.monotonic() + wait_timeout
+        last_reason = "Updated container evidence is not available yet."
+        uncertain_reason = ""
+        while True:
+            await self.refresh_host_docker(
+                host_id,
+                trigger_initial_update_check=False,
+                force_status_on_timeout=False,
+                lock_timeout=10.0,
+                execution_timeout=20.0,
+            )
+            snap = self._snapshots.get(host_id)
+            if snap is None or snap.status != "online" or snap.containers_updated <= not_before:
+                uncertain_reason = "A fresh post-update container snapshot could not be confirmed."
+            else:
+                failure_reasons: list[str] = []
+                pending_health = False
+                missing_evidence: list[str] = []
+                for service_name, target in targets.items():
+                    expected_count = int(target.get("container_count") or 0)
+                    service_containers = [
+                        container for container in snap.containers
+                        if container.stack_name == stack_name
+                        and container.service_name == service_name
+                        and (container.labels or {}).get("com.docker.compose.oneoff", "False").lower() != "true"
+                    ]
+                    if len(service_containers) < expected_count:
+                        failure_reasons.append(
+                            f"{service_name}: expected at least {expected_count} container(s), found {len(service_containers)}"
+                        )
+                        continue
+                    for container in service_containers:
+                        if not container.inspection_complete:
+                            missing_evidence.append(f"{service_name}/{container.name}: inspect data is incomplete")
+                            continue
+                        if container.state != "running":
+                            failure_reasons.append(f"{service_name}/{container.name}: state is {container.state}")
+                            continue
+                        target_image_id = _normalize_image_id(target.get("image_id"))
+                        if not target_image_id:
+                            missing_evidence.append(f"{service_name}: pulled image ID is missing")
+                        elif _normalize_image_id(container.image_id) != target_image_id:
+                            failure_reasons.append(
+                                f"{service_name}/{container.name}: running image {container.image_id[:19]} "
+                                f"does not match pulled image {target_image_id[:19]}"
+                            )
+                        if container.healthcheck_configured:
+                            health_status = (container.health or {}).get("Status", "").lower()
+                            if not health_status:
+                                missing_evidence.append(f"{service_name}/{container.name}: healthcheck state is unavailable")
+                            elif health_status == "starting":
+                                pending_health = True
+                            elif health_status != "healthy":
+                                failure_reasons.append(f"{service_name}/{container.name}: health is {health_status}")
+                if not failure_reasons and not missing_evidence and not pending_health:
+                    return "success", "All updated services match the pulled image IDs and are healthy."
+                last_reason = "; ".join(failure_reasons + missing_evidence) or "Container healthchecks are still starting."
+                uncertain_reason = "; ".join(missing_evidence)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if uncertain_reason:
+                    return "uncertain", f"Update result could not be confirmed: {uncertain_reason}"
+                return "failed", f"Update verification timed out: {last_reason}"
+            await asyncio.sleep(min(wait_interval, remaining))
 
     def _clear_updatable_tag(
         self, host_id: str, image: str, local_digest: str
@@ -1226,7 +1339,6 @@ class SnapshotManager:
             # matches the visible local image list more closely.
             raw_images = await proxy.list_images()
             snap.image_count = len(raw_images)
-            snap.containers_updated = time.monotonic()
 
             # Container list
             raw_containers = await proxy.list_containers(all=True)
@@ -1320,54 +1432,73 @@ class SnapshotManager:
                         mounts=inspect.get("Mounts", []) or [],
                         networks=networks,
                         health=state_detail.get("Health"),
+                        healthcheck_configured=bool(config.get("Healthcheck")),
+                        inspection_complete=bool(inspect) and bool(config) and bool(state_detail),
                     )
                 )
 
-            # Fetch tag image identity for each unique image. RepoDigests and
-            # Id come from docker image inspect <tag>; the container's ImageID
-            # remains the source of truth for what is actually running.
+            # Inspect the image IDs actually used by containers separately
+            # from mutable local tags. Registry digest evidence belongs to the
+            # running image; tag identity only indicates what a future up uses.
+            running_image_ids = list({c.image_id for c in snap.containers if c.image_id})
             unique_images = list({c.image for c in snap.containers if c.image})
             image_semaphore = asyncio.Semaphore(8)
 
-            async def inspect_image(img_name: str) -> tuple[str, list[str], str, str]:
+            async def inspect_image(image_ref: str) -> tuple[str, dict]:
                 async with image_semaphore:
-                    img_info = await proxy.image_inspect(img_name)
-                rd = img_info.get("RepoDigests", []) or []
-                image_id = img_info.get("Id", "") or ""
-                os_name = img_info.get("Os", "") or ""
-                arch = img_info.get("Architecture", "") or ""
-                variant = img_info.get("Variant", "") or ""
-                platform = "/".join(part for part in (os_name, arch, variant) if part)
-                return img_name, rd, image_id, platform
+                    return image_ref, await proxy.image_inspect(image_ref)
 
-            inspect_results = await asyncio.gather(
-                *(inspect_image(img_name) for img_name in unique_images),
+            running_results = await asyncio.gather(
+                *(inspect_image(image_id) for image_id in running_image_ids),
                 return_exceptions=True,
             )
-            image_digests: dict[str, list[str]] = {img_name: [] for img_name in unique_images}
-            tag_image_ids: dict[str, str] = {img_name: "" for img_name in unique_images}
-            tag_platforms: dict[str, str] = {img_name: "" for img_name in unique_images}
-            for img_name, result in zip(unique_images, inspect_results):
+            tag_results = await asyncio.gather(
+                *(inspect_image(image_ref) for image_ref in unique_images),
+                return_exceptions=True,
+            )
+
+            def image_metadata(info: dict) -> tuple[list[str], str, str]:
+                digests = info.get("RepoDigests", []) or []
+                image_id = info.get("Id", "") or ""
+                platform_parts = (info.get("Os", ""), info.get("Architecture", ""), info.get("Variant", ""))
+                platform_value = "/".join(part for part in platform_parts if part)
+                return digests, image_id, platform_value
+
+            running_metadata: dict[str, tuple[list[str], str, str]] = {}
+            for image_id, result in zip(running_image_ids, running_results):
                 if isinstance(result, Exception):
-                    logger.debug(
-                        "Image inspect failed for %s/%s: %s",
-                        cfg.host_id, img_name, result,
-                    )
+                    logger.debug("Running image inspect failed for %s/%s: %s", cfg.host_id, image_id, result)
                     continue
                 try:
-                    img_name, rd, image_id, platform = result
-                    image_digests[img_name] = rd
-                    tag_image_ids[img_name] = image_id
-                    tag_platforms[img_name] = platform
+                    inspected_id, info = result
+                    running_metadata[inspected_id] = image_metadata(info)
                 except Exception as exc:
-                    logger.debug(
-                        "Image inspect parse failed for %s/%s: %s",
-                        cfg.host_id, img_name, exc,
-                    )
-            for c in snap.containers:
-                c.repo_digests = image_digests.get(c.image, [])
-                c.tag_image_id = tag_image_ids.get(c.image) or None
-                c.tag_platform = tag_platforms.get(c.image) or None
+                    logger.debug("Running image inspect parse failed for %s: %s", image_id, exc)
+
+            tag_metadata: dict[str, tuple[list[str], str, str]] = {}
+            for image_ref, result in zip(unique_images, tag_results):
+                if isinstance(result, Exception):
+                    logger.debug("Tag image inspect failed for %s/%s: %s", cfg.host_id, image_ref, result)
+                    continue
+                try:
+                    inspected_ref, info = result
+                    tag_metadata[inspected_ref] = image_metadata(info)
+                except Exception as exc:
+                    logger.debug("Tag image inspect parse failed for %s: %s", image_ref, exc)
+
+            for container in snap.containers:
+                running = running_metadata.get(container.image_id)
+                tag = tag_metadata.get(container.image)
+                if running:
+                    container.repo_digests = running[0]
+                    container.platform = running[2] or container.platform
+                else:
+                    container.inspection_complete = False
+                if tag:
+                    container.tag_image_id = tag[1] or None
+                    container.tag_platform = tag[2] or None
+
+            snap.containers_updated = time.monotonic()
 
             # Stacks from Agent
             await self._refresh_stacks(snap, cfg)
@@ -2036,6 +2167,12 @@ class SnapshotManager:
             row.pending_matched_field = None
             row.pending_detected_at = None
 
+        def assign_identity(row: ImageUpdateCache) -> None:
+            row.registry_index_digest = result.registry_index_digest
+            row.registry_manifest_digest = result.registry_manifest_digest
+            row.registry_config_digest = result.registry_config_digest
+            row.identity_error = result.identity_error
+
         def pending_matches(row: ImageUpdateCache) -> bool:
             return (
                 _same_digest(row.pending_current_digest, result.current_digest)
@@ -2052,6 +2189,10 @@ class SnapshotManager:
                 registry_digest=result.registry_digest,
                 registry=result.registry,
                 platform=result.platform,
+                registry_index_digest=result.registry_index_digest,
+                registry_manifest_digest=result.registry_manifest_digest,
+                registry_config_digest=result.registry_config_digest,
+                identity_error=result.identity_error,
                 http_status=result.http_status,
                 matched_field=result.matched_field,
                 retry_after=result.retry_after,
@@ -2075,6 +2216,7 @@ class SnapshotManager:
             existing.last_failure_http_status = None
             existing.last_failure_retry_after = None
             existing.last_failure_at = None
+            assign_identity(existing)
             if existing.status != "updatable":
                 existing.status = PENDING_UPDATE_STATUS
                 existing.current_digest = result.current_digest
@@ -2103,6 +2245,7 @@ class SnapshotManager:
                 existing.matched_field = result.matched_field
                 existing.retry_after = result.retry_after
                 existing.checked_at = now
+                assign_identity(existing)
             return existing
 
         existing.status = result.status
@@ -2110,6 +2253,10 @@ class SnapshotManager:
         existing.registry_digest = result.registry_digest
         existing.registry = result.registry
         existing.platform = result.platform
+        existing.registry_index_digest = result.registry_index_digest
+        existing.registry_manifest_digest = result.registry_manifest_digest
+        existing.registry_config_digest = result.registry_config_digest
+        existing.identity_error = result.identity_error
         existing.http_status = result.http_status
         existing.matched_field = result.matched_field
         existing.retry_after = result.retry_after
@@ -2135,8 +2282,8 @@ class SnapshotManager:
             (
                 c.image,
                 c.repo_digests,
-                c.tag_image_id or c.image_id,
-                c.tag_platform or c.platform,
+                c.image_id,
+                c.platform,
             )
             for c in snap.containers
             if c.image

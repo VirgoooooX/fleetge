@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, Text, UniqueConstraint
+from sqlalchemy import Column, Index, Text, UniqueConstraint
 
 
 class HostConfig(SQLModel, table=True):
@@ -92,6 +92,10 @@ class ImageUpdateCache(SQLModel, table=True):
     registry_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     registry: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     platform: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    registry_index_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    registry_manifest_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    registry_config_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    identity_error: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     http_status: Optional[int] = None
     matched_field: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     retry_after: Optional[int] = None
@@ -126,14 +130,23 @@ class StackAutoUpdate(SQLModel, table=True):
 
 class AutoUpdateRun(SQLModel, table=True):
     __tablename__ = "auto_update_run"
+    __table_args__ = (
+        Index("uq_auto_update_run_host_request_stack", "host_id", "request_id", "stack_name", unique=True),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     host_id: str = Field(index=True)
+    request_id: Optional[str] = Field(default=None, index=True)
+    source: str = Field(default="auto", index=True)
+    requested_by: str = "system"
     stack_name: str
     status: str = Field(default="running", index=True)
     attempts: int = 0
-    stage: str = ""
+    stage: str = "queued"
     detail: str = ""
+    log_tail: str = Field(default="", sa_column=Column(Text, nullable=False))
+    targets_json: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+    agent_job_id: Optional[str] = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: Optional[datetime] = None
     notify_url: str = ""

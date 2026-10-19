@@ -339,3 +339,104 @@ class AgentUpdateResultTests(unittest.IsolatedAsyncioTestCase):
                     self.assertTrue(result["interrupted"])
         finally:
             await conn.close()
+
+
+class BulkUpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+        SQLModel.metadata.create_all(self.engine)
+        self.engine_patch = patch.object(module, "engine", self.engine)
+        self.engine_patch.start()
+        self.manager = module.AutoUpdateManager()
+        self.manager.started = True
+        self.snap = HostSnapshot()
+        self.snap.host_config = HostConfig(host_id="nas", agent_url="http://agent", enabled=True)
+        self.snap.status = "online"
+        self.snap.stacks = [
+            SimpleNamespace(name="s1", status="running", compose_file=None, management_status="managed"),
+            SimpleNamespace(name="s2", status="running", compose_file=None, management_status="managed"),
+            SimpleNamespace(name="s3", status="running", compose_file=None, management_status="managed"),
+        ]
+        self.snap.containers = [
+            SimpleNamespace(stack_name="s1", image="img1:latest", state="running", service_name="app1"),
+            SimpleNamespace(stack_name="s2", image="img2:latest", state="running", service_name="app2"),
+            SimpleNamespace(stack_name="s3", image="img3:latest", state="running", service_name="app3"),
+        ]
+        self.snap.update_results = {"img1:latest": "updatable", "img2:latest": "updatable", "img3:latest": "updatable"}
+        self.snap.update_check_results = []
+        async def refresh_snapshot(*args, **kwargs):
+            self.snap.containers_updated += 1
+
+        self.snapshots = SimpleNamespace(
+            get_snapshot=MagicMock(return_value=self.snap),
+            refresh_host_docker=AsyncMock(side_effect=refresh_snapshot),
+            finalize_stack_update=AsyncMock(),
+        )
+        self.manager.snapshots = lambda: self.snapshots
+        self.conn = SimpleNamespace(
+            get_self=AsyncMock(return_value={"stack_name": "fleetge"}),
+            get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: test\n"}}),
+            close=AsyncMock(),
+            _token="token",
+        )
+        self.agent_patch = patch.object(module, "AgentClient", return_value=self.conn)
+        self.agent_patch.start()
+
+    async def asyncTearDown(self):
+        await self.manager.stop()
+        self.agent_patch.stop()
+        self.engine_patch.stop()
+        self.engine.dispose()
+
+    async def test_bulk_continues_after_failure_and_stops_after_uncertain(self):
+        # s1 fails (not retryable up failure), s2 is uncertain (interrupted), s3 should be skipped
+        async def fake_execute(conn, stack_name, run_id=None):
+            if stack_name == "s1":
+                return {"success": False, "stage": "up"}, ""
+            if stack_name == "s2":
+                return {"success": False, "interrupted": True}, ""
+            return {"success": True, "stage": "up", "up_executed": True}, ""
+
+        self.manager.execute = fake_execute
+
+        req_id = "22222222-2222-2222-2222-222222222222"
+        await self.manager.submit("nas", req_id, "bulk", ["s1", "s2", "s3"], "admin")
+
+        # Wait for worker to finish
+        worker = self.manager.workers.get("nas")
+        if worker:
+            await worker
+
+        batch = self.manager.get_batch("nas", req_id)
+        self.assertTrue(batch["finished"])
+        items = {item["stack_name"]: item for item in batch["items"]}
+        self.assertEqual(items["s1"]["status"], "failed")
+        self.assertEqual(items["s2"]["status"], "uncertain")
+        self.assertEqual(items["s3"]["status"], "skipped")
+        self.assertIn("结果未确认", items["s3"]["detail"])
+
+    async def test_bulk_continues_and_succeeds_when_second_is_success(self):
+        # s1 fails, s2 succeeds, s3 succeeds
+        async def fake_execute(conn, stack_name, run_id=None):
+            if stack_name == "s1":
+                return {"success": False, "stage": "up"}, ""
+            return {"success": True, "stage": "up", "up_executed": True}, ""
+
+        self.snapshots.finalize_stack_update.return_value = [
+            SimpleNamespace(image="img", cleared=True, verified=True, verdict="ok")
+        ]
+        self.manager.execute = fake_execute
+
+        req_id = "33333333-3333-3333-3333-333333333333"
+        await self.manager.submit("nas", req_id, "bulk", ["s1", "s2", "s3"], "admin")
+
+        worker = self.manager.workers.get("nas")
+        if worker:
+            await worker
+
+        batch = self.manager.get_batch("nas", req_id)
+        self.assertTrue(batch["finished"])
+        items = {item["stack_name"]: item for item in batch["items"]}
+        self.assertEqual(items["s1"]["status"], "failed")
+        self.assertEqual(items["s2"]["status"], "success")
+        self.assertEqual(items["s3"]["status"], "success")

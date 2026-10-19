@@ -100,6 +100,35 @@
     </aside>
 
     <main class="workspace-main">
+      <section v-if="activeUpdateRuns.length || attentionUpdateRuns.length" class="update-run-panel">
+        <div v-if="activeUpdateRuns.length" class="update-run-group">
+          <h4>{{ t('workspace.updateRunsActive', { count: activeUpdateRuns.length }) }}</h4>
+          <div v-for="run in activeUpdateRuns" :key="run.id" class="update-run-row">
+            <div class="update-run-copy">
+              <strong>{{ run.stack_name }}</strong>
+              <span class="update-run-state" :class="`run-${run.status}`">{{ updateRunStatusLabel(run.status) }}</span>
+              <span class="update-run-stage">{{ run.stage }}</span>
+            </div>
+            <el-button
+              v-if="run.source === 'bulk' && run.status === 'queued'"
+              size="small"
+              text
+              @click="stopQueuedUpdateBatch(run.request_id)"
+            >{{ t('workspace.stopPendingUpdates') }}</el-button>
+          </div>
+        </div>
+        <div v-if="attentionUpdateRuns.length" class="update-run-group update-run-attention">
+          <h4>{{ t('workspace.updateRunsAttention') }}</h4>
+          <div v-for="run in attentionUpdateRuns" :key="run.id" class="update-run-row">
+            <div class="update-run-copy">
+              <strong>{{ run.stack_name }}</strong>
+              <span class="update-run-state" :class="`run-${run.status}`">{{ updateRunStatusLabel(run.status) }}</span>
+              <span class="update-run-detail">{{ run.detail }}</span>
+            </div>
+            <el-button size="small" text @click="selectStack(run.stack_name)">{{ t('workspace.reviewUpdateRun') }}</el-button>
+          </div>
+        </div>
+      </section>
       <div v-if="!selectedStack" class="all-stacks-view">
         <div class="workspace-headline">
           <div>
@@ -938,6 +967,7 @@ import ComposeDrawer, { type ComposeDeployPayload } from "./ComposeDrawer.vue";
 import MonacoEditor from "@/components/MonacoEditor.vue";
 import UpdateBadge from "./UpdateBadge.vue";
 import AutoUpdateControl from "./AutoUpdateControl.vue";
+import { useDashboardStore } from "@/stores/dashboard";
 import { sortStacks } from "@/utils/stackSorting";
 
 export interface StackService {
@@ -1052,6 +1082,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n();
 const route = useRoute();
 const { confirm } = useConfirm();
+const dashboardStore = useDashboardStore();
 
 const stackSearch = ref("");
 const selectedStackName = ref("");
@@ -1181,7 +1212,20 @@ const currentComposeStack = ref("");
 const composeDrawerMode = ref<"edit" | "create">("edit");
 const pruneLoading = ref(false);
 const bulkUpdateLoading = ref(false);
-let bulkUpdateAbortController: AbortController | null = null;
+
+const activeUpdateRuns = computed(() => dashboardStore.updateRunsByHost[props.hostId]?.active || []);
+const attentionUpdateRuns = computed(() => {
+  const recent = dashboardStore.updateRunsByHost[props.hostId]?.recent || [];
+  return recent.filter((run) => run.status === "uncertain" || run.status === "failed").slice(-8).reverse();
+});
+
+function updateRunStatusLabel(status: string) {
+  return t(`workspace.updateRunStatus.${status}`);
+}
+
+watch(() => props.hostId, (hostId) => {
+  if (hostId) void dashboardStore.fetchUpdateRuns(hostId).catch(() => undefined);
+}, { immediate: true });
 
 const filteredStacks = computed(() => {
   const query = stackSearch.value.trim().toLowerCase();
@@ -1690,143 +1734,28 @@ async function confirmUpdateAll() {
   }
 
   bulkUpdateLoading.value = true;
-  let successCount = 0;
-
   try {
-    for (const stack of stacksToUpdate) {
-      const ok = await runStackUpdate(stack.name, { refreshOnSuccess: false });
-      if (ok) successCount += 1;
-    }
-
-    if (successCount === stacksToUpdate.length) {
-      ElMessage.success(t("workspace.updateAllSuccess", { count: successCount }));
-    } else {
-      ElMessage.warning(t("workspace.updateAllPartial", {
-        success: successCount,
-        total: stacksToUpdate.length,
-      }));
-    }
+    const batch = await dashboardStore.submitUpdateRuns(
+      props.hostId,
+      "bulk",
+      stacksToUpdate.map((stack) => stack.name),
+    );
+    ElMessage.success(t("workspace.updateBatchAccepted", { count: batch.items.length }));
     emit("refresh");
-    emit("check-updates");
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail?.message || error?.message || t("workspace.updateBatchFailed"));
   } finally {
     bulkUpdateLoading.value = false;
-    bulkUpdateAbortController = null;
   }
 }
 
-async function runStackUpdate(
-  stackName: string,
-  options: { refreshOnSuccess?: boolean } = {},
-): Promise<boolean> {
-  const refreshOnSuccess = options.refreshOnSuccess !== false;
-  const action = "update";
-  const label = t("stack.action.update");
-  const startedAt = Date.now();
-  const controller = new AbortController();
-  bulkUpdateAbortController = controller;
-
-  const runningState: OperationState = {
-    action,
-    status: "running",
-    message: t("stack.confirm.running", { action: label }),
-    updatedAt: startedAt,
-    abort: () => controller.abort(),
-  };
-  onOperationStart(stackName, runningState);
-
-  let completed = false;
-  let succeeded = false;
-
+async function stopQueuedUpdateBatch(requestId: string) {
   try {
-    const url =
-      `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}` +
-      `/${action}?cols=110&rows=24`;
-
-    await streamSse({
-      url,
-      method: "POST",
-      timeoutMs: 600000,
-      signal: controller.signal,
-      onTimeout: () => {
-        if (completed) return;
-        completed = true;
-        onOperationComplete(stackName, {
-          action,
-          status: "timeout",
-          message: t("stack.confirm.timeout"),
-          updatedAt: Date.now(),
-        });
-      },
-      onEvent: (ev) => {
-        if (ev.event === "chunk") {
-          onTerminalChunk(stackName, { action, chunk: ev.data?.raw ?? ev.rawData });
-        } else if (ev.event === "line") {
-          onTerminalChunk(stackName, { action, chunk: ev.data?.text ?? ev.rawData });
-        } else if (ev.event === "complete") {
-          completed = true;
-          const data = ev.data || {};
-          succeeded = data.status === "success";
-          onOperationComplete(stackName, {
-            action,
-            status: succeeded ? "success" : "error",
-            message: data.message || t(succeeded ? "stack.confirm.success" : "stack.confirm.failure", { action: label }),
-            updatedAt: Date.now(),
-          });
-          if (succeeded && refreshOnSuccess) {
-            emit("refresh");
-          }
-        } else if (ev.event === "error") {
-          completed = true;
-          onOperationComplete(stackName, {
-            action,
-            status: "error",
-            message: ev.data?.message || t("stack.confirm.failure", { action: label }),
-            updatedAt: Date.now(),
-          });
-        }
-      },
-    });
-
-    if (!completed) {
-      completed = true;
-      if (controller.signal.aborted) {
-        onOperationComplete(stackName, {
-          action,
-          status: "error",
-          message: t("stack.confirm.cancelled"),
-          updatedAt: Date.now(),
-        });
-        return false;
-      }
-      succeeded = true;
-      onOperationComplete(stackName, {
-        action,
-        status: "success",
-        message: t("stack.confirm.success", { action: label }),
-        updatedAt: Date.now(),
-      });
-      if (refreshOnSuccess) {
-        emit("refresh");
-      }
-    }
-  } catch (e: any) {
-    if (!completed) {
-      onOperationComplete(stackName, {
-        action,
-        status: "error",
-        message: t("stack.confirm.failure", { action: label }) + ": " + (e.message || t("stack.confirm.unknownError")),
-        updatedAt: Date.now(),
-      });
-    }
-    succeeded = false;
-  } finally {
-    delete runningOperations[stackName];
-    if (bulkUpdateAbortController === controller) {
-      bulkUpdateAbortController = null;
-    }
+    await dashboardStore.stopPendingUpdateRuns(props.hostId, requestId);
+    ElMessage.info(t("workspace.updatePendingStopped"));
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || t("workspace.updateBatchFailed"));
   }
-
-  return succeeded;
 }
 
 function applyComposeToPreview(payload: ComposeDeployPayload) {
@@ -2244,12 +2173,8 @@ watch(
     composeError.value = "";
     logLines.value = [];
     Object.keys(runningOperations).forEach((stackName) => {
-      cancelOperation(stackName);
+      if (runningOperations[stackName]?.action !== "update") cancelOperation(stackName);
     });
-    if (bulkUpdateAbortController) {
-      bulkUpdateAbortController.abort();
-      bulkUpdateAbortController = null;
-    }
     closeOperationDock();
     Object.keys(terminalOutputs).forEach((stackName) => {
       delete terminalOutputs[stackName];
@@ -2284,10 +2209,6 @@ watch(
 );
 
 onUnmounted(() => {
-  if (bulkUpdateAbortController) {
-    bulkUpdateAbortController.abort();
-    bulkUpdateAbortController = null;
-  }
   clearOperationAutoClose();
   stopLogs();
 });

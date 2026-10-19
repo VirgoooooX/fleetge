@@ -54,6 +54,9 @@ class RegistryDigests:
     repo_digests: list[str]
     config_digest: Optional[str] = None
     resolved_platform: Optional[str] = None
+    index_digest: Optional[str] = None
+    manifest_digest: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 @dataclass
@@ -334,9 +337,11 @@ def _parse_platform(platform: str | None) -> dict[str, str]:
 
 def _platform_matches(candidate: dict | None, requested: dict[str, str], exact_variant: bool = True) -> bool:
     candidate = candidate or {}
-    if (candidate.get("os") or "").lower() != requested.get("os"):
+    if not requested.get("os") or not requested.get("architecture"):
         return False
-    if (candidate.get("architecture") or "").lower() != requested.get("architecture"):
+    if (candidate.get("os") or "").lower() != requested["os"]:
+        return False
+    if (candidate.get("architecture") or "").lower() != requested["architecture"]:
         return False
     requested_variant = requested.get("variant")
     if exact_variant and requested_variant:
@@ -364,6 +369,12 @@ async def _resolve_registry_digests_from_response(
     if media_type in INDEX_MEDIA_TYPES:
         requested_platform = _parse_platform(platform)
         manifests = payload.get("manifests") or []
+        if not requested_platform:
+            return RegistryDigests(
+                repo_digests=repo_digests,
+                index_digest=_normalize_digest(header_digest),
+                error_message="Cannot select a registry manifest because the target platform is unknown.",
+            )
         selected = next(
             (
                 item for item in manifests
@@ -372,7 +383,7 @@ async def _resolve_registry_digests_from_response(
             None,
         )
         if selected is None and requested_platform.get("variant"):
-            # Fallback: match architecture without exact variant (e.g. arm64/v8 matches arm64)
+            # Accept an omitted/different variant only when OS and architecture match.
             selected = next(
                 (
                     item for item in manifests
@@ -381,26 +392,19 @@ async def _resolve_registry_digests_from_response(
                 None,
             )
         if selected is None:
-            selected = next(
-                (
-                    item for item in manifests
-                    if _platform_matches(item.get("platform"), {"os": "linux", "architecture": "amd64"})
-                ),
-                None,
+            wanted = "/".join(requested_platform.values())
+            return RegistryDigests(
+                repo_digests=repo_digests,
+                index_digest=_normalize_digest(header_digest),
+                error_message=f"Registry image has no manifest for platform {wanted}.",
             )
-        if selected is None:
-            selected = next(
-                (
-                    item for item in manifests
-                    if (item.get("platform") or {}).get("os") != "unknown"
-                ),
-                None,
-        )
-        child_digest = selected.get("digest") if selected else None
+        child_digest = selected.get("digest")
         if not child_digest:
             return RegistryDigests(
                 repo_digests=repo_digests,
-                resolved_platform=_format_platform(selected.get("platform") if selected else None),
+                resolved_platform=_format_platform(selected.get("platform")),
+                index_digest=_normalize_digest(header_digest),
+                error_message="Registry platform entry has no manifest digest.",
             )
         _append_digest(repo_digests, child_digest)
 
@@ -410,7 +414,8 @@ async def _resolve_registry_digests_from_response(
             timeout=15,
         )
         child_response.raise_for_status()
-        _append_digest(repo_digests, child_response.headers.get("Docker-Content-Digest"))
+        child_header_digest = child_response.headers.get("Docker-Content-Digest")
+        _append_digest(repo_digests, child_header_digest)
         try:
             child_payload = child_response.json()
         except Exception:
@@ -419,13 +424,17 @@ async def _resolve_registry_digests_from_response(
         return RegistryDigests(
             repo_digests=repo_digests,
             config_digest=_normalize_digest(config_digest),
-            resolved_platform=_format_platform(selected.get("platform") if selected else None),
+            resolved_platform=_format_platform(selected.get("platform")),
+            index_digest=_normalize_digest(header_digest),
+            manifest_digest=_normalize_digest(child_header_digest or child_digest),
         )
 
     config_digest = (payload.get("config") or {}).get("digest")
     return RegistryDigests(
         repo_digests=repo_digests,
         config_digest=_normalize_digest(config_digest),
+        resolved_platform=platform,
+        manifest_digest=_normalize_digest(header_digest),
     )
 
 
@@ -613,18 +622,20 @@ async def check_image(
             status="up_to_date",
         )
 
+    reference = parsed["digest"] or parsed["tag"]
     lookup = await _lookup_registry_identity(
         parsed["registry"],
         parsed["repository"],
-        parsed["tag"],
+        reference,
         platform=platform,
     )
 
+    local_config = local_image_id
     matched_field: Optional[str] = None
     matched_local: Optional[str] = None
     matched_registry: Optional[str] = None
 
-    if local_repo_candidates:
+    if local_repo_candidates and (platform or lookup.digests.resolved_platform or lookup.digests.repo_digests):
         matched_registry = next(
             (digest for digest in lookup.digests.repo_digests if digest in local_repo_candidates),
             None,
@@ -633,26 +644,30 @@ async def check_image(
             matched_field = "repo_digest"
             matched_local = matched_registry
 
-    if matched_field is None and local_image_id and lookup.digests.config_digest:
-        if local_image_id == lookup.digests.config_digest:
+    if matched_field is None and local_config and lookup.digests.config_digest:
+        matched_registry = lookup.digests.config_digest
+        matched_local = local_config
+        if local_config == lookup.digests.config_digest:
             matched_field = "config_digest"
-            matched_local = local_image_id
-            matched_registry = lookup.digests.config_digest
 
-    effective_local = (
-        matched_local
-        or (local_repo_candidates[0] if local_repo_candidates else local_image_id)
+    target_digest = (
+        lookup.digests.config_digest
+        or lookup.digests.manifest_digest
+        or (lookup.digests.repo_digests[0] if lookup.digests.repo_digests else None)
     )
-    registry_digest = (
-        matched_registry
-        or (lookup.digests.repo_digests[0] if lookup.digests.repo_digests else lookup.digests.config_digest)
-    )
+    effective_local = matched_local or local_config or (local_repo_candidates[0] if local_repo_candidates else None)
+    registry_digest = matched_registry or target_digest
 
-    if lookup.error_status:
-        status = lookup.error_status
+    if lookup.error_status or lookup.digests.error_message:
+        status = lookup.error_status or "check_failed"
         registry_digest = None
-    elif registry_digest and effective_local:
-        status = "up_to_date" if matched_field else "updatable"
+    elif matched_field:
+        status = "up_to_date"
+    elif target_digest and (
+        (local_config and lookup.digests.config_digest)
+        or (local_repo_candidates and (platform or lookup.digests.resolved_platform or lookup.digests.repo_digests))
+    ):
+        status = "updatable"
     else:
         status = "check_failed"
 
@@ -661,6 +676,10 @@ async def check_image(
         image=image_ref,
         current_digest=effective_local,
         registry_digest=registry_digest,
+        registry_index_digest=lookup.digests.index_digest,
+        registry_manifest_digest=lookup.digests.manifest_digest,
+        registry_config_digest=lookup.digests.config_digest,
+        identity_error=lookup.digests.error_message,
         registry=parsed["registry"],
         platform=lookup.digests.resolved_platform or platform,
         http_status=lookup.http_status,

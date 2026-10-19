@@ -57,7 +57,7 @@
       <el-tooltip :content="t('stack.action.update')" placement="top">
         <button
           class="rect-btn color-warning"
-          :disabled="loading !== null || deleting"
+          :disabled="loading !== null || deleting || persistedUpdateActive"
           :aria-label="t('stack.action.updateStack')"
           @click="confirmAndRun('update', t('stack.action.update'))"
         >
@@ -167,7 +167,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onBeforeUnmount } from "vue";
+import { computed, ref, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
 import {
@@ -185,10 +185,11 @@ import {
 } from "@element-plus/icons-vue";
 import { streamSse } from "@/api/sse";
 import { useConfirm, STACK_TONE_MAP } from "@/composables/useConfirm";
+import { useDashboardStore } from "@/stores/dashboard";
 
 export type OperationState = {
   action: string;
-  status: "running" | "success" | "error" | "timeout";
+  status: "running" | "success" | "error" | "timeout" | "uncertain" | "skipped";
   message: string;
   logTail?: string;
   updatedAt: number;
@@ -237,6 +238,11 @@ const loading = ref<string | null>(null);
 const deleting = ref(false);
 const { t } = useI18n();
 const { confirm } = useConfirm();
+const dashboardStore = useDashboardStore();
+const persistedUpdateActive = computed(() => {
+  const run = dashboardStore.updateRunForStack(props.hostId, props.stackName);
+  return run?.status === "queued" || run?.status === "running";
+});
 
 function openApp() {
   if (props.appUrl) {
@@ -300,6 +306,10 @@ async function confirmAndRun(action: string, label: string) {
   }
 
   const currentStackName = props.stackName;
+  if (action === "update") {
+    void submitManualUpdate(currentStackName, label);
+    return;
+  }
   const startedAt = Date.now();
   const controller = new AbortController();
   sseAbortController = controller;
@@ -433,6 +443,90 @@ async function confirmAndRun(action: string, label: string) {
     if (sseAbortController === controller) {
       sseAbortController = null;
     }
+  }
+}
+
+async function submitManualUpdate(stackName: string, label: string) {
+  loading.value = "update";
+  const startedAt = Date.now();
+  emit("operation-start", stackName, {
+    action: "update",
+    status: "running",
+    message: t("workspace.updateSubmitting"),
+    updatedAt: startedAt,
+  });
+
+  let requestId = "";
+  let lastTail = "";
+  let completed = false;
+  const observeRun = (id: string) => {
+    watch(
+      () => dashboardStore.updateRunForStack(props.hostId, stackName),
+      (run) => {
+        if (!run || run.request_id !== id) return;
+        const tail = run.log_tail || "";
+        const delta = tail.startsWith(lastTail) ? tail.slice(lastTail.length) : tail;
+        if (delta) emit("terminal-chunk", stackName, { action: "update", chunk: delta });
+        lastTail = tail;
+        if (run.status === "queued" || run.status === "running" || completed) return;
+        completed = true;
+        const finalStatus: OperationState["status"] = run.status === "success"
+          ? "success"
+          : run.status === "uncertain"
+            ? "uncertain"
+            : run.status === "skipped"
+              ? "skipped"
+              : "error";
+        const finalState: OperationState = {
+          action: "update",
+          status: finalStatus,
+          message: run.detail || t(`workspace.updateRunStatus.${run.status}`),
+          logTail: tail,
+          updatedAt: Date.now(),
+        };
+        emit("operation-complete", stackName, finalState);
+        loading.value = null;
+        if (run.status === "success") {
+          ElMessage.success(finalState.message);
+          emit("refresh");
+        } else if (run.status === "uncertain") {
+          ElMessage.warning(finalState.message);
+        } else if (run.status === "skipped") {
+          ElMessage.info(finalState.message);
+        } else {
+          ElMessage.error(finalState.message);
+        }
+      },
+      { immediate: true },
+    );
+  };
+
+  try {
+    let batch;
+    try {
+      batch = await dashboardStore.submitUpdateRuns(props.hostId, "manual", [stackName]);
+    } catch (firstError: any) {
+      requestId = firstError?.requestId || "";
+      if (!requestId) throw firstError;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      batch = await dashboardStore.submitUpdateRuns(props.hostId, "manual", [stackName]);
+    }
+    requestId = batch.request_id;
+    const run = batch.items.find((item) => item.stack_name === stackName);
+    if (!run) throw new Error(t("workspace.updateRunMissing"));
+    observeRun(requestId);
+  } catch (error: any) {
+    completed = true;
+    const detail = error?.response?.data?.detail;
+    const message = typeof detail === "string" ? detail : detail?.message;
+    emit("operation-complete", stackName, {
+      action: "update",
+      status: "error",
+      message: `${message || error?.message || t("stack.confirm.failure", { action: label })}${requestId ? ` (request ${requestId})` : ""}`,
+      updatedAt: Date.now(),
+    });
+    loading.value = null;
+    ElMessage.error(message || error?.message || t("workspace.updateBatchFailed"));
   }
 }
 

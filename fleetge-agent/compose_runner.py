@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from compose_identity import capture_pulled_images
 
 STACKS_BASE_DIR = os.environ.get("STACKS_BASE_DIR", "/opt/stacks")
 FLEETGE_STACK_NAME = os.environ.get("FLEETGE_STACK_NAME", "").strip()
@@ -93,6 +94,9 @@ def _require_enabled(enabled: bool, feature: str) -> None:
 # Concurrent locks per stack name
 _locks: dict[str, asyncio.Lock] = {}
 _locks_lock = asyncio.Lock()
+_active_job_stacks: dict[str, str] = {}
+_job_watchers: set[asyncio.Task] = set()
+_TERMINAL_JOB_STATES = {"success", "error", "uncertain", "skipped"}
 
 
 async def get_stack_lock(stack_name: str) -> asyncio.Lock:
@@ -179,6 +183,14 @@ async def _write_job_status(status_job_id: str, **updates) -> None:
                     current.update(loaded)
             except Exception:
                 pass
+        current_status = current.get("status")
+        requested_status = updates.get("status")
+        if current_status in _TERMINAL_JOB_STATES and requested_status != current_status:
+            updates.pop("status", None)
+            updates.pop("phase", None)
+        elif current_status == "running" and requested_status == "handoff":
+            updates.pop("status", None)
+            updates.pop("phase", None)
         current.update(updates)
         current["updated_at"] = _utc_now_iso()
         tmp_path = f"{status_path}.tmp"
@@ -456,6 +468,8 @@ async def get_global_env():
 async def save_global_env(payload: GlobalEnvRequest, request: Request):
     """Write or remove STACKS_BASE_DIR/global.env."""
     _require_enabled(AGENT_ENABLE_GLOBAL_ENV, "global-env writes")
+    if _active_job_stacks or any(lock.locked() for lock in _locks.values()):
+        raise HTTPException(status_code=409, detail="global.env cannot be changed while a Stack operation is active.")
     os.makedirs(STACKS_BASE_DIR, exist_ok=True)
     env_path = os.path.join(os.path.realpath(STACKS_BASE_DIR), "global.env")
     try:
@@ -514,6 +528,10 @@ async def save_stack(name: str, payload: StackSaveRequest, request: Request):
     compose_path = os.path.join(stack_path, compose_filename)
     env_path = os.path.join(stack_path, ".env")
 
+    lock = await get_stack_lock(name)
+    if lock.locked() or name in _active_job_stacks:
+        raise HTTPException(status_code=409, detail=f"Stack '{name}' is currently busy with an active command.")
+    await lock.acquire()
     try:
         exists = os.path.isdir(stack_path)
         if payload.is_add and exists:
@@ -550,6 +568,8 @@ async def save_stack(name: str, payload: StackSaveRequest, request: Request):
     except Exception as exc:
         await _write_audit("stack.save", "error", stack=name, client=_client_host(request), detail=str(exc))
         raise HTTPException(status_code=500, detail=f"Failed to write stack files: {exc}")
+    finally:
+        lock.release()
 
 
 @router.delete("/stacks/{name}")
@@ -569,10 +589,12 @@ async def delete_stack(name: str, request: Request):
         )
 
     lock = await get_stack_lock(name)
-    if lock.locked():
+    if lock.locked() or name in _active_job_stacks:
         raise HTTPException(status_code=409, detail=f"Stack '{name}' is currently busy with an active command.")
 
     async with lock:
+        if name in _active_job_stacks:
+            raise HTTPException(status_code=409, detail=f"Stack '{name}' is currently busy with an active command.")
         try:
             exit_code, output = await _delete_stack_after_down(
                 stack_path, _compose_args(stack_path, "down", "--remove-orphans")
@@ -613,6 +635,14 @@ def _compose_args(stack_path: str, command: str, *extra_options: str) -> list[st
         args[1:1] = ["--env-file", "../global.env"]
 
     return args
+
+
+async def _capture_pulled_images(stack_path: str) -> list[dict]:
+    return await asyncio.to_thread(
+        capture_pulled_images,
+        stack_path,
+        _compose_args(stack_path, "config", "--format", "json"),
+    )
 
 
 def _compose_status_convert(status: str) -> str:
@@ -763,7 +793,7 @@ async def _run_docker_command_capture(stack_path: str, args: list[str]) -> tuple
         return 1, f"Failed to run docker command: {exc}"
 
 
-async def _run_job_command(job_id: str, stack_path: str, args: list[str]) -> int:
+async def _run_job_command(job_id: str, stack_path: str, args: list[str], timeout: float = 600.0) -> int:
     await _append_job_log(job_id, f"\n$ docker {' '.join(args)}\n")
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -777,45 +807,185 @@ async def _run_job_command(job_id: str, stack_path: str, args: list[str]) -> int
         return 1
 
     assert proc.stdout is not None
-    while True:
-        chunk = await proc.stdout.read(4096)
-        if not chunk:
-            break
-        await _append_job_log(job_id, chunk.decode("utf-8", errors="replace"))
-
-    await proc.wait()
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+                await _append_job_log(job_id, chunk.decode("utf-8", errors="replace"))
+            await proc.wait()
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()
+        await _append_job_log(job_id, f"\nDocker command timed out after {timeout:g} seconds.\n")
+        return 124
+    except asyncio.CancelledError:
+        proc.kill()
+        await proc.wait()
+        raise
     code = proc.returncode if proc.returncode is not None else 0
     await _append_job_log(job_id, f"\nCommand exited with code {code}\n")
     return code
 
 
 async def _run_update_services_job(job_id: str, stack_path: str, services: list[str]) -> None:
-    await _write_job_status(job_id, status="running", phase="pull")
-    exit_code = await _run_job_command(job_id, stack_path, _compose_args(stack_path, "pull", *services))
-    if exit_code == 0:
-        await _write_job_status(job_id, status="running", phase="up")
-        exit_code = await _run_job_command(
-            job_id,
-            stack_path,
-            _compose_args(stack_path, "up", "-d", "--no-deps", *services),
-        )
+    stage = "pull"
+    try:
+        await _write_job_status(job_id, status="running", phase=stage)
+        exit_code = await _run_job_command(job_id, stack_path, _compose_args(stack_path, "pull", *services))
+        if exit_code == 0:
+            stage = "target"
+            await _write_job_status(job_id, status="running", phase=stage)
+            from compose_identity import capture_pulled_images
+            try:
+                pulled_images = await asyncio.to_thread(
+                    capture_pulled_images,
+                    stack_path,
+                    _compose_args(stack_path, "config", "--format", "json"),
+                )
+                pulled_images = [item for item in pulled_images if item.get("service") in services]
+                if len(pulled_images) != len(services):
+                    raise RuntimeError("Could not resolve every requested service image.")
+                await _write_job_status(job_id, pulled_images=pulled_images, up_executed=False)
+            except Exception as exc:
+                await _append_job_log(job_id, f"\n{exc}\n")
+                await _write_job_status(job_id, status="error", phase="target", message=str(exc), finished_at=_utc_now_iso())
+                return
+            stage = "up"
+            await _write_job_status(job_id, status="running", phase=stage, up_executed=True)
+            exit_code = await _run_job_command(
+                job_id,
+                stack_path,
+                _compose_args(stack_path, "up", "-d", "--no-deps", *services),
+            )
 
-    if exit_code == 0:
-        await _write_job_status(job_id, status="success", phase="done", exit_code=0, finished_at=_utc_now_iso())
-        await _append_job_log(job_id, "\nFleetge update job completed successfully.\n")
-    else:
-        await _write_job_status(job_id, status="error", phase="failed", exit_code=exit_code, finished_at=_utc_now_iso())
-        await _append_job_log(job_id, f"\nFleetge update job failed with exit code {exit_code}.\n")
+        if exit_code == 124:
+            await _write_job_status(job_id, status="uncertain", phase="uncertain", message=f"Docker {stage} command timed out; result is unknown.", finished_at=_utc_now_iso())
+        elif exit_code == 0:
+            await _write_job_status(job_id, status="success", phase="done", exit_code=0, finished_at=_utc_now_iso())
+            await _append_job_log(job_id, "\nFleetge update job completed successfully.\n")
+        else:
+            await _write_job_status(job_id, status="error", phase=stage, exit_code=exit_code, finished_at=_utc_now_iso())
+            await _append_job_log(job_id, f"\nFleetge update job failed with exit code {exit_code}.\n")
+    except asyncio.CancelledError:
+        await _write_job_status(job_id, status="uncertain", phase="uncertain", message="Agent stopped while the update was running.", finished_at=_utc_now_iso())
+        raise
+    except Exception as exc:
+        await _write_job_status(job_id, status="uncertain", phase="uncertain", message=f"Update job ended without a confirmed result: {exc}", finished_at=_utc_now_iso())
 
 
 async def _start_update_services_job(stack_name: str, stack_path: str, services: list[str]) -> str:
     job_id = await _create_job("updateServicesJob", stack_name, services)
-    asyncio.create_task(_run_update_services_job(job_id, stack_path, services))
+    lock = await get_stack_lock(stack_name)
+    _active_job_stacks[stack_name] = job_id
+
+    async def run() -> None:
+        try:
+            async with lock:
+                await _run_update_services_job(job_id, stack_path, services)
+        finally:
+            if _active_job_stacks.get(stack_name) == job_id:
+                _active_job_stacks.pop(stack_name, None)
+
+    task = asyncio.create_task(run())
+    _job_watchers.add(task)
+    task.add_done_callback(_job_watchers.discard)
     return job_id
+
+
+def _read_job_status(job_id: str) -> dict:
+    status_path, _ = _job_paths(job_id)
+    try:
+        with open(status_path, "r", encoding="utf-8") as f:
+            value = json.load(f)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+async def _container_is_running(container_name: str) -> bool:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "inspect", "--format", "{{.State.Running}}", container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        return proc.returncode == 0 and stdout.decode("utf-8", errors="replace").strip().lower() == "true"
+    except Exception:
+        return False
+
+
+async def _watch_self_update_job(job_id: str, stack_name: str, container_name: str) -> None:
+    try:
+        while True:
+            status = _read_job_status(job_id)
+            if status.get("status") in _TERMINAL_JOB_STATES:
+                return
+            if not await _container_is_running(container_name):
+                await _write_job_status(
+                    job_id,
+                    status="uncertain",
+                    phase="uncertain",
+                    message="Updater container stopped before recording a final result.",
+                    finished_at=_utc_now_iso(),
+                )
+                return
+            await asyncio.sleep(2.0)
+    finally:
+        if _active_job_stacks.get(stack_name) == job_id:
+            _active_job_stacks.pop(stack_name, None)
+
+
+async def reconcile_jobs() -> None:
+    """Recover job state after Agent restart without replaying Docker commands."""
+    jobs_dir = _jobs_dir()
+    for entry in os.scandir(jobs_dir):
+        if not entry.is_file() or not entry.name.endswith(".json"):
+            continue
+        job_id = entry.name[:-5]
+        status = _read_job_status(job_id)
+        state = status.get("status")
+        if state in _TERMINAL_JOB_STATES or not status.get("stack_name"):
+            continue
+        stack_name = status["stack_name"]
+        if status.get("action") == "selfUpdate" and state in {"handoff", "running"}:
+            container_name = status.get("updater_container") or f"fleetge-self-updater-{job_id}"
+            if await _container_is_running(container_name):
+                _active_job_stacks[stack_name] = job_id
+                task = asyncio.create_task(_watch_self_update_job(job_id, stack_name, container_name))
+                _job_watchers.add(task)
+                task.add_done_callback(_job_watchers.discard)
+                continue
+            await _write_job_status(
+                job_id,
+                status="uncertain",
+                phase="uncertain",
+                message="Updater container is not running and the job has no final result.",
+                finished_at=_utc_now_iso(),
+            )
+        elif state == "queued":
+            await _write_job_status(
+                job_id,
+                status="skipped",
+                phase="skipped",
+                message="Agent restarted before this queued job began; it was not replayed.",
+                finished_at=_utc_now_iso(),
+            )
+        else:
+            await _write_job_status(
+                job_id,
+                status="uncertain",
+                phase="uncertain",
+                message="Agent restarted while the job was running; execution was not replayed.",
+                finished_at=_utc_now_iso(),
+            )
 
 
 async def _start_self_updater_container(stack_name: str, stack_path: str, services: list[str]) -> str:
     job_id = await _create_job("selfUpdate", stack_name, services)
+    _active_job_stacks[stack_name] = job_id
     self_info = await _get_agent_self_info()
     updater_image = FLEETGE_UPDATER_IMAGE or self_info.get("image") or "ghcr.io/virgooooox/fleetge-agent:latest"
     stacks_host_path = self_info.get("stacks_host_path") or os.path.realpath(STACKS_BASE_DIR)
@@ -854,11 +1024,12 @@ async def _start_self_updater_container(stack_name: str, stack_path: str, servic
 
     await _write_job_status(
         job_id,
-        status="handoff",
-        phase="updater-started",
         updater_container=container_name,
     )
     await _append_job_log(job_id, f"Temporary updater started: {container_name}\n")
+    task = asyncio.create_task(_watch_self_update_job(job_id, stack_name, container_name))
+    _job_watchers.add(task)
+    task.add_done_callback(_job_watchers.discard)
     return job_id
 
 
@@ -1119,7 +1290,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
 
         # Acquire lock to prevent concurrent actions on the same stack
         lock = await get_stack_lock(name)
-        if lock.locked():
+        if lock.locked() or name in _active_job_stacks:
             await _write_audit(f"stack.{action}", "busy", stack=name, client=client)
             await websocket.send_json({
                 "type": "error",
@@ -1141,24 +1312,33 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                 return
 
             if action == "update":
-                # 1) Pull latest images
                 exit_code = await _stream_docker_command(
                     websocket, stack_path, _compose_args(stack_path, "pull"), cols=cols, rows=rows
                 )
                 stage = "pull"
                 up_executed = False
+                pulled_images: list[dict] = []
+                if exit_code == 0:
+                    try:
+                        pulled_images = await _capture_pulled_images(stack_path)
+                    except Exception:
+                        pulled_images = []
                 if exit_code == 0 and await _get_compose_project_status(name) == "running":
-                    # 2) Recreate running services with new images
                     stage = "up"
                     up_executed = True
                     exit_code = await _stream_docker_command(
                         websocket, stack_path, _compose_args(stack_path, "up", "-d", "--remove-orphans"), cols=cols, rows=rows
                     )
-                await websocket.send_json({
-                    "type": "exit", "code": exit_code,
-                    "stage": stage, "up_executed": up_executed,
-                })
-                await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"exit_code={exit_code}")
+                exit_payload = {
+                    "type": "exit",
+                    "code": exit_code,
+                    "stage": stage,
+                    "up_executed": up_executed,
+                }
+                if pulled_images:
+                    exit_payload["pulled_images"] = pulled_images
+                await websocket.send_json(exit_payload)
+                await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"stage={stage} exit_code={exit_code}")
             elif action == "delete":
                 exit_code = await _stream_docker_command(
                     websocket, stack_path, _compose_args(stack_path, "down", "--remove-orphans"), cols=cols, rows=rows
@@ -1246,6 +1426,8 @@ async def execute_stack_command(websocket: WebSocket, name: str):
         # by _stream_docker_command before the exception propagated.
         pass
     except Exception as exc:
+        if action == "selfUpdate" and _active_job_stacks.get(name):
+            _active_job_stacks.pop(name, None)
         import traceback
         traceback.print_exc()
         await _write_audit(f"stack.{action or 'execute'}", "error", stack=name, client=client, detail=str(exc))

@@ -86,6 +86,10 @@ def create_engine_and_tables():
                 image_update_cache_columns = {
                     "registry": "TEXT",
                     "platform": "TEXT",
+                    "registry_index_digest": "TEXT",
+                    "registry_manifest_digest": "TEXT",
+                    "registry_config_digest": "TEXT",
+                    "identity_error": "TEXT",
                     "http_status": "INTEGER",
                     "matched_field": "TEXT",
                     "retry_after": "INTEGER",
@@ -123,6 +127,43 @@ def create_engine_and_tables():
     )
 
     SQLModel.metadata.create_all(engine)
+    with engine.connect() as conn:
+        run_columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(auto_update_run)").fetchall()
+        }
+        if run_columns:
+            run_migrations = {
+                "request_id": "TEXT",
+                "source": "TEXT NOT NULL DEFAULT 'auto'",
+                "requested_by": "TEXT NOT NULL DEFAULT 'system'",
+                "log_tail": "TEXT NOT NULL DEFAULT ''",
+                "targets_json": "TEXT NOT NULL DEFAULT '{}'",
+                "agent_job_id": "TEXT",
+            }
+            for column_name, column_ddl in run_migrations.items():
+                if column_name not in run_columns:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE auto_update_run ADD COLUMN {column_name} {column_ddl}"
+                    )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_auto_update_run_request_id "
+                "ON auto_update_run(request_id)"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_auto_update_run_source "
+                "ON auto_update_run(source)"
+            )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_auto_update_run_host_request_stack "
+                "ON auto_update_run(host_id, request_id, stack_name)"
+            )
+        cache_columns = {
+            row[1] for row in conn.exec_driver_sql("PRAGMA table_info(image_update_cache)").fetchall()
+        }
+        for column_name in ("registry_index_digest", "registry_manifest_digest", "registry_config_digest", "identity_error"):
+            if cache_columns and column_name not in cache_columns:
+                conn.exec_driver_sql(f"ALTER TABLE image_update_cache ADD COLUMN {column_name} TEXT")
+        conn.commit()
     with engine.connect() as conn:
         invite_columns = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(enrollment_invite)").fetchall()]
         if invite_columns:

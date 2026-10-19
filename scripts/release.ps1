@@ -21,12 +21,27 @@ if ($status) {
     throw "Working tree is not clean. Commit or stash changes before releasing."
 }
 
+function Assert-CommandSuccess([string] $Description) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description failed with exit code $LASTEXITCODE."
+    }
+}
+
 node scripts/set-version.mjs $Version
+Assert-CommandSuccess "node scripts/set-version.mjs"
+
+npm --prefix frontend test
+Assert-CommandSuccess "frontend tests"
 
 npm --prefix frontend run build
+Assert-CommandSuccess "frontend build"
+
+$PythonCmd = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } elseif (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
+
 Push-Location backend
 try {
-    python -m pytest tests
+    & $PythonCmd -m pytest tests
+    Assert-CommandSuccess "backend tests"
 }
 finally {
     Pop-Location
@@ -35,7 +50,8 @@ finally {
 if ($WithAgent) {
     Push-Location fleetge-agent
     try {
-        python -m pytest test_agent.py
+        & $PythonCmd -m pytest test_agent.py test_update_stage.py
+        Assert-CommandSuccess "agent tests"
     }
     finally {
         Pop-Location

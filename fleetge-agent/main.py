@@ -175,6 +175,7 @@ async def verify_token(connection: HTTPConnection):
 async def lifespan(_app: FastAPI):
     """Startup: begin metrics collection.  Shutdown: close Docker proxy client."""
     logger.info("Starting Fleetge Agent metrics collector thread...")
+    await compose_runner.reconcile_jobs()
     start_metrics_collector()
     yield
     stop_metrics_collector()

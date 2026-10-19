@@ -431,7 +431,11 @@ class AgentClient:
                                 await log_queue.put(chunk)
                         elif msg_type == "exit":
                             exit_code = msg.get("code", 0)
-                            metadata = {key: msg[key] for key in ("stage", "up_executed") if key in msg}
+                            metadata = {
+                                key: msg[key]
+                                for key in ("stage", "up_executed", "pulled_images", "message", "error_code")
+                                if key in msg
+                            }
                             received_result = True
                             break
                         elif msg_type == "error":
@@ -457,8 +461,18 @@ class AgentClient:
                 if not received_result:
                     return {"success": False, "ok": False, "interrupted": True, "message": "Agent connection closed before the operation result was received"}
                 if exit_code != 0:
-                    return {"success": False, "ok": False, "message": error_msg or f"Command failed with exit code {exit_code}", **metadata}
-                result = {"success": True, "ok": True, "message": "Operation completed successfully", **metadata}
+                    return {
+                        "success": False,
+                        "ok": False,
+                        "message": metadata.get("message") or error_msg or f"Command failed with exit code {exit_code}",
+                        **metadata,
+                    }
+                result = {
+                    "success": True,
+                    "ok": True,
+                    "message": metadata.get("message") or "Operation completed successfully",
+                    **metadata,
+                }
                 if job_id:
                     result["job_id"] = job_id
                 return result

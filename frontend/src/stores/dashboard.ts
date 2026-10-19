@@ -92,6 +92,38 @@ export interface UpdateResult {
   status: string;
 }
 
+export interface UpdateRunItem {
+  id: number;
+  host_id: string;
+  request_id: string;
+  source: "auto" | "manual" | "bulk";
+  requested_by: string;
+  stack_name: string;
+  status: "queued" | "running" | "success" | "failed" | "uncertain" | "skipped";
+  stage: string;
+  attempts: number;
+  detail: string;
+  log_tail: string;
+  targets_json: string;
+  agent_job_id?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+}
+
+export interface UpdateRunBatch {
+  host_id: string;
+  request_id: string;
+  mode: string;
+  items: UpdateRunItem[];
+  finished: boolean;
+  counts: Record<UpdateRunItem["status"], number>;
+}
+
+export interface HostUpdateRuns {
+  active: UpdateRunItem[];
+  recent: UpdateRunItem[];
+}
+
 export interface UpdateCheckRunState {
   started: boolean;
   results: UpdateResult[];
@@ -170,7 +202,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const manualLoading = ref(false);
   const hostDetailsById = ref<Record<string, HostDetailCache>>({});
   const trafficByHost = ref<Record<string, HostTrafficState>>({});
+  const updateRunsByHost = ref<Record<string, HostUpdateRuns>>({});
   const trafficRequests = new Map<string, Promise<HostTrafficSummary | null>>();
+  const updateRunRequests = new Map<string, Promise<void>>();
+  const pendingUpdateSubmissions = new Map<string, string>();
 
   const updateCountsByHost = computed(() => {
     const counts: Record<string, number> = {};
@@ -195,7 +230,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
   );
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
-  let updatePollTimer: ReturnType<typeof setTimeout> | null = null;
+  let updateChecksPollTimer: ReturnType<typeof setInterval> | null = null;
+  let updateRunPollTimer: ReturnType<typeof setInterval> | null = null;
   let metricsStreamController: AbortController | null = null;
   let activityStreamController: AbortController | null = null;
   let visibilityHandler: (() => void) | null = null;
@@ -204,6 +240,114 @@ export const useDashboardStore = defineStore("dashboard", () => {
   function applyUpdateResults(results: UpdateResult[]) {
     updateResults.value = results || [];
     updateChecksLoaded.value = true;
+  }
+
+  function upsertUpdateRunBatch(batch: UpdateRunBatch) {
+    const existing = updateRunsByHost.value[batch.host_id] || { active: [], recent: [] };
+    const byId = new Map<number, UpdateRunItem>();
+    [...existing.active, ...existing.recent, ...batch.items].forEach((item) => byId.set(item.id, item));
+    const values = [...byId.values()];
+    updateRunsByHost.value = {
+      ...updateRunsByHost.value,
+      [batch.host_id]: {
+        active: values.filter((item) => item.status === "queued" || item.status === "running").sort((a, b) => a.id - b.id),
+        recent: values.filter((item) => item.status !== "queued" && item.status !== "running").sort((a, b) => a.id - b.id).slice(-50),
+      },
+    };
+    syncUpdateRunPolling();
+  }
+
+  function updateRunForStack(hostId: string, stackName: string): UpdateRunItem | null {
+    const state = updateRunsByHost.value[hostId];
+    if (!state) return null;
+    return [...state.active, ...state.recent].reverse().find((item) => item.stack_name === stackName) || null;
+  }
+
+  function updateRunBatchForRequest(hostId: string, requestId: string): UpdateRunBatch | null {
+    const state = updateRunsByHost.value[hostId];
+    if (!state) return null;
+    const items = [...state.active, ...state.recent].filter((item) => item.request_id === requestId);
+    if (!items.length) return null;
+    const counts: UpdateRunBatch["counts"] = { queued: 0, running: 0, success: 0, failed: 0, uncertain: 0, skipped: 0 };
+    items.forEach((item) => { counts[item.status] += 1; });
+    return { host_id: hostId, request_id: requestId, mode: items[0].source, items, finished: counts.queued === 0 && counts.running === 0, counts };
+  }
+
+  function syncUpdateRunPolling() {
+    const activeHosts = Object.entries(updateRunsByHost.value)
+      .filter(([, state]) => state.active.length > 0)
+      .map(([hostId]) => hostId);
+    if (activeHosts.length === 0) {
+      if (updateRunPollTimer) clearInterval(updateRunPollTimer);
+      updateRunPollTimer = null;
+      return;
+    }
+    if (updateRunPollTimer) return;
+    updateRunPollTimer = setInterval(() => {
+      if (document.hidden) return;
+      Object.entries(updateRunsByHost.value)
+        .filter(([, state]) => state.active.length > 0)
+        .forEach(([hostId]) => { void fetchUpdateRuns(hostId); });
+    }, 2000);
+  }
+
+  async function fetchUpdateRuns(hostId: string) {
+    const existing = updateRunRequests.get(hostId);
+    if (existing) return existing;
+    const request = apiClient.get(`/api/hosts/${encodeURIComponent(hostId)}/update-runs`)
+      .then((response) => {
+        updateRunsByHost.value = {
+          ...updateRunsByHost.value,
+          [hostId]: response.data as HostUpdateRuns,
+        };
+        syncUpdateRunPolling();
+      })
+      .finally(() => updateRunRequests.delete(hostId));
+    updateRunRequests.set(hostId, request);
+    return request;
+  }
+
+  async function fetchUpdateRunBatch(hostId: string, requestId: string): Promise<UpdateRunBatch | null> {
+    try {
+      const response = await apiClient.get(`/api/hosts/${encodeURIComponent(hostId)}/update-runs/${encodeURIComponent(requestId)}`);
+      const batch = response.data as UpdateRunBatch;
+      upsertUpdateRunBatch(batch);
+      return batch;
+    } catch (error: any) {
+      if (error?.response?.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async function submitUpdateRuns(hostId: string, mode: "manual" | "bulk", stackNames: string[]): Promise<UpdateRunBatch> {
+    const normalizedNames = [...new Set(stackNames)];
+    const submissionKey = JSON.stringify([hostId, mode, normalizedNames]);
+    const requestId = pendingUpdateSubmissions.get(submissionKey) || globalThis.crypto.randomUUID();
+    pendingUpdateSubmissions.set(submissionKey, requestId);
+    const url = `/api/hosts/${encodeURIComponent(hostId)}/update-runs`;
+    try {
+      let batch: UpdateRunBatch;
+      try {
+        const response = await apiClient.post(url, { request_id: requestId, mode, stack_names: normalizedNames });
+        batch = response.data as UpdateRunBatch;
+      } catch (error) {
+        const recovered = await fetchUpdateRunBatch(hostId, requestId).catch(() => null);
+        if (!recovered) throw error;
+        batch = recovered;
+      }
+      pendingUpdateSubmissions.delete(submissionKey);
+      upsertUpdateRunBatch(batch);
+      return batch;
+    } catch (error) {
+      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { requestId });
+    }
+  }
+
+  async function stopPendingUpdateRuns(hostId: string, requestId: string): Promise<UpdateRunBatch> {
+    const response = await apiClient.post(`/api/hosts/${encodeURIComponent(hostId)}/update-runs/${encodeURIComponent(requestId)}/stop-pending`);
+    const batch = response.data as UpdateRunBatch;
+    upsertUpdateRunBatch(batch);
+    return batch;
   }
 
   function getHostUpdateCount(hostId: string) {
@@ -479,7 +623,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
         fetchHosts();
       }
     }, hostPollInterval);
-    updatePollTimer = setInterval(() => {
+    updateChecksPollTimer = setInterval(() => {
       if (!document.hidden) {
         fetchUpdateChecks();
       }
@@ -512,9 +656,9 @@ export const useDashboardStore = defineStore("dashboard", () => {
       clearInterval(pollTimer);
       pollTimer = null;
     }
-    if (updatePollTimer) {
-      clearInterval(updatePollTimer);
-      updatePollTimer = null;
+    if (updateChecksPollTimer) {
+      clearInterval(updateChecksPollTimer);
+      updateChecksPollTimer = null;
     }
     if (visibilityHandler) {
       document.removeEventListener("visibilitychange", visibilityHandler);
@@ -544,7 +688,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     setHostDetailCache,
     patchHostDetailUpdateResults,
     hostDetailsById,
-    trafficByHost,
+    updateRunsByHost,
     getHostTrafficState,
     fetchHostTrafficSummary,
     getHostUpdateCount,
@@ -552,6 +696,12 @@ export const useDashboardStore = defineStore("dashboard", () => {
     refreshHosts,
     fetchUpdateChecks,
     runUpdateCheck,
+    fetchUpdateRuns,
+    fetchUpdateRunBatch,
+    submitUpdateRuns,
+    stopPendingUpdateRuns,
+    updateRunForStack,
+    updateRunBatchForRequest,
     refreshAll,
     startPolling,
     stopPolling,

@@ -1,14 +1,23 @@
 """Automatic update preferences and optional Notify Hub configuration."""
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.auth.handler import get_current_user
 from app.database import engine
 from app.models import AuditLog, AutoUpdateRun
+from app.schemas import UpdateRunBatch, UpdateRunList, UpdateRunSubmitRequest
 from app.services.agent_client import AgentClient
-from app.services.auto_update import control_stack, notify_settings, save_notify_settings, set_policy, stack_policy
+from app.services.auto_update import (
+    UpdateRunError,
+    auto_update_manager,
+    control_stack,
+    notify_settings,
+    save_notify_settings,
+    set_policy,
+    stack_policy,
+)
 from app.services.snapshot import snapshot_manager
 
 router = APIRouter(prefix="/api", tags=["auto_updates"], dependencies=[Depends(get_current_user)])
@@ -61,7 +70,11 @@ async def get_auto_update(host_id: str, stack_name: str):
     snap, stack = require_stack(host_id, stack_name)
     policy = stack_policy(host_id, stack_name)
     with Session(engine) as session:
-        run = session.exec(select(AutoUpdateRun).where(AutoUpdateRun.host_id == host_id, AutoUpdateRun.stack_name == stack_name).order_by(AutoUpdateRun.id.desc())).first()
+        run = session.exec(select(AutoUpdateRun).where(
+            AutoUpdateRun.host_id == host_id,
+            AutoUpdateRun.stack_name == stack_name,
+            AutoUpdateRun.source == "auto",
+        ).order_by(AutoUpdateRun.id.desc())).first()
     return {
         "enabled": policy.enabled, "reason": policy.reason,
         "unavailable_reason": await unavailable_reason(snap, stack),
@@ -85,6 +98,53 @@ async def update_auto_update(host_id: str, stack_name: str, payload: AutoUpdateR
         session.add(AuditLog(user=username, action="stack.auto_update.configure", host_id=host_id, stack_name=stack_name, result="success", detail=f"enabled={payload.enabled}", ip_address=request.client.host if request.client else None))
         session.commit()
     return {"enabled": policy.enabled, "reason": policy.reason}
+
+
+@router.post("/hosts/{host_id}/update-runs", response_model=UpdateRunBatch, status_code=status.HTTP_202_ACCEPTED)
+async def submit_update_runs(
+    host_id: str,
+    payload: UpdateRunSubmitRequest,
+    username: str = Depends(get_current_user),
+):
+    try:
+        return await auto_update_manager.submit(
+            host_id,
+            payload.request_id,
+            payload.mode,
+            payload.stack_names,
+            username,
+        )
+    except UpdateRunError as exc:
+        detail = {"message": exc.detail}
+        if exc.existing_id is not None:
+            detail["existing_run_id"] = exc.existing_id
+        raise HTTPException(exc.status_code, detail=detail) from exc
+
+
+@router.get("/hosts/{host_id}/update-runs", response_model=UpdateRunList)
+async def list_update_runs(host_id: str):
+    if not snapshot_manager.get_snapshot(host_id):
+        raise HTTPException(404, "Host not found")
+    return auto_update_manager.list_runs(host_id)
+
+
+@router.get("/hosts/{host_id}/update-runs/{request_id}", response_model=UpdateRunBatch)
+async def get_update_run_batch(host_id: str, request_id: str):
+    result = auto_update_manager.get_batch(host_id, request_id)
+    if result is None:
+        raise HTTPException(404, "Update run batch not found")
+    return result
+
+
+@router.post("/hosts/{host_id}/update-runs/{request_id}/stop-pending", response_model=UpdateRunBatch)
+async def stop_pending_update_runs(host_id: str, request_id: str):
+    try:
+        result = auto_update_manager.stop_pending(host_id, request_id)
+    except UpdateRunError as exc:
+        raise HTTPException(exc.status_code, exc.detail) from exc
+    if result is None:
+        raise HTTPException(404, "Update run batch not found")
+    return result
 
 
 @router.get("/admin/notifyhub")

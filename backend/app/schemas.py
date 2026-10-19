@@ -1,7 +1,7 @@
 """Pydantic schemas for API responses."""
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -127,6 +127,8 @@ class ContainerSummary(BaseModel):
     mounts: list[dict] = Field(default_factory=list)
     networks: dict[str, dict] = Field(default_factory=dict)
     health: Optional[dict] = None
+    healthcheck_configured: bool = False
+    inspection_complete: bool = True
 
 
 class ContainerStats(BaseModel):
@@ -235,6 +237,10 @@ class UpdateCheckResult(BaseModel):
     image: str
     current_digest: Optional[str] = None
     registry_digest: Optional[str] = None
+    registry_index_digest: Optional[str] = None
+    registry_manifest_digest: Optional[str] = None
+    registry_config_digest: Optional[str] = None
+    identity_error: Optional[str] = None
     registry: Optional[str] = None
     platform: Optional[str] = None
     http_status: Optional[int] = None
@@ -246,6 +252,53 @@ class UpdateCheckResult(BaseModel):
     last_failure_retry_after: Optional[int] = None
     last_failure_at: Optional[datetime] = None
     status: str  # up_to_date | updatable | needs_auth | check_failed | rate_limited
+
+
+class UpdateRunSubmitRequest(BaseModel):
+    request_id: str
+    mode: Literal["manual", "bulk"]
+    stack_names: list[str] = Field(min_length=1, max_length=100)
+
+
+class UpdateRunItem(BaseModel):
+    id: int
+    host_id: str
+    request_id: str
+    source: str
+    requested_by: str
+    stack_name: str
+    status: str
+    stage: str = ""
+    attempts: int = 0
+    detail: str = ""
+    log_tail: str = ""
+    targets_json: str = "{}"
+    agent_job_id: Optional[str] = None
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+
+
+class UpdateRunCounts(BaseModel):
+    queued: int = 0
+    running: int = 0
+    success: int = 0
+    failed: int = 0
+    uncertain: int = 0
+    skipped: int = 0
+
+
+class UpdateRunBatch(BaseModel):
+    host_id: str
+    request_id: str
+    mode: str
+    items: list[UpdateRunItem]
+    finished: bool
+    counts: UpdateRunCounts
+
+
+class UpdateRunList(BaseModel):
+    active: list[UpdateRunItem]
+    recent: list[UpdateRunItem]
 
 
 class UpdateCheckRunResponse(BaseModel):
