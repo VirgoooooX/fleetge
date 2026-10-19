@@ -481,7 +481,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 "State": "running",
             }
         ])
-        proxy.container_inspect = AsyncMock(return_value={})
+        proxy.container_inspect = AsyncMock(return_value={"Config": {"Image": "nginx:latest"}, "State": {"Status": "running"}})
         # Mock image_inspect to return the new local repo digest
         proxy.image_inspect = AsyncMock(return_value={
             "Id": "sha256:new_id",
@@ -548,6 +548,8 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
                 self.host_id,
                 "nginx:latest",
                 ["nginx:latest@sha256:old"],
+                local_manifest_digest="sha256:old",
+                platform="linux/amd64",
                 force=True,
             )
 
@@ -934,7 +936,7 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         for health in ("healthy", "unhealthy"):
             with self.subTest(health=health):
                 self.snap.containers = [ContainerSummary(
-                    id="c1", name="nginx", image="nginx:latest", image_id="sha256:img", tag_image_id="sha256:img",
+                    id="c1", name="nginx", image="nginx:latest", image_id="sha256:img", image_config_digest="sha256:img", tag_image_id="sha256:img",
                     state="running", status="Up", created=0, repo_digests=["nginx@sha256:matched"],
                     stack_name="my-stack", health={"Status": health},
                 )]

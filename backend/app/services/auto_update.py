@@ -478,7 +478,7 @@ class AutoUpdateManager:
             session.add(run)
             session.commit()
         if changed_stage and stage == "verify":
-            self._append_run_log(run_id, "\r\n[Fleetge] 正在校验运行镜像与容器健康状态…\r\n")
+            self._append_run_log(run_id, "\r\n[Fleetge] 正在校验运行镜像、容器健康与上游目标…\r\n")
 
     def _publish_run_output(self, run_id: int, text: str, token: str = "") -> None:
         if not text:
@@ -562,7 +562,7 @@ class AutoUpdateManager:
             return
 
         image_refs = [
-            (container.image, container.repo_digests, container.image_id, container.platform)
+            (container.image, container.repo_digests, container.image_config_digest, container.platform, container.image_manifest_digest)
             for containers in service_containers.values()
             for container in containers
             if container.image
@@ -755,75 +755,54 @@ class AutoUpdateManager:
                 for service, containers in service_containers.items()
             }
             before_update = getattr(snap, "containers_updated", 0)
-            final_logs = ""
             for attempt in (1, 2):
-                self._append_run_log(run_id, f"\r\n--- attempt {attempt} ---\r\n", getattr(conn, "_token", ""))
                 self._set_run_stage(run_id, "pull", attempts=attempt)
-                result, tail = await self.execute(conn, stack_name, run_id)
+                result, _ = await self.execute(conn, stack_name, run_id)
                 stage = result.get("stage") or "unknown"
                 self._set_run_stage(run_id, stage)
                 if result.get("error_code") == "stack_busy":
-                    self.finish(run_id, "skipped", result.get("message") or "Stack 正在执行其他操作。", final_logs)
+                    self.finish(run_id, "skipped", result.get("message") or "Stack 正在执行其他操作。")
                     return
                 if result.get("interrupted"):
-                    self.finish(run_id, "uncertain", result.get("message") or "Agent 连接中断，升级结果未确认。", final_logs)
+                    self.finish(run_id, "uncertain", result.get("message") or "Agent 连接中断，升级结果未确认。")
                     return
                 if not result.get("success"):
                     if stage == "pull" and attempt == 1:
+                        self._append_run_log(run_id, f"\r\n[Fleetge] 拉取失败，{PULL_RETRY_DELAY:g} 秒后重试一次…\r\n")
                         await asyncio.sleep(PULL_RETRY_DELAY)
                         await self.snapshots().refresh_host_docker(host_id, trigger_initial_update_check=False)
                         if source == "auto" and self.eligible(host_id, stack_name, source) is None:
-                            self.finish(run_id, "skipped", "拉取失败后自动更新已关闭或 Stack 不再可更新，取消重试。", final_logs)
+                            self.finish(run_id, "skipped", "拉取失败后自动更新已关闭或 Stack 不再可更新，取消重试。")
                             return
                         continue
-                    self.finish(run_id, "failed", f"升级失败，阶段：{stage}。{result.get('message', '')}", final_logs)
+                    self.finish(run_id, "failed", f"升级失败，阶段：{stage}。{result.get('message', '')}")
                     return
                 if result.get("up_executed") is False:
-                    self.finish(run_id, "skipped", "拉取完成时 Stack 已不处于运行状态，未执行 up。", final_logs)
+                    self.finish(run_id, "skipped", "拉取完成时 Stack 已不处于运行状态，未执行 up。")
                     return
 
-                # If the snapshot manager has verify_update_targets, use full post-update verification;
-                # otherwise fall back to finalize_stack_update for backwards compatibility.
-                if hasattr(self.snapshots(), "verify_update_targets") and result.get("pulled_images"):
-                    pulled = {item.get("service"): item for item in (result.get("pulled_images") or []) if isinstance(item, dict)}
-                    verify_targets: dict[str, dict] = {}
-                    for service, expected in preflight.items():
-                        item = pulled.get(service)
-                        if not item or not item.get("image_id") or not item.get("platform"):
-                            self.finish(run_id, "uncertain", f"无法确认服务 '{service}' 的拉取镜像身份或平台。", final_logs)
-                            return
-                        verify_targets[service] = {
-                            "image": item.get("image"),
-                            "image_id": item["image_id"],
-                            "repo_digests": item.get("repo_digests") or [],
-                            "platform": item["platform"],
-                            "container_count": expected["container_count"],
-                        }
-                    self._set_run_stage(run_id, "verify", targets={"preflight": preflight, "services": verify_targets})
-                    verified, message = await self.snapshots().verify_update_targets(
-                        host_id, stack_name, verify_targets, not_before=before_update,
-                    )
-                    self.finish(run_id, verified, message, final_logs)
+                if result.get("up_executed") is not True or not result.get("pulled_images"):
+                    self.finish(run_id, "uncertain", "Agent 未提供完整的拉取目标和 Compose up 执行证据，无法确认更新结果。")
                     return
-
-                if hasattr(self.snapshots(), "finalize_stack_update"):
-                    previous_refresh = getattr(self.snapshots().get_snapshot(host_id), "containers_updated", 0)
-                    await self.snapshots().refresh_host_docker(host_id, trigger_initial_update_check=False)
-                    refreshed = self.snapshots().get_snapshot(host_id)
-                    if not refreshed or refreshed.status != "online" or getattr(refreshed, "containers_updated", 0) <= previous_refresh:
-                        self.finish(run_id, "uncertain", "更新命令已完成，但无法取得更新后的容器状态。已暂停自动升级，请查看实际运行状态。", final_logs)
+                pulled = {item.get("service"): item for item in result["pulled_images"] if isinstance(item, dict)}
+                verify_targets: dict[str, dict] = {}
+                for service, expected in preflight.items():
+                    item = pulled.get(service)
+                    if not item or not item.get("image") or not item.get("image_id") or not item.get("platform"):
+                        self.finish(run_id, "uncertain", f"无法确认服务 '{service}' 的拉取镜像身份或平台。")
                         return
-                    self._set_run_stage(run_id, "verify")
-                    summaries = await self.snapshots().finalize_stack_update(host_id, stack_name, targets, wait_timeout=45.0)
-                    verified = len(summaries) == len(set(targets)) and all(getattr(s, "verified", False) for s in summaries)
-                    detail = "\n".join(s.verdict for s in summaries) or "无法取得更新验证结果。"
-                    self.finish(run_id, "success" if verified else "failed", detail, final_logs)
-                    return
-
-                if result.get("up_executed") is not True:
-                    self.finish(run_id, "uncertain", "Agent 未确认 Compose up 是否执行；缺少目标证据。", final_logs)
-                    return
-                self.finish(run_id, "uncertain", "未配置更新结果验证器。", final_logs)
+                    verify_targets[service] = {
+                        "image": item["image"],
+                        "image_id": item["image_id"],
+                        "repo_digests": item.get("repo_digests") or [],
+                        "platform": item["platform"],
+                        "container_count": expected["container_count"],
+                    }
+                self._set_run_stage(run_id, "verify", targets={"preflight": preflight, "services": verify_targets})
+                verified, message = await self.snapshots().verify_update_targets(
+                    host_id, stack_name, verify_targets, not_before=before_update,
+                )
+                self.finish(run_id, verified, message)
                 return
         except asyncio.CancelledError:
             if run_id is not None:

@@ -102,6 +102,8 @@ class ContainerSummary(BaseModel):
     name: str
     image: str
     image_id: str
+    image_config_digest: Optional[str] = None  # classic store: image inspect Id
+    image_manifest_digest: Optional[str] = None  # containerd: running platform manifest
     repo_digests: list[str] = []  # from /images/{name}/json → RepoDigests
     tag_image_id: Optional[str] = None  # from /images/{name}/json → Id
     tag_platform: Optional[str] = None  # from /images/{name}/json → os/arch[/variant]

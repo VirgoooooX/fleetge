@@ -273,7 +273,7 @@
   "stack.confirm.success": "{action}成功",
   "stack.confirm.failure": "{action}失败",
   "stack.confirm.noResult": "连接已结束，但未收到明确结果，请检查实际运行状态。",
-  "stack.confirm.updateVerified": "更新完成，运行镜像与容器健康校验通过。",
+  "stack.confirm.updateVerified": "更新完成，已匹配上游目标镜像，容器健康校验通过。",
   "stack.confirm.updateUncertain": "更新结果未确认，请查看终端详情和容器状态。",
   "stack.confirm.reconnectingUpdate": "进度连接暂时中断，后台更新继续执行，正在重新连接…",
   "stack.confirm.unknownError": "未知错误",

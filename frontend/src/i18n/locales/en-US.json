@@ -273,7 +273,7 @@
   "stack.confirm.success": "{action} succeeded",
   "stack.confirm.failure": "{action} failed",
   "stack.confirm.noResult": "The connection ended without a confirmed result. Check the actual container state.",
-  "stack.confirm.updateVerified": "Update completed. Running images and container health verified.",
+  "stack.confirm.updateVerified": "Update completed. Registry target images and container health verified.",
   "stack.confirm.updateUncertain": "Update result unconfirmed. Check terminal details and container state.",
   "stack.confirm.reconnectingUpdate": "Progress connection interrupted. The update continues in the background; reconnecting…",
   "stack.confirm.unknownError": "Unknown error",

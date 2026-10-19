@@ -24,6 +24,10 @@ INDEX_MEDIA_TYPES = {
     "application/vnd.docker.distribution.manifest.list.v2+json",
     "application/vnd.oci.image.index.v1+json",
 }
+MANIFEST_MEDIA_TYPES = {
+    "application/vnd.docker.distribution.manifest.v2+json",
+    "application/vnd.oci.image.manifest.v1+json",
+}
 MANIFEST_ACCEPT = (
     "application/vnd.docker.distribution.manifest.v2+json,"
     "application/vnd.oci.image.manifest.v1+json"
@@ -584,12 +588,14 @@ async def check_image(
     local_image_id: str | None = None,
     platform: str | None = None,
     force: bool = False,
+    local_manifest_digest: str | None = None,
 ) -> UpdateCheckResult:
     """Check if a single image has an update available.
 
     Uses typed digest comparison:
-    - RepoDigests are compared with remote manifest/index digests.
-    - image inspect Id is compared only with remote config.digest.
+    - local_image_id is a known config digest from the classic image store.
+    - local_manifest_digest is the running platform manifest from containerd.
+    - RepoDigests can confirm a matching platform manifest as a fallback.
     Digest-pinned refs (repo@sha256:...) are treated as immutable and do not
     trigger a registry lookup.
 
@@ -604,6 +610,7 @@ async def check_image(
     repo_digests = repo_digests or []
     parsed = _parse_image_ref(image_ref)
     local_image_id = _normalize_digest(local_image_id)
+    local_manifest_digest = _normalize_digest(local_manifest_digest)
     local_repo_candidates = _local_repo_digests(repo_digests)
 
     if parsed["digest"]:
@@ -633,13 +640,18 @@ async def check_image(
     matched_local: Optional[str] = None
     matched_registry: Optional[str] = None
 
-    # Compare config IDs first; matching an index cannot override a different
-    # running image. RepoDigests are only a fallback for a platform manifest.
+    # Compare only identities with the same known type. A containerd image Id
+    # can identify an index; it is not a config digest.
     if local_config and lookup.digests.config_digest:
         matched_registry = lookup.digests.config_digest
         matched_local = local_config
         if local_config == lookup.digests.config_digest:
             matched_field = "config_digest"
+    elif local_manifest_digest and lookup.digests.manifest_digest:
+        matched_registry = lookup.digests.manifest_digest
+        matched_local = local_manifest_digest
+        if local_manifest_digest == lookup.digests.manifest_digest:
+            matched_field = "manifest_digest"
     elif lookup.digests.manifest_digest and (platform or lookup.digests.resolved_platform):
         matched_registry = lookup.digests.manifest_digest
         if matched_registry in local_repo_candidates:
@@ -647,7 +659,7 @@ async def check_image(
             matched_local = matched_registry
 
     target_digest = lookup.digests.config_digest or lookup.digests.manifest_digest
-    effective_local = matched_local or local_config or (local_repo_candidates[0] if local_repo_candidates else None)
+    effective_local = matched_local or local_config or local_manifest_digest or (local_repo_candidates[0] if local_repo_candidates else None)
     registry_digest = matched_registry or target_digest
 
     if lookup.error_status or lookup.digests.error_message:
@@ -657,7 +669,7 @@ async def check_image(
         status = "up_to_date"
     elif target_digest and (
         (local_config and lookup.digests.config_digest)
-        or (local_repo_candidates and lookup.digests.manifest_digest and (platform or lookup.digests.resolved_platform))
+        or (local_manifest_digest and lookup.digests.manifest_digest)
     ):
         status = "updatable"
     else:
@@ -705,9 +717,10 @@ async def run_update_check(
         repo_digests = item[1] if len(item) > 1 else []
         local_image_id = item[2] if len(item) > 2 else None
         platform = item[3] if len(item) > 3 else None
+        local_manifest_digest = item[4] if len(item) > 4 else None
         existing = merged.setdefault(
             image_ref,
-            {"repo_digests": [], "local_image_id": None, "platform": None},
+            {"repo_digests": [], "local_image_id": None, "platform": None, "local_manifest_digest": None},
         )
         for digest in repo_digests or []:
             if digest and digest not in existing["repo_digests"]:
@@ -716,6 +729,8 @@ async def run_update_check(
             existing["local_image_id"] = local_image_id
         if platform and not existing["platform"]:
             existing["platform"] = platform
+        if local_manifest_digest and not existing["local_manifest_digest"]:
+            existing["local_manifest_digest"] = local_manifest_digest
 
     semaphore = asyncio.Semaphore(8)
 
@@ -732,6 +747,7 @@ async def run_update_check(
                     local_image_id=info.get("local_image_id"),
                     platform=info.get("platform"),
                     force=force,
+                    local_manifest_digest=info.get("local_manifest_digest"),
                 )
                 if last_result.status not in FAILURE_STATUSES:
                     return last_result

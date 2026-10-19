@@ -1101,8 +1101,9 @@ async def _fresh_check_fleetge_services(
         (
             container.image,
             container.repo_digests,
-            container.tag_image_id or container.image_id,
-            container.tag_platform or container.platform,
+            container.image_config_digest,
+            container.platform,
+            container.image_manifest_digest,
         )
         for container in service_containers.values()
     ]
