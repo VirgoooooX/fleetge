@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
+import { createRequestId } from "@/utils/requestId";
 
 export interface HostSummary {
   host_id: string;
@@ -322,7 +323,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   async function submitUpdateRuns(hostId: string, mode: "manual" | "bulk", stackNames: string[]): Promise<UpdateRunBatch> {
     const normalizedNames = [...new Set(stackNames)];
     const submissionKey = JSON.stringify([hostId, mode, normalizedNames]);
-    const requestId = pendingUpdateSubmissions.get(submissionKey) || globalThis.crypto.randomUUID();
+    const requestId = pendingUpdateSubmissions.get(submissionKey) || createRequestId();
     pendingUpdateSubmissions.set(submissionKey, requestId);
     const url = `/api/hosts/${encodeURIComponent(hostId)}/update-runs`;
     try {
