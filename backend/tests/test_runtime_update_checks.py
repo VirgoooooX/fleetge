@@ -184,6 +184,42 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
         self.manager._apply_update_cache_rows_to_snapshot(self.snap, [row], {self.image})
         self.assertEqual(self.snap.update_results[self.image], "updatable")
 
+    async def test_containerd_cache_corrects_old_config_comparison_without_registry_access(self):
+        container = self.snap.containers[0]
+        container.image_id = "sha256:index"
+        container.image_config_digest = None
+        container.image_manifest_digest = "sha256:manifest"
+        row = ImageUpdateCache(host_id="nas", image=self.image, status="updatable",
+            current_digest="sha256:index", registry_digest="sha256:config",
+            registry_config_digest="sha256:config", registry_manifest_digest="sha256:manifest",
+            platform="linux/amd64")
+        self.manager._apply_update_cache_rows_to_snapshot(self.snap, [row], {self.image})
+        result = self.snap.update_check_results[0]
+        self.assertEqual(self.snap.update_results[self.image], "up_to_date")
+        self.assertEqual(result.current_digest, "sha256:manifest")
+        self.assertEqual(result.registry_digest, "sha256:manifest")
+        self.assertEqual(result.matched_field, "manifest_digest")
+
+    async def test_containerd_rate_limit_uses_cached_typed_identity_without_retrying(self):
+        now = datetime.now(timezone.utc)
+        container = self.snap.containers[0]
+        container.image_id = "sha256:index"
+        container.image_config_digest = None
+        container.image_manifest_digest = "sha256:manifest"
+        row = ImageUpdateCache(host_id="nas", image=self.image, status="updatable",
+            current_digest="sha256:index", registry_digest="sha256:config",
+            registry_config_digest="sha256:config", registry_manifest_digest="sha256:manifest",
+            platform="linux/amd64", checked_at=now, last_failure_status="rate_limited",
+            last_failure_at=now, last_failure_retry_after=3600, failure_count=1)
+        with Session(self.engine) as session:
+            session.add(row)
+            session.commit()
+        with patch.object(module, "run_update_check", new=AsyncMock()) as check:
+            await self.manager._refresh_update_checks_for_snapshot(self.snap)
+        check.assert_not_awaited()
+        self.assertEqual(self.snap.update_results[self.image], "up_to_date")
+        self.assertEqual(self.snap.update_check_results[0].last_failure_status, "rate_limited")
+
     async def test_containerd_compares_running_platform_manifest(self):
         lookup = update_check.RegistryLookupResult(digests=update_check.RegistryDigests(
             repo_digests=["sha256:index", "sha256:manifest"], index_digest="sha256:index",

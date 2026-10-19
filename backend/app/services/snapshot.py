@@ -660,38 +660,69 @@ class SnapshotManager:
             containers = [container for container in snap.containers if container.image == image]
             if not containers:
                 continue
-            if any(not container.inspection_complete or not (container.image_config_digest or container.image_manifest_digest) for container in containers):
-                snap.update_results.pop(image, None)
-                result.status = "check_failed"
-                result.identity_error = "Running image identity is unavailable; cannot determine whether an update is needed."
+            runtime_types = {
+                "config" if container.image_config_digest else "manifest"
+                for container in containers
+            }
+            cached_target = None
+            if runtime_types == {"config"}:
+                cached_target = result.registry_config_digest
+            elif runtime_types == {"manifest"}:
+                cached_target = result.registry_manifest_digest
+            cache_type_changed = bool(cached_target and cached_target != result.registry_digest)
+            # Keep an update badge until the post-update finalizer clears it,
+            # except when the old check compared unlike digest types. In that
+            # case, re-evaluate with the matching cached identity right away.
+            if status == "updatable" and not cache_type_changed:
                 continue
-            if status != "up_to_date":
-                continue
-            def matches(container: ContainerSummary) -> bool:
-                if not container.inspection_complete:
-                    return False
+
+            comparisons: list[tuple[str, str, str]] = []
+            legacy_matches: list[bool] = []
+            identity_error = None
+            for container in containers:
+                if not container.inspection_complete or not (container.image_config_digest or container.image_manifest_digest):
+                    identity_error = "Running image identity is unavailable; cannot determine whether an update is needed."
+                    break
                 if container.image_config_digest and result.registry_config_digest:
-                    return _normalize_image_id(container.image_config_digest) == _normalize_image_id(result.registry_config_digest)
-                if container.image_manifest_digest and result.registry_manifest_digest and result.platform:
-                    return (
-                        _normalize_image_id(container.image_manifest_digest) == _normalize_image_id(result.registry_manifest_digest)
-                        and _platform_matches(
-                            _parse_platform(container.platform), _parse_platform(result.platform), exact_variant=False,
-                        )
-                    )
-                if not result.registry_config_digest and not result.registry_manifest_digest and result.registry_digest:
+                    comparisons.append((container.image_config_digest, result.registry_config_digest, "config_digest"))
+                elif container.image_manifest_digest and result.registry_manifest_digest and result.platform:
+                    if not _platform_matches(
+                        _parse_platform(container.platform), _parse_platform(result.platform), exact_variant=False,
+                    ):
+                        identity_error = "Running image platform does not match the cached registry target platform."
+                        break
+                    comparisons.append((container.image_manifest_digest, result.registry_manifest_digest, "manifest_digest"))
+                elif not result.registry_config_digest and not result.registry_manifest_digest and result.registry_digest:
                     target = _normalize_image_id(result.registry_digest)
-                    return target in {
+                    candidates = {
                         _normalize_image_id(container.image_config_digest),
                         _normalize_image_id(container.image_manifest_digest),
-                        *(_normalize_image_id(d.split("@", 1)[-1]) for d in container.repo_digests),
+                        *(_normalize_image_id(d.split("@", 1)[-1]) for d in (container.repo_digests or [])),
                     }
-                return False
+                    legacy_matches.append(target in candidates)
+                    local = container.image_config_digest or container.image_manifest_digest or result.current_digest or ""
+                    comparisons.append((local, result.registry_digest, "registry_digest"))
+                else:
+                    identity_error = "Registry identity of the matching type is unavailable; update status cannot be confirmed."
+                    break
 
-            all_match = all(matches(container) for container in containers)
-            if not all_match:
-                snap.update_results[image] = "updatable"
-                result.status = "updatable"
+            if identity_error:
+                snap.update_results.pop(image, None)
+                result.status = "check_failed"
+                result.identity_error = identity_error
+                continue
+
+            all_match = all(
+                _normalize_image_id(local) == _normalize_image_id(target)
+                for local, target, field in comparisons
+                if field != "registry_digest"
+            ) and all(legacy_matches)
+            result.status = "up_to_date" if all_match else "updatable"
+            result.current_digest = comparisons[0][0]
+            result.registry_digest = comparisons[0][1]
+            result.matched_field = comparisons[0][2] if all_match else None
+            result.identity_error = None
+            snap.update_results[image] = result.status
         snap.update_count = sum(1 for status in snap.update_results.values() if status == "updatable")
 
 
@@ -2374,7 +2405,7 @@ class SnapshotManager:
 
         def identity_type_changed(image_ref: str, info: dict) -> bool:
             row = rows_by_image.get(image_ref)
-            if row is None:
+            if row is None or row.status in FAILED_UPDATE_STATUSES or row.last_failure_status in FAILED_UPDATE_STATUSES:
                 return False
             target = row.registry_config_digest if info["local_image_id"] else (
                 row.registry_manifest_digest if info["local_manifest_digest"] else None
