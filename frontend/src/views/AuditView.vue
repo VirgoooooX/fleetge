@@ -100,6 +100,9 @@ const auditActionKeys: Record<string, string> = {
   "host.create": "audit.action.host.create",
   "host.update": "audit.action.host.update",
   "host.delete": "audit.action.host.delete",
+  "host.subscription.configure": "audit.action.host.subscription.configure",
+  "host.subscription.renewal": "audit.action.host.subscription.renewal",
+  "host.billing_alerts.configure": "audit.action.host.billing_alerts.configure",
   "host.stack_icons.update": "audit.action.host.stack_icons.update",
   "host.test_connection": "audit.action.host.test_connection",
 };

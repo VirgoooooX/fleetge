@@ -13,7 +13,7 @@ from sqlmodel import Session, select, delete
 
 from app.auth.handler import get_current_user
 from app.database import get_session, engine
-from app.models import HostConfig, AuditLog, ImageUpdateCache
+from app.models import HostConfig, AuditLog, ImageUpdateCache, HostSubscription, HostBillingAlertState
 from app.schemas import (
     HostConfigResponse,
     HostCreateRequest,
@@ -299,6 +299,8 @@ async def delete_host(
 
     # Cascade deletes: delete ImageUpdateCache records for this host
     session.exec(delete(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id))
+    session.exec(delete(HostBillingAlertState).where(HostBillingAlertState.host_id == host_id))
+    session.exec(delete(HostSubscription).where(HostSubscription.host_id == host_id))
     
     # Delete the HostConfig record
     session.delete(host)

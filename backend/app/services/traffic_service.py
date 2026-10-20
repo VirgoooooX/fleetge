@@ -30,6 +30,30 @@ def _utc_aware(value: datetime) -> datetime:
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
+def add_open_traffic_bucket(report: dict, current: dict | None) -> None:
+    if not current or not current.get("currentBucketStart"):
+        return
+    try:
+        bucket_start = datetime.fromisoformat(
+            str(current["currentBucketStart"]).replace("Z", "+00:00")
+        )
+        range_start = datetime.fromisoformat(report["start"])
+        range_end = datetime.fromisoformat(report["end"])
+        if range_start <= bucket_start < range_end:
+            open_rx = max(0, int(current.get("currentBucketRxBytes") or 0))
+            open_tx = max(0, int(current.get("currentBucketTxBytes") or 0))
+            report["rxBytes"] += open_rx
+            report["txBytes"] += open_tx
+            report["totalBytes"] += open_rx + open_tx
+            report["openBucket"] = {
+                "bucketStart": current["currentBucketStart"],
+                "rxBytes": open_rx,
+                "txBytes": open_tx,
+            }
+    except (KeyError, TypeError, ValueError):
+        return
+
+
 def _compact_old_buckets(session: Session) -> None:
     cutoff = datetime.now(timezone.utc) - timedelta(days=90)
     rows = session.exec(

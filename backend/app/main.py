@@ -15,9 +15,11 @@ from app.host_loader import load_hosts_from_yaml
 from app.routers import auth, hosts, stacks, containers, updates, audit, host_mgmt, docker_api, enrollment, traffic
 from app.routers import fleet_map
 from app.routers import settings as settings_router
+from app.routers import subscriptions
 from app.services.snapshot import snapshot_manager
 from app.services.enrollment_service import enrollment_monitor
 from app.services.auto_update import auto_update_manager
+from app.services.billing_service import billing_alert_manager
 from app.routers import auto_updates
 from app.version import __version__
 
@@ -45,11 +47,13 @@ async def lifespan(app: FastAPI):
     await auto_update_manager.start()
     await snapshot_manager.start()
     await enrollment_monitor.start()
+    await billing_alert_manager.start()
 
     yield
 
     # ── Shutdown ───────────────────────────────────────────────────
     logger.info("Shutting down Fleetge backend")
+    await billing_alert_manager.stop()
     await auto_update_manager.stop()
     await enrollment_monitor.stop()
     await snapshot_manager.stop()
@@ -94,6 +98,7 @@ app.include_router(docker_api.router)
 app.include_router(enrollment.admin_router)
 app.include_router(enrollment.public_router)
 app.include_router(traffic.router)
+app.include_router(subscriptions.router)
 app.include_router(fleet_map.router)
 app.include_router(fleet_map.admin_router)
 

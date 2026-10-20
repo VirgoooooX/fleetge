@@ -1,10 +1,11 @@
 """SQLModel ORM models for Fleetge configuration and audit data."""
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 from sqlmodel import SQLModel, Field
-from sqlalchemy import Column, Index, Text, UniqueConstraint
+from sqlalchemy import Column, Index, Numeric, Text, UniqueConstraint
 
 
 class HostConfig(SQLModel, table=True):
@@ -203,6 +204,63 @@ class EnrollmentInvite(SQLModel, table=True):
         default_factory=lambda: datetime.now(timezone.utc),
         sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
     )
+
+
+class HostSubscription(SQLModel, table=True):
+    """Optional billing and traffic-quota settings for one Host."""
+
+    __tablename__ = "host_subscription"
+
+    id: int = Field(primary_key=True, default=None)
+    host_id: str = Field(unique=True, index=True)
+    provider: Optional[str] = None
+    plan_name: Optional[str] = None
+    payment_amount: Optional[Decimal] = Field(
+        default=None,
+        sa_column=Column(Numeric(14, 4), nullable=True),
+    )
+    currency: str = "CNY"
+    payment_cycle: Optional[str] = None
+    next_payment_date: Optional[date] = None
+    service_expiry_date: Optional[date] = None
+    auto_renew: bool = False
+    management_url: Optional[str] = None
+    notes: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    quota_enabled: bool = False
+    traffic_quota_value: Optional[Decimal] = Field(
+        default=None,
+        sa_column=Column(Numeric(16, 6), nullable=True),
+    )
+    traffic_quota_unit: str = "GiB"
+    traffic_direction: str = "both"
+    billing_timezone: str = "Asia/Shanghai"
+    alerts_enabled: bool = True
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+    )
+
+
+class HostBillingAlertState(SQLModel, table=True):
+    """Durable outbox and de-duplication state for billing notifications."""
+
+    __tablename__ = "host_billing_alert_state"
+    __table_args__ = (UniqueConstraint("alert_key", name="uq_host_billing_alert_key"),)
+
+    id: int = Field(primary_key=True, default=None)
+    alert_key: str = Field(index=True)
+    host_id: str = Field(index=True)
+    alert_type: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    notify_url: str = ""
+    notify_recipient: str = ""
+    payload: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+    attempts: int = 0
+    next_attempt_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+    sent_at: Optional[datetime] = None
+    last_error: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class HostTrafficBucket(SQLModel, table=True):

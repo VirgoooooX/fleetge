@@ -38,6 +38,18 @@
         <el-button type="primary" class="ui-button ui-button--primary" :loading="saving" native-type="submit">{{ t('settings.params.save') }}</el-button>
       </div>
     </div>
+    <div class="form-cluster billing-alert-settings">
+      <div class="cluster-title">{{ t('billingAlerts.title') }}</div>
+      <div class="settings-field-list">
+        <div class="settings-field-row billing-alert-row">
+          <div>
+            <div class="settings-field-label">{{ t('billingAlerts.enabled') }}</div>
+            <div class="settings-field-help">{{ t('billingAlerts.help') }}</div>
+          </div>
+          <el-switch v-model="alertsEnabled" :loading="alertsSaving" :disabled="alertsSaving" @change="saveAlertSettings" />
+        </div>
+      </div>
+    </div>
   </el-form>
 </template>
 
@@ -51,6 +63,8 @@ const loading = ref(true);
 const saving = ref(false);
 const keyConfigured = ref(false);
 const clearKey = ref(false);
+const alertsEnabled = ref(true);
+const alertsSaving = ref(false);
 const form = reactive({ url: '', recipient: '', api_key: '' });
 
 function apply(data: { url: string; recipient: string; key_configured: boolean }) {
@@ -63,14 +77,32 @@ function apply(data: { url: string; recipient: string; key_configured: boolean }
 
 onMounted(async () => {
   try {
-    const { data } = await apiClient.get('/api/admin/notifyhub');
-    apply(data);
+    const [notifyResponse, alertsResponse] = await Promise.all([
+      apiClient.get('/api/admin/notifyhub'),
+      apiClient.get('/api/admin/billing-alerts'),
+    ]);
+    apply(notifyResponse.data);
+    alertsEnabled.value = Boolean(alertsResponse.data.enabled);
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || t('autoUpdate.loadError'));
   } finally {
     loading.value = false;
   }
 });
+
+async function saveAlertSettings() {
+  alertsSaving.value = true;
+  try {
+    const { data } = await apiClient.put('/api/admin/billing-alerts', { enabled: alertsEnabled.value });
+    alertsEnabled.value = Boolean(data.enabled);
+    ElMessage.success(t('billingAlerts.saved'));
+  } catch (err: any) {
+    alertsEnabled.value = !alertsEnabled.value;
+    ElMessage.error(err.response?.data?.detail || t('autoUpdate.saveError'));
+  } finally {
+    alertsSaving.value = false;
+  }
+}
 
 async function save() {
   saving.value = true;
@@ -91,6 +123,13 @@ async function save() {
 
 <style scoped>
 .notify-hub-settings { margin-top: 12px; }
+.billing-alert-settings { margin-top: 14px; }
+.billing-alert-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
 .notify-key-field {
   display: flex;
   flex-direction: column;

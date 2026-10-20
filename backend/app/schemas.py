@@ -1,9 +1,13 @@
 """Pydantic schemas for API responses."""
 
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Literal, Optional
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+import re
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ── Auth ────────────────────────────────────────────────────────────────
@@ -376,6 +380,97 @@ class AppProfileEntry(BaseModel):
     app_url: Optional[str] = None
     group: Optional[str] = None
     icon_value: Optional[str] = None
+
+
+class HostSubscriptionUpdate(BaseModel):
+    provider: Optional[str] = Field(default=None, max_length=120)
+    plan_name: Optional[str] = Field(default=None, max_length=160)
+    payment_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    currency: str = Field(default="CNY", min_length=3, max_length=3)
+    payment_cycle: Optional[Literal["monthly", "quarterly", "semiannual", "annual", "once"]] = None
+    next_payment_date: Optional[date] = None
+    service_expiry_date: Optional[date] = None
+    auto_renew: bool = False
+    management_url: Optional[str] = Field(default=None, max_length=2048)
+    notes: Optional[str] = Field(default=None, max_length=4000)
+    quota_enabled: bool = False
+    traffic_quota_value: Optional[Decimal] = Field(default=None, gt=0, max_digits=16, decimal_places=6)
+    traffic_quota_unit: Literal["GB", "TB", "GiB", "TiB"] = "GiB"
+    traffic_direction: Literal["upload", "download", "both", "max"] = "both"
+    billing_timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
+    alerts_enabled: bool = True
+
+    @field_validator("currency")
+    @classmethod
+    def validate_currency(cls, value: str) -> str:
+        value = value.strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", value):
+            raise ValueError("currency must be a three-letter code")
+        return value
+
+    @field_validator("provider", "plan_name", "notes")
+    @classmethod
+    def normalize_optional_text(cls, value: Optional[str]) -> Optional[str]:
+        value = value.strip() if value else None
+        return value or None
+
+    @field_validator("management_url")
+    @classmethod
+    def validate_management_url(cls, value: Optional[str]) -> Optional[str]:
+        value = value.strip() if value else None
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("management_url must be an HTTP(S) URL without credentials")
+        return value
+
+    @field_validator("billing_timezone")
+    @classmethod
+    def validate_billing_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("billing_timezone must be a valid IANA time zone") from exc
+        return value
+
+    @model_validator(mode="after")
+    def validate_quota(self):
+        if self.quota_enabled and self.traffic_quota_value is None:
+            raise ValueError("traffic_quota_value is required when quota management is enabled")
+        return self
+
+
+class RenewalRequest(BaseModel):
+    paid_on: Optional[date] = None
+    # The billing endpoint suggests dates; confirmation always saves explicit values.
+    next_payment_date: Optional[date] = Field(...)
+    service_expiry_date: date
+
+
+class BillingAlertsUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class HostSubscriptionResponse(BaseModel):
+    host_id: str
+    configured: bool
+    provider: Optional[str] = None
+    plan_name: Optional[str] = None
+    payment_amount: Optional[float] = None
+    currency: str = "CNY"
+    payment_cycle: Optional[str] = None
+    next_payment_date: Optional[date] = None
+    service_expiry_date: Optional[date] = None
+    auto_renew: bool = False
+    management_url: Optional[str] = None
+    notes: Optional[str] = None
+    quota_enabled: bool = False
+    traffic_quota_value: Optional[float] = None
+    traffic_quota_unit: str = "GiB"
+    traffic_direction: str = "both"
+    billing_timezone: str = "Asia/Shanghai"
+    alerts_enabled: bool = True
 
 
 class HostConfigResponse(BaseModel):

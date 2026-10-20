@@ -567,8 +567,8 @@
     <el-dialog
       v-model="hostDialogVisible"
       :title="hostFormMode === 'create' ? t('settings.hosts.create') : t('settings.hosts.edit')"
-      width="640px"
-      class="ui-dialog"
+      width="780px"
+      class="ui-dialog subscription-dialog"
       :before-close="closeHostDialog"
     >
       <el-form :model="hostForm" label-position="top" ref="hostFormRef" :rules="hostRules" v-loading="hostFormLoading">
@@ -624,15 +624,113 @@
           </el-form-item>
         </div>
 
+        <el-collapse v-model="hostDialogPanels" class="host-subscription-collapse">
+          <el-collapse-item name="subscription">
+            <template #title>{{ t("settings.hosts.subscription.title") }}</template>
+            <div class="dialog-grid">
+              <el-form-item :label="t('settings.hosts.subscription.provider')">
+                <el-input v-model="subscriptionForm.provider" />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.planName')">
+                <el-input v-model="subscriptionForm.plan_name" />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.amount')">
+                <div class="subscription-inline-inputs">
+                  <el-input-number v-model="subscriptionForm.payment_amount" :min="0" :precision="4" :step="1" />
+                  <el-select v-model="subscriptionForm.currency" class="subscription-currency-select">
+                    <el-option v-for="currency in ['CNY', 'USD', 'EUR', 'GBP', 'JPY']" :key="currency" :label="currency" :value="currency" />
+                  </el-select>
+                </div>
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.paymentCycle')">
+                <el-select v-model="subscriptionForm.payment_cycle" clearable>
+                  <el-option v-for="cycle in paymentCycles" :key="cycle.value" :label="t(cycle.label)" :value="cycle.value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.nextPayment')">
+                <el-date-picker v-model="subscriptionForm.next_payment_date" type="date" value-format="YYYY-MM-DD" clearable />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.expiryDate')">
+                <el-date-picker v-model="subscriptionForm.service_expiry_date" type="date" value-format="YYYY-MM-DD" clearable />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.autoRenew')">
+                <el-switch v-model="subscriptionForm.auto_renew" />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.managementUrl')">
+                <el-input v-model="subscriptionForm.management_url" placeholder="https://" />
+              </el-form-item>
+            </div>
+
+            <el-divider>{{ t("settings.hosts.subscription.traffic") }}</el-divider>
+            <div class="dialog-grid">
+              <el-form-item :label="t('settings.hosts.subscription.quotaEnabled')">
+                <el-switch v-model="subscriptionForm.quota_enabled" />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.quota')">
+                <div class="subscription-inline-inputs">
+                  <el-input-number
+                    v-model="subscriptionForm.traffic_quota_value"
+                    :min="0.000001"
+                    :precision="6"
+                    :step="1"
+                    :disabled="!subscriptionForm.quota_enabled"
+                  />
+                  <el-select v-model="subscriptionForm.traffic_quota_unit" :disabled="!subscriptionForm.quota_enabled" class="subscription-currency-select">
+                    <el-option v-for="unit in ['GB', 'TB', 'GiB', 'TiB']" :key="unit" :label="unit" :value="unit" />
+                  </el-select>
+                </div>
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.direction')">
+                <el-select v-model="subscriptionForm.traffic_direction" :disabled="!subscriptionForm.quota_enabled">
+                  <el-option v-for="direction in trafficDirections" :key="direction.value" :label="t(direction.label)" :value="direction.value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.timezone')">
+                <el-input v-model="subscriptionForm.billing_timezone" placeholder="Asia/Shanghai" :disabled="!subscriptionForm.quota_enabled" />
+              </el-form-item>
+            </div>
+            <div class="form-help subscription-help">{{ t("settings.hosts.subscription.trafficHelp") }}</div>
+
+            <el-divider>{{ t("settings.hosts.subscription.alerts") }}</el-divider>
+            <div class="dialog-grid">
+              <el-form-item :label="t('settings.hosts.subscription.alertsEnabled')">
+                <el-switch v-model="subscriptionForm.alerts_enabled" />
+              </el-form-item>
+              <el-form-item :label="t('settings.hosts.subscription.notes')" class="subscription-notes">
+                <el-input v-model="subscriptionForm.notes" type="textarea" :rows="3" maxlength="4000" show-word-limit />
+              </el-form-item>
+            </div>
+            <div v-if="hostFormMode === 'edit'" class="subscription-renewal-action">
+              <el-button size="small" @click="openRenewalDialog">{{ t("settings.hosts.renewal.open") }}</el-button>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+
         <div class="dialog-actions-row">
           <el-button type="success" plain @click="testFormConnection" :loading="testConnectionLoading">
             {{ t("settings.hosts.action.test") }}
           </el-button>
           <div class="spacer"></div>
           <el-button @click="closeHostDialog">{{ t("compose.cancel") }}</el-button>
-          <el-button type="primary" @click="saveHostForm">{{ t("compose.saveAction") }}</el-button>
+          <el-button type="primary" @click="saveHostForm" :disabled="hostFormMode === 'edit' && !hostSubscriptionLoaded">{{ t("compose.saveAction") }}</el-button>
         </div>
       </el-form>
+    </el-dialog>
+
+    <el-dialog v-model="renewalDialogVisible" :title="t('settings.hosts.renewal.title')" width="520px" class="ui-dialog">
+      <el-form label-position="top" class="settings-form">
+        <el-form-item :label="t('settings.hosts.renewal.nextPayment')">
+          <el-date-picker v-model="renewalForm.next_payment_date" type="date" value-format="YYYY-MM-DD" clearable />
+          <div v-if="renewalSuggestion" class="form-help">{{ t("settings.hosts.renewal.suggestion", { date: renewalSuggestion }) }}</div>
+        </el-form-item>
+        <el-form-item :label="t('settings.hosts.renewal.expiryDate')" required>
+          <el-date-picker v-model="renewalForm.service_expiry_date" type="date" value-format="YYYY-MM-DD" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="renewalDialogVisible = false">{{ t("compose.cancel") }}</el-button>
+        <el-button type="primary" :loading="renewalSaving" @click="confirmRenewal">{{ t("settings.hosts.renewal.confirm") }}</el-button>
+      </template>
     </el-dialog>
 
     <el-dialog
@@ -1173,6 +1271,78 @@ const hostFormMode = ref<"create" | "edit">("create");
 const hostFormLoading = ref(false);
 const testConnectionLoading = ref(false);
 const hostFormRef = ref<FormInstance>();
+const hostSubscriptionLoaded = ref(false);
+let hostDialogRequest = 0;
+const hostDialogPanels = ref<string[]>([]);
+const renewalDialogVisible = ref(false);
+const renewalSaving = ref(false);
+const renewalSuggestion = ref("");
+const renewalForm = reactive({ next_payment_date: "", service_expiry_date: "" });
+
+type PaymentCycle = "monthly" | "quarterly" | "semiannual" | "annual" | "once";
+const paymentCycles = [
+  { value: "monthly", label: "settings.hosts.subscription.cycle.monthly" },
+  { value: "quarterly", label: "settings.hosts.subscription.cycle.quarterly" },
+  { value: "semiannual", label: "settings.hosts.subscription.cycle.semiannual" },
+  { value: "annual", label: "settings.hosts.subscription.cycle.annual" },
+  { value: "once", label: "settings.hosts.subscription.cycle.once" },
+];
+const trafficDirections = [
+  { value: "upload", label: "settings.hosts.subscription.direction.upload" },
+  { value: "download", label: "settings.hosts.subscription.direction.download" },
+  { value: "both", label: "settings.hosts.subscription.direction.both" },
+  { value: "max", label: "settings.hosts.subscription.direction.max" },
+];
+const subscriptionForm = reactive({
+  provider: "",
+  plan_name: "",
+  payment_amount: null as number | null,
+  currency: "CNY",
+  payment_cycle: null as PaymentCycle | null,
+  next_payment_date: "",
+  service_expiry_date: "",
+  auto_renew: false,
+  management_url: "",
+  notes: "",
+  quota_enabled: false,
+  traffic_quota_value: null as number | null,
+  traffic_quota_unit: "GiB",
+  traffic_direction: "both",
+  billing_timezone: "Asia/Shanghai",
+  alerts_enabled: true,
+});
+
+function resetSubscriptionForm() {
+  Object.assign(subscriptionForm, {
+    provider: "",
+    plan_name: "",
+    payment_amount: null,
+    currency: "CNY",
+    payment_cycle: null,
+    next_payment_date: "",
+    service_expiry_date: "",
+    auto_renew: false,
+    management_url: "",
+    notes: "",
+    quota_enabled: false,
+    traffic_quota_value: null,
+    traffic_quota_unit: "GiB",
+    traffic_direction: "both",
+    billing_timezone: "Asia/Shanghai",
+    alerts_enabled: true,
+  });
+}
+
+function applySubscription(data: any) {
+  Object.assign(subscriptionForm, {
+    ...data,
+    payment_cycle: data.payment_cycle || null,
+    next_payment_date: data.next_payment_date || "",
+    service_expiry_date: data.service_expiry_date || "",
+    management_url: data.management_url || "",
+    notes: data.notes || "",
+  });
+}
 
 const hostForm = reactive({
   host_id: "",
@@ -1212,7 +1382,10 @@ const hostRules = reactive<FormRules>({
 });
 
 function openCreateHostDialog() {
+  ++hostDialogRequest;
+  hostFormLoading.value = false;
   hostFormMode.value = "create";
+  hostSubscriptionLoaded.value = true;
   hostForm.host_id = "";
   hostForm.display_name = "";
   hostForm.enabled = true;
@@ -1220,10 +1393,13 @@ function openCreateHostDialog() {
   hostForm.traffic_billing_day = 1;
   hostForm.agent_url = "";
   hostForm.agent_token = "";
+  resetSubscriptionForm();
+  hostDialogPanels.value = [];
   hostDialogVisible.value = true;
 }
 
-function openEditHostDialog(row: HostConfigResponse) {
+async function openEditHostDialog(row: HostConfigResponse) {
+  const requestId = ++hostDialogRequest;
   hostFormMode.value = "edit";
   hostForm.host_id = row.host_id;
   hostForm.display_name = row.display_name;
@@ -1232,10 +1408,30 @@ function openEditHostDialog(row: HostConfigResponse) {
   hostForm.traffic_billing_day = row.traffic_billing_day || 1;
   hostForm.agent_url = row.agent_url || "";
   hostForm.agent_token = "";
+  resetSubscriptionForm();
+  hostSubscriptionLoaded.value = false;
+  hostDialogPanels.value = [];
   hostDialogVisible.value = true;
+  hostFormLoading.value = true;
+  try {
+    const { data } = await apiClient.get(`/api/hosts/${encodeURIComponent(row.host_id)}/subscription`);
+    if (requestId !== hostDialogRequest || !hostDialogVisible.value) return;
+    applySubscription(data);
+    hostSubscriptionLoaded.value = true;
+  } catch (err: any) {
+    if (requestId === hostDialogRequest && hostDialogVisible.value) {
+      ElMessage.error(err.response?.data?.detail || t("settings.hosts.subscription.loadError"));
+    }
+  } finally {
+    if (requestId === hostDialogRequest) hostFormLoading.value = false;
+  }
 }
 
 function closeHostDialog() {
+  ++hostDialogRequest;
+  hostForm.agent_token = "";
+  hostFormLoading.value = false;
+  renewalDialogVisible.value = false;
   hostDialogVisible.value = false;
   hostFormRef.value?.clearValidate();
 }
@@ -1258,26 +1454,92 @@ function prepareHostPayload() {
 }
 
 async function saveHostForm() {
-  if (!hostFormRef.value) return;
-  await hostFormRef.value.validate(async (valid) => {
-    if (!valid) return;
-    hostFormLoading.value = true;
-    try {
-      const payload = prepareHostPayload();
-      if (hostFormMode.value === "create") {
-        await store.createHost(payload);
-        ElMessage.success(t("settings.hosts.create.success"));
-      } else {
-        await store.updateHost(hostForm.host_id, payload);
-        ElMessage.success(t("settings.hosts.update.success"));
-      }
-      closeHostDialog();
-    } catch (err: any) {
-      ElMessage.error(err || t("settings.hosts.save.error"));
-    } finally {
-      hostFormLoading.value = false;
+  if (!hostFormRef.value || hostFormLoading.value || !hostSubscriptionLoaded.value) return;
+  const requestId = hostDialogRequest;
+  const valid = await hostFormRef.value.validate().then(() => true).catch(() => false);
+  if (!valid || requestId !== hostDialogRequest || !hostDialogVisible.value) return;
+  if (subscriptionForm.quota_enabled && !subscriptionForm.traffic_quota_value) {
+    ElMessage.error(t("settings.hosts.subscription.quotaRequired"));
+    return;
+  }
+
+  const payload = prepareHostPayload();
+  const creating = hostFormMode.value === "create";
+  const hostId = hostForm.host_id;
+  const subscriptionPayload = {
+    ...subscriptionForm,
+    payment_cycle: subscriptionForm.payment_cycle || null,
+    payment_amount: subscriptionForm.payment_amount,
+    next_payment_date: subscriptionForm.next_payment_date || null,
+    service_expiry_date: subscriptionForm.service_expiry_date || null,
+    management_url: subscriptionForm.management_url || null,
+    notes: subscriptionForm.notes || null,
+    traffic_quota_value: subscriptionForm.traffic_quota_value,
+  };
+  hostFormLoading.value = true;
+  try {
+    if (creating) {
+      await store.createHost(payload);
+      if (requestId === hostDialogRequest) hostFormMode.value = "edit";
+    } else {
+      await store.updateHost(hostId, payload);
     }
-  });
+    if (requestId === hostDialogRequest) hostForm.agent_token = "";
+    await apiClient.put(`/api/hosts/${encodeURIComponent(hostId)}/subscription`, subscriptionPayload);
+    if (requestId !== hostDialogRequest || !hostDialogVisible.value) return;
+    ElMessage.success(t(creating ? "settings.hosts.create.success" : "settings.hosts.update.success"));
+    closeHostDialog();
+  } catch (err: any) {
+    if (requestId === hostDialogRequest && hostDialogVisible.value) {
+      ElMessage.error(err.response?.data?.detail || err || t("settings.hosts.save.error"));
+    }
+  } finally {
+    if (requestId === hostDialogRequest) hostFormLoading.value = false;
+  }
+}
+
+async function openRenewalDialog() {
+  const requestId = hostDialogRequest;
+  renewalForm.next_payment_date = "";
+  renewalForm.service_expiry_date = "";
+  renewalSuggestion.value = "";
+  try {
+    const { data } = await apiClient.get(`/api/hosts/${encodeURIComponent(hostForm.host_id)}/billing`);
+    if (requestId !== hostDialogRequest || !hostDialogVisible.value) return;
+    renewalSuggestion.value = data.recommendedNextPaymentDate || "";
+    renewalForm.next_payment_date = data.recommendedNextPaymentDate || "";
+  } catch (err: any) {
+    if (requestId !== hostDialogRequest || !hostDialogVisible.value) return;
+    ElMessage.error(err.response?.data?.detail || t("settings.hosts.renewal.loadError"));
+  }
+  renewalDialogVisible.value = true;
+}
+
+async function confirmRenewal() {
+  if (renewalSaving.value) return;
+  const requestId = hostDialogRequest;
+  if (!renewalForm.service_expiry_date) {
+    ElMessage.error(t("settings.hosts.renewal.expiryRequired"));
+    return;
+  }
+  renewalSaving.value = true;
+  try {
+    const { data } = await apiClient.post(`/api/hosts/${encodeURIComponent(hostForm.host_id)}/renewal`, {
+      next_payment_date: renewalForm.next_payment_date || null,
+      service_expiry_date: renewalForm.service_expiry_date,
+    });
+    if (requestId !== hostDialogRequest || !hostDialogVisible.value) return;
+    subscriptionForm.next_payment_date = data.paymentDate || "";
+    subscriptionForm.service_expiry_date = data.serviceExpiryDate || "";
+    renewalDialogVisible.value = false;
+    ElMessage.success(t("settings.hosts.renewal.success"));
+  } catch (err: any) {
+    if (requestId === hostDialogRequest && hostDialogVisible.value) {
+      ElMessage.error(err.response?.data?.detail || t("settings.hosts.renewal.saveError"));
+    }
+  } finally {
+    renewalSaving.value = false;
+  }
 }
 
 async function toggleHostEnabled(row: HostConfigResponse) {
@@ -1722,6 +1984,9 @@ const auditActionKeys: Record<string, string> = {
   "host.create": "audit.action.host.create",
   "host.update": "audit.action.host.update",
   "host.delete": "audit.action.host.delete",
+  "host.subscription.configure": "audit.action.host.subscription.configure",
+  "host.subscription.renewal": "audit.action.host.subscription.renewal",
+  "host.billing_alerts.configure": "audit.action.host.billing_alerts.configure",
   "host.stack_icons.update": "audit.action.host.stack_icons.update",
   "host.test_connection": "audit.action.host.test_connection",
 };
@@ -2195,6 +2460,58 @@ onBeforeUnmount(() => {
   border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 16px;
+}
+
+.host-subscription-collapse {
+  margin-top: 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-panel);
+}
+
+.host-subscription-collapse :deep(.el-collapse-item__header) {
+  padding: 0 16px;
+  color: var(--text-primary);
+  background: transparent;
+  font-weight: 700;
+}
+
+.host-subscription-collapse :deep(.el-collapse-item__wrap) {
+  background: transparent;
+}
+
+.host-subscription-collapse :deep(.el-collapse-item__content) {
+  padding: 16px;
+}
+
+.host-subscription-collapse :deep(.el-date-editor.el-input),
+.host-subscription-collapse :deep(.el-select),
+.subscription-inline-inputs .el-input-number {
+  width: 100%;
+}
+
+.subscription-inline-inputs {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+}
+
+.subscription-currency-select {
+  flex: 0 0 96px;
+}
+
+.subscription-notes {
+  grid-column: 1 / -1;
+}
+
+.subscription-help {
+  margin-top: -6px;
+}
+
+.subscription-renewal-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .dialog-actions-row {

@@ -1,4 +1,4 @@
-"""SQLite database engine with WAL mode, single-connection for single-worker."""
+"""Database engine with SQLite WAL mode and SQLAlchemy URL support."""
 
 from pathlib import Path
 
@@ -9,6 +9,8 @@ from app.config import get_settings
 
 def _get_db_path(url: str) -> str:
     """Convert sqlite:///./path to absolute path, ensuring directory exists."""
+    if url in {"sqlite://", "sqlite:///:memory:"}:
+        return ":memory:"
     if url.startswith("sqlite:///"):
         rel = url[len("sqlite:///"):]
         p = Path(rel).resolve()
@@ -19,16 +21,37 @@ def _get_db_path(url: str) -> str:
 
 def create_engine_and_tables():
     settings = get_settings()
-    db_path = _get_db_path(settings.DATABASE_URL)
+    database_url = settings.DATABASE_URL
+    is_sqlite = database_url.startswith("sqlite:")
+    if is_sqlite:
+        db_path = _get_db_path(database_url)
+        database_url = "sqlite:///:memory:" if db_path == ":memory:" else f"sqlite:///{db_path}"
 
     engine = create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={
-            "check_same_thread": False,
-            # Enable WAL mode for better concurrent read/write in single-worker
-        },
+        database_url,
+        connect_args={"check_same_thread": False} if is_sqlite else {},
         echo=settings.LOG_LEVEL == "debug",
     )
+
+    # Import models before create_all so each supported dialect sees every table.
+    from app.models import (  # noqa: F401
+        AuditLog,
+        StackAutoUpdate,
+        AutoUpdateRun,
+        EnrollmentInvite,
+        HostConfig,
+        HostBillingAlertState,
+        HostSubscription,
+        HostTrafficBucket,
+        HostTrafficCursor,
+        HostTrafficDaily,
+        ImageUpdateCache,
+        Setting,
+    )
+
+    if not is_sqlite:
+        SQLModel.metadata.create_all(engine)
+        return engine
 
     # Enable WAL mode — use exec_driver_sql for raw PRAGMA statements
     with engine.connect() as conn:
@@ -111,20 +134,6 @@ def create_engine_and_tables():
             pass
              
         conn.commit()
-
-    # Import models so SQLModel.metadata knows about them before create_all
-    from app.models import (  # noqa: F401
-        AuditLog,
-        StackAutoUpdate,
-        AutoUpdateRun,
-        EnrollmentInvite,
-        HostConfig,
-        HostTrafficBucket,
-        HostTrafficCursor,
-        HostTrafficDaily,
-        ImageUpdateCache,
-        Setting,
-    )
 
     SQLModel.metadata.create_all(engine)
     with engine.connect() as conn:

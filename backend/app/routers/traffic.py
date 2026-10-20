@@ -1,7 +1,5 @@
 """Authenticated Host WAN traffic APIs."""
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
@@ -9,6 +7,7 @@ from app.auth.handler import get_current_user
 from app.database import engine
 from app.models import HostConfig
 from app.services.agent_client import AgentClient
+from app.services.traffic_service import add_open_traffic_bucket as _add_open_bucket
 from app.services.traffic_service import build_traffic_report, sync_host_traffic
 
 router = APIRouter(prefix="/api/hosts", tags=["traffic"], dependencies=[Depends(get_current_user)])
@@ -32,30 +31,6 @@ async def _current_traffic(host: HostConfig) -> dict | None:
         return None
     finally:
         await client.close()
-
-
-def _add_open_bucket(report: dict, current: dict | None) -> None:
-    if not current or not current.get("currentBucketStart"):
-        return
-    try:
-        bucket_start = datetime.fromisoformat(
-            str(current["currentBucketStart"]).replace("Z", "+00:00")
-        )
-        range_start = datetime.fromisoformat(report["start"])
-        range_end = datetime.fromisoformat(report["end"])
-        if range_start <= bucket_start < range_end:
-            open_rx = max(0, int(current.get("currentBucketRxBytes") or 0))
-            open_tx = max(0, int(current.get("currentBucketTxBytes") or 0))
-            report["rxBytes"] += open_rx
-            report["txBytes"] += open_tx
-            report["totalBytes"] += open_rx + open_tx
-            report["openBucket"] = {
-                "bucketStart": current["currentBucketStart"],
-                "rxBytes": open_rx,
-                "txBytes": open_tx,
-            }
-    except (KeyError, TypeError, ValueError):
-        return
 
 
 def _compact_range(report: dict) -> dict:
