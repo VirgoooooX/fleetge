@@ -548,12 +548,11 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   flex-shrink: 0;
 }
 
-/* 文字垂直对齐微调：抵消中文字形底部分离空间，实现与矢量图标视觉轴心精准对齐 */
+/* 文字垂直对齐：与胶囊容器和矢量图标视觉轴心精准居中对齐 */
 .chip-text {
   display: inline-flex;
   align-items: center;
   line-height: 1;
-  transform: translateY(-1px);
   letter-spacing: 0.01em;
 }
 
