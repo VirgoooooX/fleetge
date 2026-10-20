@@ -2,7 +2,7 @@ import asyncio
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
@@ -15,7 +15,7 @@ os.environ.setdefault(
     f"sqlite:///{os.path.join(tempfile.gettempdir(), 'host_dashboard_test.db')}",
 )
 
-from app.models import HostConfig, ImageUpdateCache
+from app.models import HostConfig, HostSubscription, ImageUpdateCache
 from app.schemas import DockerDiskUsage, UpdateCheckResult
 from app.services.snapshot import HostSnapshot, SnapshotManager
 from app.services import update_check as update_check_module
@@ -58,6 +58,27 @@ class SnapshotManagerTests(unittest.TestCase):
         summary = manager.build_host_summary(snap)
 
         self.assertEqual(summary.image_count, 7)
+
+    def test_host_subscription_dates_are_serialized_in_summaries_and_metrics(self):
+        manager = SnapshotManager()
+        snap = HostSnapshot()
+        snap.host_config = HostConfig(host_id="host-a")
+        manager._snapshots = {"host-a": snap}
+        for payment, expiry in (
+            (date(2027, 7, 2), date(2027, 7, 1)),
+            (date(2027, 7, 2), None),
+            (None, date(2027, 7, 1)),
+            (None, None),
+        ):
+            with self.subTest(payment=payment, expiry=expiry):
+                snap.subscription = HostSubscription(
+                    host_id="host-a", provider="Test provider",
+                    next_payment_date=payment, service_expiry_date=expiry,
+                )
+                summary = manager.build_host_summary(snap).model_dump(mode="json")
+                self.assertEqual(summary["subscription"]["next_payment_date"], payment.isoformat() if payment else None)
+                self.assertEqual(summary["subscription"]["service_expiry_date"], expiry.isoformat() if expiry else None)
+                manager.current_metrics_payload()
 
     def test_failed_update_cache_rows_are_hidden_from_visible_snapshot_index(self):
         manager = SnapshotManager()
