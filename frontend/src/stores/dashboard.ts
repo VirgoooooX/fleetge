@@ -53,6 +53,24 @@ export interface HostSummary {
   docker_disk_build_cache?: number;
   update_count: number;
   error_message?: string;
+  subscription?: HostSubscriptionSummary | null;
+}
+
+export interface HostSubscriptionSummary {
+  configured: boolean;
+  provider?: string | null;
+  plan_name?: string | null;
+  payment_amount?: number | null;
+  currency?: string;
+  payment_cycle?: string | null;
+  next_payment_date?: string | null;
+  payment_days_remaining?: number | null;
+  service_expiry_date?: string | null;
+  service_days_remaining?: number | null;
+  auto_renew?: boolean;
+  quota_enabled?: boolean;
+  traffic_direction?: string;
+  management_url?: string | null;
 }
 
 export interface TrafficRangeSummary {
@@ -65,12 +83,35 @@ export interface TrafficRangeSummary {
   hasData: boolean;
 }
 
+export interface TrafficQuotaSummary {
+  hostId: string;
+  enabled: boolean;
+  configured: boolean;
+  status: "normal" | "over_quota" | "incomplete" | "unconfigured";
+  billingTimezone: string;
+  billingDay: number;
+  periodStart?: string;
+  periodEnd?: string;
+  nextResetAt?: string;
+  nextResetText?: string | null;
+  quotaValue?: number | null;
+  quotaUnit?: string;
+  quotaBytes?: number | null;
+  direction?: string;
+  usedBytes?: number | null;
+  remainingBytes?: number | null;
+  overageBytes?: number | null;
+  usagePercent?: number | null;
+  overQuota?: boolean;
+}
+
 export interface HostTrafficSummary {
   hostId: string;
   timezone: string;
   billingDay: number;
   today: TrafficRangeSummary;
   month: TrafficRangeSummary;
+  quota?: TrafficQuotaSummary | null;
 }
 
 export interface HostTrafficState {

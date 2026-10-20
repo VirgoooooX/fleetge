@@ -22,6 +22,7 @@ from app.services.billing_service import (
     set_billing_alerts_enabled,
     subscription_payload,
 )
+from app.services.snapshot import snapshot_manager
 
 router = APIRouter(prefix="/api", tags=["subscriptions"], dependencies=[Depends(get_current_user)])
 
@@ -73,6 +74,7 @@ async def update_subscription(
         ))
         session.commit()
         session.refresh(subscription)
+        await snapshot_manager.refresh_hosts()
         return subscription_payload(host_id, subscription)
 
 
@@ -132,6 +134,7 @@ async def confirm_renewal(
         ))
         session.commit()
         session.refresh(subscription)
+        await snapshot_manager.refresh_hosts()
         return billing_summary(host_id, subscription)
 
 

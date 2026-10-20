@@ -5,10 +5,11 @@ from sqlmodel import Session, select
 
 from app.auth.handler import get_current_user
 from app.database import engine
-from app.models import HostConfig
+from app.models import HostConfig, HostSubscription, HostTrafficCursor
 from app.services.agent_client import AgentClient
+from app.services.billing_service import quota_summary
 from app.services.traffic_service import add_open_traffic_bucket as _add_open_bucket
-from app.services.traffic_service import build_traffic_report, sync_host_traffic
+from app.services.traffic_service import _parse_timestamp, build_traffic_report, sync_host_traffic
 
 router = APIRouter(prefix="/api/hosts", tags=["traffic"], dependencies=[Depends(get_current_user)])
 
@@ -86,12 +87,40 @@ async def traffic_summary(
     current = await _current_traffic(host)
     _add_open_bucket(today, current)
     _add_open_bucket(month, current)
+
+    quota = None
+    with Session(engine) as session:
+        subscription = session.get(HostSubscription, host_id)
+        cursor = session.get(HostTrafficCursor, host_id)
+        cursor_error = cursor.last_error if cursor else None
+
+    if subscription and subscription.quota_enabled:
+        current_error = None if host.agent_url else "agent_unavailable"
+        sync_error = None
+        if sync_result:
+            sync_error = sync_result.get("error")
+            if sync_result.get("supported") is False and not sync_error:
+                sync_error = "unsupported"
+        try:
+            quota = quota_summary(
+                host,
+                subscription,
+                month,
+                sync_error=sync_error,
+                current_error=current_error,
+                cursor_error=cursor_error,
+                now=_parse_timestamp(month["end"]),
+            )
+        except Exception:
+            quota = None
+
     return {
         "hostId": host_id,
         "timezone": today["timezone"],
         "billingDay": host.traffic_billing_day,
         "today": _compact_range(today),
         "month": _compact_range(month),
+        "quota": quota,
         "sync": sync_result,
     }
 

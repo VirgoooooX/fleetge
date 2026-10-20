@@ -18,11 +18,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
+from zoneinfo import ZoneInfo
 from sqlmodel import select
 
 from app.config import get_settings
 from app.database import engine, Session
-from app.models import HostConfig, ImageUpdateCache
+from app.models import HostConfig, HostSubscription, ImageUpdateCache
 from app.schemas import (
     ContainerStats,
     ContainerSummary,
@@ -30,12 +31,14 @@ from app.schemas import (
     DockerInfo,
     DockerDiskUsage,
     HostMetrics,
+    HostSubscriptionSummary,
     HostSummary,
     StackSummary,
     StackService,
     UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
+from app.services.billing_service import _date_status, subscription_is_configured
 from app.services.update_check import MANIFEST_MEDIA_TYPES, _extract_local_digest, _parse_platform, _platform_matches, run_update_check
 
 logger = logging.getLogger(__name__)
@@ -163,6 +166,7 @@ class HostSnapshot:
         self.update_results: dict[str, str] = {}  # image_ref -> status (up_to_date/updatable/...)
         self.update_check_results: list[UpdateCheckResult] = []
         self.update_count: int = 0
+        self.subscription: Optional[HostSubscription] = None
 
 
 class SnapshotManager:
@@ -1183,6 +1187,7 @@ class SnapshotManager:
         """
         with Session(engine) as session:
             hosts = session.query(HostConfig).filter(HostConfig.enabled == True).all()
+            subscriptions = {s.host_id: s for s in session.query(HostSubscription).all()}
 
         async with self._lock:
             # Remove hosts no longer configured
@@ -1198,6 +1203,7 @@ class SnapshotManager:
                 if h.host_id not in self._snapshots:
                     snap = HostSnapshot()
                     snap.host_config = h
+                    snap.subscription = subscriptions.get(h.host_id)
                     self._snapshots[h.host_id] = snap
                 else:
                     snap = self._snapshots[h.host_id]
@@ -1210,6 +1216,7 @@ class SnapshotManager:
                         )
                     )
                     snap.host_config = h
+                    snap.subscription = subscriptions.get(h.host_id)
                     if connection_changed:
                         stale_client = self._agent_clients.pop(h.host_id, None)
                         if stale_client is not None:
@@ -2486,6 +2493,33 @@ class SnapshotManager:
         else:
             effective_status = snap.status
 
+        sub_summary = None
+        sub = snap.subscription
+        if sub and subscription_is_configured(sub):
+            try:
+                tz = ZoneInfo(sub.billing_timezone)
+            except Exception:
+                tz = timezone.utc
+            local_today = datetime.now(tz).date()
+            _, expiry_days = _date_status(sub.service_expiry_date, local_today)
+            _, payment_days = _date_status(sub.next_payment_date, local_today)
+            sub_summary = HostSubscriptionSummary(
+                configured=True,
+                provider=sub.provider,
+                plan_name=sub.plan_name,
+                payment_amount=float(sub.payment_amount) if sub.payment_amount is not None else None,
+                currency=sub.currency or "CNY",
+                payment_cycle=sub.payment_cycle,
+                next_payment_date=sub.next_payment_date,
+                payment_days_remaining=payment_days,
+                service_expiry_date=sub.service_expiry_date,
+                service_days_remaining=expiry_days,
+                auto_renew=sub.auto_renew,
+                quota_enabled=sub.quota_enabled,
+                traffic_direction=sub.traffic_direction or "both",
+                management_url=sub.management_url,
+            )
+
         return HostSummary(
             host_id=cfg.host_id,
             display_name=cfg.display_name or cfg.host_id,
@@ -2507,6 +2541,7 @@ class SnapshotManager:
             docker_disk_build_cache=disk.build_cache_size if disk else None,
             update_count=snap.update_count,  # From update_check background task
             error_message=snap.error_message,  # From snapshot error state
+            subscription=sub_summary,
         )
 
 

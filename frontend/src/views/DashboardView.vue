@@ -63,9 +63,19 @@
         :traffic="store.getHostTrafficState(host.host_id)"
         :update-count="store.getHostUpdateCount(host.host_id)"
         @click="goToHost(host.host_id)"
-        @updates="goToHost(host.host_id)"
+        @updates="router.push({ name: 'apps', query: { host: host.host_id, status: 'updatable' } })"
+        @open-bill="openHostBill(host)"
       />
     </main>
+
+    <SubscriptionBillDialog
+      v-model="billDialogVisible"
+      :host-name="activeBillHost?.display_name || ''"
+      :subscription="activeBillData"
+      :traffic="activeQuotaData"
+      @edit="goToSettings(activeBillHost?.host_id)"
+      @renew="handleRenewSuccess"
+    />
 
     <el-empty
       v-if="!store.loading && store.hosts.length === 0"
@@ -75,11 +85,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { useDashboardStore } from "@/stores/dashboard";
+import { apiClient } from "@/api/client";
 import HostCard from "@/components/HostCard.vue";
+import SubscriptionBillDialog from "@/components/SubscriptionBillDialog.vue";
 import { Monitor, CheckCircle, XCircle, Download } from "@lucide/vue";
 
 const router = useRouter();
@@ -127,6 +139,29 @@ onUnmounted(() => {
 function goToHost(hostId: string) {
   router.push(`/hosts/${hostId}`);
 }
+
+const billDialogVisible = ref(false);
+const activeBillHost = ref<any>(null);
+const activeBillData = ref<any>(null);
+const activeQuotaData = ref<any>(null);
+
+function openHostBill(host: any) {
+  activeBillHost.value = host;
+  activeBillData.value = host.subscription || null;
+  activeQuotaData.value = store.getHostTrafficState(host.host_id)?.summary?.quota || null;
+  billDialogVisible.value = true;
+}
+
+function goToSettings(hostId?: string) {
+  billDialogVisible.value = false;
+  router.push({ name: "settings", query: { tab: "hosts", host: hostId } });
+}
+
+function handleRenewSuccess() {
+  if (activeBillHost.value) {
+    void store.fetchHosts();
+  }
+}
 </script>
 
 <style scoped>
@@ -152,6 +187,7 @@ function goToHost(hostId: string) {
 .overview-copy {
   min-width: 0;
 }
+
 
 .overview-copy .ui-dashboard-description {
   max-width: 390px;

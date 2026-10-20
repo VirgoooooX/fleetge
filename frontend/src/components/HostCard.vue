@@ -1,760 +1,928 @@
 <template>
-  <el-card class="host-card" shadow="never" @click="$emit('click')">
-    <!-- Header: hostname / OS / update badge -->
-    <div class="card-header-row">
-      <div class="card-header-left">
-        <StatusIcon :status="host.status" />
-        <div class="card-header-text">
-          <span class="host-name font-bold">{{ host.display_name }}</span>
-          <span v-if="displayUpdateCount > 0" class="m-badge-danger" @click.stop="$emit('updates')">
-            {{ t('hostCard.updates', { count: displayUpdateCount }) }}
-          </span>
+  <article
+    class="host-card host-card-v1"
+    :class="[`is-${host.status}`, { 'has-error': !!host.error_message }]"
+    @click="$emit('click')"
+  >
+    <!-- Top Header: Identity & Actionable Badges -->
+    <header class="card-header">
+      <div class="identity-left">
+        <!-- 呼吸脉冲指示灯：表达在线/离线，在线时消除右侧胶囊冗余 -->
+        <span class="status-pulse" :class="`is-${host.status}`" />
+        <div class="title-group">
+          <div class="name-row">
+            <h3 class="host-name" :title="host.display_name">{{ host.display_name }}</h3>
+            <span class="host-meta-badge">{{ host.os_info || host.architecture || 'Linux' }}</span>
+          </div>
         </div>
       </div>
-      <div class="card-header-right">
-        <!-- Error Tooltip -->
-        <el-tooltip
-          v-if="hasError"
-          :content="refreshIssueText"
-          placement="top"
-          effect="dark"
+
+      <div class="badges-right">
+        <!-- 待更新镜像徽标：矢量描边升级圆环，无 emoji，严格居中 -->
+        <button
+          v-if="displayUpdateCount > 0"
+          type="button"
+          class="badge-chip is-update"
+          :title="t('hostCard.updates', { count: displayUpdateCount })"
+          @click.stop="$emit('updates')"
         >
-          <span class="error-badge" :class="`is-${statusTone}`">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="8" x2="12" y2="12"/>
-              <line x1="12" y1="16" x2="12.01" y2="16"/>
-            </svg>
-          </span>
-        </el-tooltip>
-
-        <!-- Status Tag -->
-        <span class="m-status-pill" :class="`is-${statusTone}`">
-          {{ statusLabel }}
-        </span>
-      </div>
-    </div>
-    <div class="host-subtitle">{{ host.os_info || host.metrics?.hostname || host.host_id }}</div>
-
-    <!-- Capacity: CPU / memory / disk with progress bars and Sparkline -->
-    <div v-if="host.metrics" class="m-capacity-grid">
-      <!-- CPU Sub-card -->
-      <div class="m-sub-card">
-        <div class="m-sub-card-header">
-          <div class="icon-wrapper cpu-color" v-html="vibrantIcons.cpu"></div>
-          <span class="sub-label">{{ t('hostCard.cpu') }}</span>
-        </div>
-        <div class="sub-value font-bold">
-          <span class="val-amount">{{ host.metrics.cpuPercent.toFixed(1) }}</span>
-          <span class="val-unit">%</span>
-        </div>
-        
-        <!-- SVG Sparkline for CPU -->
-        <div class="sub-chart">
-          <svg width="100%" height="24" viewBox="0 0 100 24" preserveAspectRatio="none">
-            <defs>
-              <linearGradient :id="`cpuGrad-${host.host_id}`" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stop-color="var(--accent-blue)" stop-opacity="0.45"/>
-                <stop offset="100%" stop-color="var(--accent-blue)" stop-opacity="0.04"/>
-              </linearGradient>
-            </defs>
-            <path v-if="cpuPaths.fill" :d="cpuPaths.fill" :fill="`url(#cpuGrad-${host.host_id})`"/>
-            <path v-if="cpuPaths.stroke" :d="cpuPaths.stroke" fill="none" stroke="var(--accent-blue)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <svg class="chip-svg" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="m16 12-4-4-4 4"/>
+            <path d="M12 16V8"/>
           </svg>
-        </div>
-      </div>
+          <span class="chip-text">{{ displayUpdateCount }} {{ t('dashboard.updates') || '更新' }}</span>
+        </button>
 
-      <!-- Memory Sub-card -->
-      <div class="m-sub-card">
-        <div class="m-sub-card-header">
-          <div class="icon-wrapper mem-color" v-html="vibrantIcons.mem"></div>
-          <span class="sub-label">{{ t('hostCard.memory') }}</span>
-        </div>
-        <div class="sub-value font-bold">
-          {{ formatBytes(host.metrics.memoryUsed) }}
-          <small>/ {{ formatBytes(host.metrics.memoryTotal) }}</small>
-        </div>
-        
-        <!-- Progress Row -->
-        <div class="m-progress-row">
-          <div class="m-progress-track">
-            <div class="m-progress-fill" :style="{ width: `${memPercent}%`, background: metricColor(memPercent) }"></div>
-          </div>
-          <span class="m-percent-label">{{ memPercent }}%</span>
-        </div>
-      </div>
+        <!-- 到期天数：五级状态阶梯渐变色（>30天青蓝, 15-30天靛蓝, 8-14天琥珀, 1-7天橙红, <=0天红警报） -->
+        <button
+          v-if="effectiveExpiryDays != null"
+          type="button"
+          class="badge-chip is-expiry"
+          :class="`expiry-${getExpiryTier(effectiveExpiryDays)}`"
+          title="点击查看账单与续费详情"
+          @click.stop="$emit('open-bill')"
+        >
+          <svg class="chip-svg" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="18" height="18" x="3" y="4" rx="2" ry="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+          </svg>
+          <span class="chip-text">{{ formatExpiryText(effectiveExpiryDays) }}</span>
+        </button>
 
-      <!-- Disk Sub-card -->
-      <div class="m-sub-card">
-        <div class="m-sub-card-header">
-          <div class="icon-wrapper disk-color" v-html="vibrantIcons.disk"></div>
-          <span class="sub-label">{{ t('hostCard.disk') }}</span>
-        </div>
-        <div class="sub-value font-bold">
-          {{ formatBytes(host.metrics.diskUsed) }}
-          <small>/ {{ formatBytes(host.metrics.diskTotal) }}</small>
-        </div>
-        
-        <!-- Progress Row -->
-        <div class="m-progress-row">
-          <div class="m-progress-track">
-            <div class="m-progress-fill" :style="{ width: `${diskPercent}%`, background: metricColor(diskPercent) }"></div>
-          </div>
-          <span class="m-percent-label">{{ diskPercent }}%</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Network: full-width live / today / month summary -->
-    <HostNetworkTraffic
-      v-if="host.metrics"
-      class="m-network-block"
-      :host-id="host.host_id"
-      :metrics="host.metrics"
-      :traffic="traffic"
-      variant="card"
-    />
-
-    <!-- Disk I/O is intentionally secondary to Host WAN traffic. -->
-    <div v-if="host.metrics" class="m-io-strip">
-      <span class="m-io-strip__label">{{ t('hostDetail.diskIO') }}</span>
-      <div class="m-io-strip__metric" :title="`${t('hostDetail.diskIO')} · ${t('hostCard.read')}`">
-        <span class="m-io-strip__arrow is-down">↓</span>
-        <strong>{{ formatRateParts(host.metrics.diskReadRate).amount }}</strong>
-        <small>{{ formatRateParts(host.metrics.diskReadRate).unit }}</small>
-      </div>
-      <div class="m-io-strip__metric" :title="`${t('hostDetail.diskIO')} · ${t('hostCard.write')}`">
-        <span class="m-io-strip__arrow is-up">↑</span>
-        <strong>{{ formatRateParts(host.metrics.diskWriteRate).amount }}</strong>
-        <small>{{ formatRateParts(host.metrics.diskWriteRate).unit }}</small>
-      </div>
-    </div>
-
-    <div v-else class="metrics-missing">{{ t('hostCard.metricsUnavailable') }}</div>
-
-    <!-- Footer: container counts / images / version -->
-    <div class="m-footer">
-      <div class="m-foot-item flex-center" :title="t('hostCard.runningContainers')">
-        <span class="foot-dot green"></span>
-        <strong>{{ host.container_running }}</strong>
-      </div>
-      <div class="m-foot-item flex-center" :title="t('hostCard.stoppedContainers')">
-        <span class="foot-dot red"></span>
-        <strong>{{ host.container_stopped }}</strong>
-      </div>
-      <div class="m-foot-item flex-center m-foot-item--images" :title="t('hostCard.imageCount')">
-        <span class="footer-icon-wrap" v-html="vibrantIcons.images"></span>
-        <strong>{{ host.image_count }}</strong>
-      </div>
-      <div class="m-foot-item flex-center m-foot-item--version" :title="`Docker ${host.docker_version || '-'}`">
-        <span class="footer-icon-wrap docker-icon" v-html="vibrantIcons.docker"></span>
-        <span class="m-version-text">
-          {{ host.docker_version ? `v${host.docker_version}` : '-' }}
+        <!-- 异常/离线时才突出状态胶囊（管理异常原则：正常在线时不堆砌胶囊） -->
+        <span v-if="host.status !== 'online'" class="badge-chip status-alert-chip" :class="`is-${host.status}`">
+          <span class="chip-text">{{ getStatusLabel(host.status) }}</span>
         </span>
       </div>
+    </header>
+
+    <!-- Normal Metrics Body -->
+    <div v-if="host.metrics" class="card-body">
+      <!-- 1. 无界三联算力微轨 -->
+      <section class="compute-rail-group">
+        <!-- CPU -->
+        <div class="compute-rail-item">
+          <div class="rail-top">
+            <span class="rail-label">{{ t('hostCard.cpu') }}</span>
+            <strong class="rail-val font-mono" :style="{ color: getMetricColor(cpuPercent) }">
+              {{ cpuPercent.toFixed(1) }}%
+            </strong>
+          </div>
+          <div class="rail-track">
+            <div
+              class="rail-fill"
+              :style="{ width: `${cpuPercent}%`, background: getMetricColor(cpuPercent) }"
+            />
+          </div>
+          <div class="rail-sub font-mono">
+            <span>{{ host.metrics.loadavg?.[0] != null ? `Load ${host.metrics.loadavg[0].toFixed(2)}` : '标准算力' }}</span>
+          </div>
+        </div>
+
+        <!-- 内存 -->
+        <div class="compute-rail-item">
+          <div class="rail-top">
+            <span class="rail-label">{{ t('hostCard.memory') }}</span>
+            <strong class="rail-val font-mono" :style="{ color: getMetricColor(memPercent) }">
+              {{ memPercent }}%
+            </strong>
+          </div>
+          <div class="rail-track">
+            <div
+              class="rail-fill"
+              :style="{ width: `${memPercent}%`, background: getMetricColor(memPercent) }"
+            />
+          </div>
+          <div class="rail-sub font-mono" :title="`${formatBytes(host.metrics.memoryUsed)} / ${formatBytes(host.metrics.memoryTotal)}`">
+            {{ formatBytes(host.metrics.memoryUsed) }} / {{ formatBytes(host.metrics.memoryTotal) }}
+          </div>
+        </div>
+
+        <!-- 磁盘 -->
+        <div class="compute-rail-item">
+          <div class="rail-top">
+            <span class="rail-label">{{ t('hostCard.disk') }}</span>
+            <strong class="rail-val font-mono" :style="{ color: getMetricColor(diskPercent) }">
+              {{ diskPercent }}%
+            </strong>
+          </div>
+          <div class="rail-track">
+            <div
+              class="rail-fill"
+              :style="{ width: `${diskPercent}%`, background: getMetricColor(diskPercent) }"
+            />
+          </div>
+          <div class="rail-sub font-mono" :title="`${formatBytes(host.metrics.diskUsed)} / ${formatBytes(host.metrics.diskTotal)}`">
+            {{ formatBytes(host.metrics.diskUsed) }} / {{ formatBytes(host.metrics.diskTotal) }}
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. 一体化 WAN 态势舱（网络吞吐与配额） -->
+      <section class="wan-capsule">
+        <div class="capsule-top">
+          <div class="capsule-title">
+            <svg class="capsule-globe-icon" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            <span>WAN 流量与配额</span>
+          </div>
+
+          <div class="capsule-quota-stat font-mono">
+            <template v-if="effectiveQuota?.quotaBytes">
+              <span>本期</span>
+              <strong>{{ formatBytes(effectiveQuota.usedBytes) }}</strong>
+              <small>/ {{ formatBytes(effectiveQuota.quotaBytes) }}</small>
+            </template>
+            <template v-else>
+              <span>本月总计</span>
+              <strong>{{ formatBytes(effectiveTrafficMonthTotal) }}</strong>
+            </template>
+          </div>
+        </div>
+
+        <!-- 配额进度条（若未配置配额则平滑收拢） -->
+        <div v-if="effectiveQuota?.quotaBytes" class="capsule-progress-track">
+          <div
+            class="capsule-progress-fill"
+            :style="{
+              width: `${Math.min(100, effectiveQuota.usagePercent || 0)}%`,
+              background: getQuotaColor(effectiveQuota.usagePercent || 0)
+            }"
+          />
+        </div>
+
+        <div class="capsule-bottom">
+          <!-- 静态配额/重置日 -->
+          <div class="quota-meta-left">
+            <template v-if="effectiveQuota?.quotaBytes">
+              <span>剩余 {{ formatBytes(effectiveQuota.remainingBytes) }}</span>
+              <span class="meta-dot">·</span>
+              <span>{{ effectiveNextResetText }}</span>
+            </template>
+            <template v-else>
+              <span>今日 {{ formatBytes(effectiveTrafficTodayTotal) }}</span>
+              <span class="meta-dot">·</span>
+              <span>每月 {{ host.traffic_billing_day || 1 }} 日结算</span>
+            </template>
+          </div>
+
+          <!-- 实时动态吞吐 -->
+          <div class="live-rates-right font-mono">
+            <span class="rate-tag rx" title="当前实时下载吞吐">
+              <span class="arrow">↓</span> {{ formatRate(host.metrics.networkRxRate) }}
+            </span>
+            <span class="rate-sep">/</span>
+            <span class="rate-tag tx" title="当前实时上传吞吐">
+              <span class="arrow">↑</span> {{ formatRate(host.metrics.networkTxRate) }}
+            </span>
+          </div>
+        </div>
+      </section>
     </div>
-  </el-card>
+
+    <!-- 离线/异常退化兜底 -->
+    <div v-else class="card-fallback">
+      <div class="fallback-icon-wrap">
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+      </div>
+      <div class="fallback-info">
+        <p class="fallback-title">{{ host.error_message || t('hostCard.metricsUnavailable') }}</p>
+        <span class="fallback-desc">Agent 正在重连或网络策略未放行端口</span>
+      </div>
+    </div>
+
+    <!-- Bottom Footer: Workload Capsule & Subscription Price Trigger -->
+    <footer class="card-footer">
+      <div class="footer-left">
+        <!-- 容器状态胶囊 -->
+        <div class="workload-capsule" :class="{ 'has-stopped': host.container_stopped > 0 }">
+          <span class="dot-indicator" :class="host.container_stopped > 0 ? 'is-warn' : 'is-good'" />
+          <span class="workload-text">
+            <strong>{{ host.container_running }}</strong> {{ t('dashboard.running') || '运行' }}
+            <template v-if="host.container_stopped > 0">
+              · <strong class="text-warn">{{ host.container_stopped }}</strong> {{ t('dashboard.stopped') || '停止' }}
+            </template>
+          </span>
+        </div>
+
+        <!-- 引擎标识 -->
+        <span class="docker-tag" :title="`Docker Engine ${host.docker_version || '-'}`">
+          <svg class="docker-whale-svg" viewBox="0 0 24 18" aria-hidden="true" focusable="false">
+            <path fill="currentColor" d="M7.2 6.2h2.1V4.1H7.2v2.1Zm2.7 0H12V4.1H9.9v2.1Zm2.8 0h2.1V4.1h-2.1v2.1ZM9.9 3.5H12V1.4H9.9v2.1Zm-5.4 5h15.6c.9 0 1.7.3 2.4.9-.4 2.2-1.5 4-3.2 5.2-1.6 1.1-3.7 1.7-6.2 1.7H9.2c-3 0-5.2-1.1-6.5-3.2-.7-1.1-1-2.3-.9-3.7.8-.1 1.7-.4 2.7-.9Zm0-.6h2.1V5.8H4.5v2.1Zm2.7 0h2.1V5.8H7.2v2.1Zm2.7 0H12V5.8H9.9v2.1Zm2.8 0h2.1V5.8h-2.1v2.1Zm2.7 0h2.1V5.8h-2.1v2.1Z"/>
+          </svg>
+          <span>v{{ host.docker_version || '28.0' }}</span>
+        </span>
+      </div>
+
+      <!-- 资费触发按钮（点击打开套餐弹窗） -->
+      <button
+        v-if="effectivePriceText"
+        type="button"
+        class="price-trigger-btn font-mono"
+        title="点击查看资费与账单明细"
+        @click.stop="$emit('open-bill')"
+      >
+        <span>{{ effectivePriceText }}</span>
+        <svg class="trigger-arrow" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+    </footer>
+  </article>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import StatusIcon from "./StatusIcon.vue";
-import HostNetworkTraffic from "./HostNetworkTraffic.vue";
 import type { HostSummary, HostTrafficState } from "@/stores/dashboard";
 
 const props = defineProps<{
   host: HostSummary;
   updateCount?: number;
   traffic?: HostTrafficState;
+  subscription?: {
+    provider?: string;
+    plan_name?: string;
+    payment_amount?: number;
+    currency?: string;
+    payment_cycle?: string;
+    service_expiry_date?: string;
+    service_days_remaining?: number;
+    auto_renew?: boolean;
+    quota_enabled?: boolean;
+    traffic_direction?: string;
+  };
+  quota?: {
+    usedBytes?: number;
+    quotaBytes?: number;
+    remainingBytes?: number;
+    usagePercent?: number;
+    nextResetText?: string;
+  };
 }>();
-defineEmits<{ click: []; updates: [] }>();
+
+const emit = defineEmits<{
+  (e: "click"): void;
+  (e: "updates"): void;
+  (e: "open-bill"): void;
+}>();
 
 const { t } = useI18n();
 
-const displayUpdateCount = computed(() => props.updateCount ?? props.host.update_count);
-const hasError = computed(() => !!props.host.error_message);
-const statusTone = computed(() => {
-  if (props.host.status === "online") return "online";
-  if (props.host.status === "degraded") return "degraded";
-  if (props.host.status === "offline") return "offline";
-  return "unknown";
+const displayUpdateCount = computed(() => {
+  return props.updateCount ?? props.host.update_count ?? 0;
 });
-const statusLabel = computed(() => {
-  const keys: Record<string, string> = {
-    online: "status.online",
-    degraded: "status.degraded",
-    offline: "status.offline",
-    unknown: "status.unknown",
-  };
-  return t(keys[statusTone.value] as any);
+
+const effectiveSubscription = computed(() => {
+  return props.subscription ?? props.host.subscription;
 });
-const refreshIssueText = computed(() => (
-  `${t("hostCard.refreshIssue" as any)}${props.host.error_message || ""}`
-));
 
-// Sparkline History Queues
-const cpuHistory = ref<number[]>([]);
-const lastMetricKey = ref("");
+const effectiveExpiryDays = computed(() => {
+  return effectiveSubscription.value?.service_days_remaining;
+});
 
-watch(
-  () => props.host.metrics,
-  (m) => {
-    if (m) {
-      const key = `${m.timestamp}|${m.networkCounterEpoch || "legacy"}`;
-      if (key === lastMetricKey.value) return;
-      lastMetricKey.value = key;
-      // Push CPU
-      cpuHistory.value.push(m.cpuPercent);
-      if (cpuHistory.value.length > 50) cpuHistory.value.shift();
-    }
-  },
-  { immediate: true, deep: true }
-);
+const effectiveQuota = computed(() => {
+  if (props.quota) return props.quota;
+  return props.traffic?.summary?.quota;
+});
 
-// Cardinal spline smoothing — produces flowing, natural curves
-// (similar to D3's curveCardinal) instead of the stiff stepped bezier look
-function generateSparkline(data: number[], width = 100, height = 24) {
-  if (data.length < 2) return { stroke: "", fill: "" };
-  const max = Math.max(...data, 10);
-  const min = 0;
-  const padX = 2; // horizontal padding so the curve doesn't hit the edge
-  const padY = 3; // vertical breathing room
+const effectiveTrafficMonthTotal = computed(() => {
+  return props.traffic?.summary?.month?.totalBytes ?? 0;
+});
 
-  const points = data.map((val, idx) => {
-    const x = padX + (idx / (data.length - 1)) * (width - padX * 2);
-    const y = padY + (height - padY * 2) * (1 - (val - min) / (max - min || 1));
-    return { x, y };
-  });
+const effectiveTrafficTodayTotal = computed(() => {
+  return props.traffic?.summary?.today?.totalBytes ?? 0;
+});
 
-  // Cardinal spline tension — 0.5 gives a nice balance of smoothness without overshoot
-  const tension = 0.5;
-  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+const effectivePriceText = computed(() => {
+  const sub = effectiveSubscription.value;
+  if (!sub || sub.payment_amount == null) return "";
+  return formatPrice(sub.payment_amount, sub.currency || "CNY", sub.payment_cycle || "annual");
+});
 
-  for (let i = 0; i < points.length - 1; i++) {
-    const p0 = points[Math.max(0, i - 1)];
-    const p1 = points[i];
-    const p2 = points[i + 1];
-    const p3 = points[Math.min(points.length - 1, i + 2)];
-
-    const cp1x = p1.x + (p2.x - p0.x) * tension / 3;
-    const cp1y = p1.y + (p2.y - p0.y) * tension / 3;
-    const cp2x = p2.x - (p3.x - p1.x) * tension / 3;
-    const cp2y = p2.y - (p3.y - p1.y) * tension / 3;
-
-    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
-  }
-
-  const stroke = d;
-  const fill = `${d} L ${width} ${height} L 0 ${height} Z`;
-  return { stroke, fill };
-}
-
-const cpuPaths = computed(() => generateSparkline(cpuHistory.value, 100, 24));
+const cpuPercent = computed(() => {
+  return props.host.metrics ? Math.min(100, Math.max(0, props.host.metrics.cpuPercent)) : 0;
+});
 
 const memPercent = computed(() => {
   const m = props.host.metrics;
-  if (!m) return 0;
-  return m.memoryTotal > 0 ? Math.round((m.memoryUsed / m.memoryTotal) * 100) : 0;
+  if (!m || !m.memoryTotal) return 0;
+  return Math.min(100, Math.round((m.memoryUsed / m.memoryTotal) * 100));
 });
 
 const diskPercent = computed(() => {
   const m = props.host.metrics;
-  if (!m) return 0;
-  return m.diskTotal > 0 ? Math.round((m.diskUsed / m.diskTotal) * 100) : 0;
+  if (!m || !m.diskTotal) return 0;
+  return Math.min(100, Math.round((m.diskUsed / m.diskTotal) * 100));
 });
 
-function metricColor(pct: number): string {
-  if (pct > 80) return "var(--danger)";
-  if (pct > 60) return "var(--warning)";
-  return "var(--success)";
+function getMetricColor(pct: number): string {
+  if (pct >= 85) return "var(--danger, #f87171)";
+  if (pct >= 65) return "var(--warning, #fbbf24)";
+  return "var(--accent-blue, #60a5fa)";
 }
 
-function formatBytes(bytes: number | undefined): string {
-  if (bytes == null) return "0 B";
-  const value = Math.abs(bytes);
-  if (value === 0) return "0 B";
+function getQuotaColor(pct: number): string {
+  if (pct >= 90) return "var(--danger, #f87171)";
+  if (pct >= 75) return "var(--warning, #fbbf24)";
+  return "var(--accent-cyan, #22d3ee)";
+}
+
+function getExpiryTier(days?: number): "safe" | "notice" | "warn" | "urgent" | "critical" {
+  if (days == null) return "safe";
+  if (days <= 0) return "critical";
+  if (days <= 7) return "urgent";
+  if (days <= 14) return "warn";
+  if (days <= 30) return "notice";
+  return "safe";
+}
+
+function formatExpiryText(days?: number): string {
+  if (days == null) return "";
+  if (days < 0) return `已逾期 ${Math.abs(days)} 天`;
+  if (days === 0) return "今日到期";
+  return `${days} 天到期`;
+}
+
+function getStatusLabel(status: string): string {
+  const map: Record<string, string> = {
+    online: t("status.online") || "在线",
+    degraded: t("status.degraded") || "异常",
+    offline: t("status.offline") || "离线",
+    unknown: t("status.unknown") || "未知",
+  };
+  return map[status] || status;
+}
+
+const effectiveNextResetText = computed(() => {
+  const q: any = effectiveQuota.value;
+  if (!q) return "";
+  if (q.nextResetText) return q.nextResetText;
+  if (q.nextResetAt) {
+    try {
+      const d = new Date(q.nextResetAt);
+      if (!isNaN(d.getTime())) {
+        return `${d.getMonth() + 1}月${d.getDate()}日重置`;
+      }
+    } catch {}
+  }
+  return `每月 ${props.host.traffic_billing_day || 1} 日重置`;
+});
+
+function formatBytes(bytes?: number | null): string {
+  if (bytes == null || isNaN(bytes)) return "0 B";
+  if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
   let i = 0;
-  let size = value;
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024;
+  let val = bytes;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
     i++;
   }
-  return `${size.toFixed(1)} ${units[i]}`;
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
-function formatRateParts(bytesPerSec: number | null | undefined): { amount: string; unit: string } {
-  const bytes = Math.abs(bytesPerSec || 0);
-  if (bytes === 0) return { amount: "0", unit: "B/s" };
-
-  const units = ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"];
+function formatRate(bytesPerSec?: number | null): string {
+  const b = Math.abs(bytesPerSec || 0);
+  if (b === 0) return "0 B/s";
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
   let i = 0;
-  let size = bytes;
-  while (size >= 1024 && i < units.length - 1) {
-    size /= 1024;
+  let val = b;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
     i++;
   }
-  return { amount: size.toFixed(1), unit: units[i] };
+  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
-// Approved Vibrant Multi-color SVGs
-const vibrantIcons = {
-  cpu: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect width="16" height="16" x="4" y="4" rx="3" fill="#3b82f6" fill-opacity="0.12" stroke="#3b82f6"/>
-          <rect width="8" height="8" x="8" y="8" rx="1" fill="#fbbf24" fill-opacity="0.7" stroke="#d97706"/>
-          <line x1="9" y1="1" x2="9" y2="4" stroke="#3b82f6"/><line x1="15" y1="1" x2="15" y2="4" stroke="#3b82f6"/>
-          <line x1="9" y1="20" x2="9" y2="23" stroke="#3b82f6"/><line x1="15" y1="20" x2="15" y2="23" stroke="#3b82f6"/>
-        </svg>`,
-  mem: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="6" width="18" height="12" rx="2" fill="#10b981" fill-opacity="0.12" stroke="#10b981"/>
-          <rect x="6" y="9" width="3" height="6" rx="0.5" fill="#10b981" fill-opacity="0.8"/>
-          <rect x="11" y="9" width="3" height="6" rx="0.5" fill="#10b981" fill-opacity="0.8"/>
-          <rect x="16" y="9" width="3" height="6" rx="0.5" fill="#fbbf24" fill-opacity="0.8" stroke="#d97706" stroke-width="1"/>
-        </svg>`,
-  disk: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="4" y="4" width="16" height="16" rx="2" fill="#6366f1" fill-opacity="0.12" stroke="#6366f1"/>
-          <path d="M4 10h16" stroke="#6366f1"/><path d="M4 14h16" stroke="#6366f1"/>
-          <circle cx="8" cy="7" r="1.5" fill="#fbbf24"/><circle cx="16" cy="17" r="1.5" fill="#10b981"/>
-        </svg>`,
-  images: `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="5" y="5" width="14" height="14" rx="2" fill="#6366f1" fill-opacity="0.12" stroke="#6366f1"/>
-          <path d="M8 9h8M8 12h8M8 15h5" stroke="#6366f1"/>
-        </svg>`,
-  docker: `<svg xmlns="http://www.w3.org/2000/svg" width="15" height="12" viewBox="0 0 24 18" aria-hidden="true" focusable="false">
-          <path fill="currentColor" d="M7.2 6.2h2.1V4.1H7.2v2.1Zm2.7 0H12V4.1H9.9v2.1Zm2.8 0h2.1V4.1h-2.1v2.1ZM9.9 3.5H12V1.4H9.9v2.1Zm-5.4 5h15.6c.9 0 1.7.3 2.4.9-.4 2.2-1.5 4-3.2 5.2-1.6 1.1-3.7 1.7-6.2 1.7H9.2c-3 0-5.2-1.1-6.5-3.2-.7-1.1-1-2.3-.9-3.7.8-.1 1.7-.4 2.7-.9Zm0-.6h2.1V5.8H4.5v2.1Zm2.7 0h2.1V5.8H7.2v2.1Zm2.7 0H12V5.8H9.9v2.1Zm2.8 0h2.1V5.8h-2.1v2.1Zm2.7 0h2.1V5.8h-2.1v2.1Z"/>
-        </svg>`
-};
+function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): string {
+  if (amount == null) return "";
+  const sym = currency === "USD" ? "$" : currency === "EUR" ? "€" : "¥";
+  const cycleMap: Record<string, string> = {
+    monthly: "月",
+    quarterly: "季",
+    semiannual: "半年",
+    annual: "年",
+    once: "次",
+  };
+  return `${sym}${amount.toFixed(0)} / ${cycleMap[cycle] || "年"}`;
+}
 </script>
 
 <style scoped>
-.host-card {
-  font-family: var(--font-body) !important;
-
-  /* Typography Variables Scoped locally to HostCard */
-  --font-size-title: 19px;
-  --font-size-data: 15px;
-  --font-size-label: 13px;
-  --font-size-micro: 11.5px;
-
-  --weight-bold: 800;
-  --weight-medium: 700;
-  --weight-regular: 400;
-
-  cursor: pointer;
-  height: 100%;
-  min-height: 298px;
-  background: var(--host-card-bg) !important;
-  border-color: var(--border-subtle) !important;
-  transition: border-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.host-card :deep(.el-card__body) {
-  padding: 14px 16px;
+.host-card-v1 {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 215px;
+  padding: 14px 16px;
   box-sizing: border-box;
-}
-.host-card:hover {
-  border-color: var(--border-strong) !important;
-  transform: translateY(-2px);
-  box-shadow: var(--host-card-hover-shadow) !important;
+  background: var(--surface-panel, #0b1220);
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
+  border-radius: 12px;
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
 }
 
-/* Header Row */
-.card-header-row {
+.host-card-v1:hover {
+  transform: translateY(-2px);
+  border-color: rgba(96, 165, 250, 0.35);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+}
+
+/* 顶部身份栏 */
+.card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 26px;
-  min-height: 26px;
+  gap: 12px;
+  margin-bottom: 12px;
 }
-.card-header-left {
+
+.identity-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   min-width: 0;
-  flex: 1;
 }
-.card-header-text {
+
+.status-pulse {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+}
+.status-pulse.is-online {
+  background: var(--success, #34d399);
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
+}
+.status-pulse.is-degraded {
+  background: var(--warning, #fbbf24);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
+}
+.status-pulse.is-offline {
+  background: var(--danger, #f87171);
+}
+.status-pulse.is-unknown {
+  background: var(--text-muted, #64748b);
+}
+
+.name-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
   min-width: 0;
 }
+
 .host-name {
-  font-size: var(--font-size-title);
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary, #f1f5f9);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.card-header-right {
+
+.host-meta-badge {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badges-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex-shrink: 0;
 }
 
-/* Pills & Badges */
-.m-badge-danger {
-  font-size: var(--font-size-micro);
-  color: var(--danger);
-  background: rgba(248, 113, 113, 0.10);
-  border: 1px solid rgba(248, 113, 113, 0.18);
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-weight: var(--weight-bold);
-  white-space: nowrap;
-}
-.m-status-pill {
-  font-size: var(--font-size-micro);
-  padding: 1px 9px;
-  border-radius: 999px;
-  font-weight: var(--weight-bold);
-  white-space: nowrap;
-}
-
-.m-status-pill.is-online {
-  color: var(--success);
-  border: 1px solid rgba(52, 211, 153, 0.24);
-  background: rgba(52, 211, 153, 0.06);
-}
-
-.m-status-pill.is-degraded {
-  color: var(--warning);
-  border: 1px solid rgba(245, 158, 11, 0.26);
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.m-status-pill.is-offline {
-  color: var(--danger);
-  border: 1px solid rgba(248, 113, 113, 0.28);
-  background: rgba(248, 113, 113, 0.08);
-}
-
-.m-status-pill.is-unknown {
-  color: var(--text-muted);
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-muted);
-}
-
-.error-badge {
+/* 徽标胶囊基准：严格重设，无内外边距偏移，保证在所有浏览器下像素级居中 */
+.badge-chip {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
-  cursor: help;
-}
-
-.error-badge.is-online,
-.error-badge.is-degraded {
-  color: var(--warning);
-}
-
-.error-badge.is-offline {
-  color: var(--danger);
-}
-
-.error-badge.is-unknown {
-  color: var(--text-muted);
-}
-
-.host-subtitle {
-  font-size: var(--font-size-label);
-  font-weight: var(--weight-regular);
-  color: var(--text-muted);
-  margin-top: 3px;
-  margin-left: 18px;
-  margin-bottom: 12px;
-  height: 18px;
-  line-height: 18px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  justify-content: center;
+  gap: 5px;
+  font-family: inherit;
+  font-size: 11px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1;
+  transition: all 0.15s ease;
   white-space: nowrap;
+  vertical-align: middle;
+}
+.badge-chip:hover {
+  transform: translateY(-1px);
 }
 
-/* Capacity sub-cards */
-.m-capacity-grid {
+.chip-svg {
+  display: block;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+/* 文字垂直对齐微调：抵消中文字形底部分离空间，实现与矢量图标视觉轴心精准对齐 */
+.chip-text {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  transform: translateY(-1px);
+  letter-spacing: 0.01em;
+}
+
+/* 待更新镜像徽标 (Update Chip) */
+.badge-chip.is-update {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: var(--warning, #fbbf24);
+}
+.badge-chip.is-update:hover {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.45);
+}
+[data-theme="light"] .badge-chip.is-update {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: rgba(245, 158, 11, 0.38);
+  color: #d97706;
+}
+
+/* 到期五级色彩梯次 (Expiry 5-tier Gradation) */
+/* Tier 1: 充裕安全 (> 30 天) - 淡雅天青 */
+.badge-chip.is-expiry.expiry-safe {
+  background: rgba(56, 189, 248, 0.08);
+  border-color: rgba(56, 189, 248, 0.22);
+  color: #38bdf8;
+}
+[data-theme="light"] .badge-chip.is-expiry.expiry-safe {
+  background: rgba(14, 165, 233, 0.08);
+  border-color: rgba(14, 165, 233, 0.25);
+  color: #0284c7;
+}
+
+/* Tier 2: 月度例行 (15 ~ 30 天) - 典雅微紫靛蓝 */
+.badge-chip.is-expiry.expiry-notice {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.25);
+  color: #818cf8;
+}
+[data-theme="light"] .badge-chip.is-expiry.expiry-notice {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.28);
+  color: #4f46e5;
+}
+
+/* Tier 3: 关注提醒 (8 ~ 14 天) - 温暖琥珀黄 */
+.badge-chip.is-expiry.expiry-warn {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.32);
+  color: #fbbf24;
+}
+[data-theme="light"] .badge-chip.is-expiry.expiry-warn {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.4);
+  color: #b45309;
+}
+
+/* Tier 4: 临近紧迫 (1 ~ 7 天) - 警示急迫橙红 */
+.badge-chip.is-expiry.expiry-urgent {
+  background: rgba(249, 115, 22, 0.15);
+  border-color: rgba(249, 115, 22, 0.4);
+  color: #fb923c;
+  font-weight: 700;
+}
+[data-theme="light"] .badge-chip.is-expiry.expiry-urgent {
+  background: rgba(249, 115, 22, 0.12);
+  border-color: rgba(249, 115, 22, 0.45);
+  color: #c2410c;
+}
+
+/* Tier 5: 临界/已逾期 (<= 0 天) - 珊瑚红高亮脉冲 */
+.badge-chip.is-expiry.expiry-critical {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #f87171;
+  font-weight: 750;
+  animation: expiry-pulse 2s infinite ease-in-out;
+}
+[data-theme="light"] .badge-chip.is-expiry.expiry-critical {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(220, 38, 38, 0.5);
+  color: #b91c1c;
+}
+
+@keyframes expiry-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.02); }
+}
+
+/* 异常状态芯片 (Status Alert Chip) */
+.status-alert-chip.is-degraded {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.32);
+  color: var(--warning, #fbbf24);
+}
+.status-alert-chip.is-offline {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.35);
+  color: var(--danger, #f87171);
+}
+
+/* 算力三联微轨 */
+.compute-rail-group {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-bottom: 10px;
-  height: 110px;
-  box-sizing: border-box;
+  gap: 12px;
+  margin-bottom: 12px;
 }
-.m-sub-card {
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 12px;
+
+.compute-rail-item {
   display: flex;
   flex-direction: column;
-  position: relative;
-  overflow: hidden;
-  height: 110px;
-  box-sizing: border-box;
+  gap: 4px;
 }
-.m-sub-card-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-.icon-wrapper {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.icon-wrapper :deep(svg) {
-  width: 14px;
-  height: 14px;
-  display: block;
-}
-.icon-wrapper.cpu-color { background: rgba(59, 130, 246, 0.08); color: #3b82f6; }
-.icon-wrapper.mem-color { background: rgba(16, 185, 129, 0.08); color: #10b981; }
-.icon-wrapper.disk-color { background: rgba(99, 102, 241, 0.08); color: #6366f1; }
 
-.sub-label {
-  font-size: var(--font-size-label);
-  font-weight: var(--weight-medium);
-  color: var(--text-secondary);
-}
-.sub-value {
-  font-size: var(--font-size-data);
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-  line-height: 1.25;
+.rail-top {
   display: flex;
   align-items: baseline;
-  gap: 2px;
-  margin-top: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.val-amount {
-  width: 2.6em;
-  display: inline-block;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-}
-.val-unit {
-  width: 1.5em;
-  display: inline-block;
-  text-align: right;
-  font-weight: var(--weight-bold);
-  color: var(--text-muted);
-  font-size: var(--font-size-micro);
-}
-.sub-value small {
-  font-size: var(--font-size-micro);
-  font-weight: var(--weight-regular);
-  color: var(--text-muted);
+  justify-content: space-between;
+  font-size: 12px;
 }
 
-.m-progress-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: auto;
-  margin-bottom: 2px;
+.rail-label {
+  color: var(--text-secondary, #94a3b8);
+  font-weight: 600;
 }
-.m-progress-track {
-  flex: 1;
-  height: 6px;
-  background: rgba(148, 163, 184, 0.12);
+
+.rail-val {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.rail-track {
+  width: 100%;
+  height: 3.5px;
+  background: rgba(148, 163, 184, 0.14);
   border-radius: 99px;
   overflow: hidden;
 }
-.m-progress-fill {
+
+.rail-fill {
   height: 100%;
   border-radius: inherit;
   transition: width 0.3s ease;
 }
-.m-percent-label {
-  font-size: var(--font-size-micro);
-  font-weight: var(--weight-regular);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-}
 
-.sub-chart {
-  position: absolute;
-  bottom: 6px;
-  left: 0;
-  width: 100%;
-  height: 32px;
-  pointer-events: none;
+.rail-sub {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
   overflow: hidden;
-}
-
-/* Network is the primary Host telemetry block; disk I/O follows as a quiet rail. */
-.m-network-block {
-  margin-bottom: 10px;
-  height: 110px;
-  box-sizing: border-box;
-}
-
-.m-io-strip {
-  display: grid;
-  grid-template-columns: minmax(72px, 1fr) minmax(0, 1.25fr) minmax(0, 1.25fr);
-  align-items: center;
-  gap: 10px;
-  height: 36px;
-  min-height: 36px;
-  box-sizing: border-box;
-  padding: 6px 12px;
-  margin-bottom: 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--ui-radius-lg);
-  color: var(--text-secondary);
-  background: var(--surface-panel);
-  font-family: var(--font-body);
-}
-
-.m-io-strip__label {
-  font-size: var(--font-size-label);
-  font-weight: 700;
-  color: var(--text-secondary);
-}
-
-.m-io-strip__metric {
-  display: flex;
-  align-items: baseline;
-  justify-content: flex-end;
-  gap: 4px;
-  min-width: 0;
-  font-family: var(--font-body);
-  font-variant-numeric: tabular-nums;
-}
-
-.m-io-strip__arrow {
-  font-family: var(--font-body);
-  font-weight: 800;
-  font-size: var(--text-sm);
-  line-height: 1;
-}
-
-.m-io-strip__arrow.is-down {
-  color: var(--accent-cyan);
-}
-
-.m-io-strip__arrow.is-up {
-  color: var(--accent-blue);
-}
-
-.m-io-strip__metric strong {
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: var(--font-size-data);
-  font-weight: var(--weight-bold);
-  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.m-io-strip__metric small {
-  color: var(--text-muted);
-  font-size: var(--font-size-micro);
-  white-space: nowrap;
-}
-
-.flex-center {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.metrics-missing {
-  height: 274px;
-  min-height: 274px;
-  box-sizing: border-box;
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--border-subtle);
+/* 一体化 WAN 态势舱 */
+.wan-capsule {
+  background: rgba(148, 163, 184, 0.04);
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
   border-radius: 8px;
-  color: var(--text-muted);
-  font-size: var(--font-size-label);
-  font-weight: var(--weight-regular);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin-bottom: 12px;
 }
 
-/* Footer splits */
-.m-footer {
+.capsule-top {
   display: flex;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 9px;
-  margin-top: auto;
   align-items: center;
-  height: 28px;
-  box-sizing: border-box;
+  justify-content: space-between;
+  font-size: 12px;
 }
-.m-foot-item {
-  flex: 1;
-  font-size: var(--font-size-label);
-  color: var(--text-primary);
-  border-right: 1px solid var(--border-subtle);
-  height: 18px;
-  gap: 4px;
-  min-width: 0;
-}
-.m-foot-item strong {
-  font-size: var(--font-size-data);
-  font-weight: var(--weight-bold);
-  font-variant-numeric: tabular-nums;
-}
-.foot-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-.foot-dot.green { background: var(--success); }
-.foot-dot.red { background: var(--danger); }
 
-.footer-icon-wrap :deep(svg) {
-  width: 13px;
-  height: 13px;
-  display: block;
+.capsule-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary, #94a3b8);
+  font-weight: 600;
 }
-.docker-icon {
-  color: #1d9bf0;
+.capsule-globe-icon {
+  color: var(--accent-cyan, #22d3ee);
 }
-.docker-icon :deep(svg) {
-  width: 15px;
-  height: 12px;
+
+.capsule-quota-stat {
+  font-size: 12px;
+  color: var(--text-muted, #64748b);
 }
-.m-foot-item--version {
-  flex: 1.5;
-  border-right: none;
+.capsule-quota-stat strong {
+  font-size: 13px;
+  color: var(--text-primary, #f1f5f9);
+  margin-left: 4px;
 }
-.m-version-text {
+
+.capsule-progress-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(148, 163, 184, 0.14);
+  border-radius: 99px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--font-size-micro);
-  font-weight: var(--weight-bold);
-  font-variant-numeric: tabular-nums;
-  opacity: 0.82;
 }
 
-.font-bold { font-weight: var(--weight-bold); }
-.text-right { text-align: right; }
+.capsule-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 0.3s ease;
+}
 
-@media (max-width: 420px) {
-  .m-capacity-grid {
-    grid-template-columns: 1fr;
-  }
-  .m-io-strip {
-    grid-template-columns: 1fr 1fr;
-  }
-  .m-io-strip__label {
-    grid-column: 1 / -1;
-  }
+.capsule-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.quota-meta-left {
+  color: var(--text-muted, #64748b);
+}
+.meta-dot {
+  margin: 0 3px;
+  opacity: 0.5;
+}
+
+.live-rates-right {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+}
+
+.rate-tag.rx {
+  color: var(--accent-cyan, #22d3ee);
+}
+.rate-tag.tx {
+  color: var(--accent-blue, #60a5fa);
+}
+.rate-sep {
+  color: var(--text-muted, #64748b);
+  opacity: 0.4;
+}
+
+/* 兜底状态 */
+.card-fallback {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 14px;
+  background: rgba(248, 113, 113, 0.04);
+  border: 1px dashed rgba(248, 113, 113, 0.2);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.fallback-icon-wrap {
+  color: var(--danger, #f87171);
+}
+.fallback-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, #f1f5f9);
+}
+.fallback-desc {
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+}
+
+/* 底部栏 */
+.card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.1));
+  padding-top: 8px;
+  margin-top: auto;
+}
+
+.footer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.workload-capsule {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary, #94a3b8);
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(148, 163, 184, 0.06);
+}
+.workload-capsule.has-stopped {
+  background: rgba(251, 191, 36, 0.1);
+  color: var(--warning, #fbbf24);
+}
+
+.dot-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot-indicator.is-good {
+  background: var(--success, #34d399);
+}
+.dot-indicator.is-warn {
+  background: var(--warning, #fbbf24);
+}
+
+.text-warn {
+  color: var(--warning, #fbbf24);
+}
+
+.docker-tag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+}
+.docker-whale-svg {
+  width: 14px;
+  height: 11px;
+  color: var(--accent-cyan, #22d3ee);
+}
+
+.price-trigger-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary, #94a3b8);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+.price-trigger-btn:hover {
+  color: var(--accent-blue, #60a5fa);
+  background: rgba(96, 165, 250, 0.1);
+}
+
+.trigger-arrow {
+  opacity: 0.6;
+  transition: transform 0.15s;
+}
+.price-trigger-btn:hover .trigger-arrow {
+  transform: translateX(2px);
+  opacity: 1;
+}
+
+/* Light Mode Overrides */
+[data-theme="light"] .host-card-v1 {
+  background: #ffffff;
+  border-color: rgba(203, 213, 225, 0.8);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+[data-theme="light"] .host-card-v1:hover {
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
+}
+[data-theme="light"] .wan-capsule {
+  background: rgba(241, 245, 249, 0.7);
+  border-color: rgba(226, 232, 240, 0.9);
+}
+[data-theme="light"] .workload-capsule {
+  background: rgba(241, 245, 249, 0.9);
 }
 </style>

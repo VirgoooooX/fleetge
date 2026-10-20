@@ -1,4 +1,4 @@
-﻿# Fleetge 开发服务器一键停止脚本 (PowerShell)
+# Fleetge 开发服务器一键停止脚本 (PowerShell)
 
 $ErrorActionPreference = "SilentlyContinue"
 
@@ -7,7 +7,7 @@ Write-Host "             Fleetge 开发服务器停止脚本" -ForegroundColor C
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host ""
 
-$ports = @(8000, 5173)
+$ports = @(8000, 8030, 5173)
 $stoppedCount = 0
 
 foreach ($port in $ports) {

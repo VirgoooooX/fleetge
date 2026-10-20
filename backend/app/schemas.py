@@ -64,6 +64,23 @@ class HostMetrics(BaseModel):
     _warnings: Optional[dict] = None
 
 
+class HostSubscriptionSummary(BaseModel):
+    configured: bool = False
+    provider: Optional[str] = None
+    plan_name: Optional[str] = None
+    payment_amount: Optional[float] = None
+    currency: str = "CNY"
+    payment_cycle: Optional[str] = None
+    next_payment_date: Optional[str] = None
+    payment_days_remaining: Optional[int] = None
+    service_expiry_date: Optional[str] = None
+    service_days_remaining: Optional[int] = None
+    auto_renew: bool = False
+    quota_enabled: bool = False
+    traffic_direction: str = "both"
+    management_url: Optional[str] = None
+
+
 class HostSummary(BaseModel):
     host_id: str
     display_name: str
@@ -85,6 +102,7 @@ class HostSummary(BaseModel):
     docker_disk_build_cache: Optional[int] = None
     update_count: int = 0
     error_message: Optional[str] = None
+    subscription: Optional[HostSubscriptionSummary] = None
 
 
 class HostListResponse(BaseModel):
