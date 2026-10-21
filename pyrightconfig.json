@@ -1,0 +1,21 @@
+{
+  "include": [
+    "backend",
+    "fleetge-agent"
+  ],
+  "extraPaths": [
+    "backend",
+    "fleetge-agent"
+  ],
+  "pythonPath": "C:\\Users\\lonel\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+  "executionEnvironments": [
+    {
+      "root": "backend",
+      "extraPaths": ["backend"]
+    },
+    {
+      "root": "fleetge-agent",
+      "extraPaths": ["fleetge-agent"]
+    }
+  ]
+}

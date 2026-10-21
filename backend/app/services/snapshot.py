@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 from sqlmodel import select
 
@@ -38,7 +39,7 @@ from app.schemas import (
     UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
-from app.services.billing_service import _date_status, subscription_is_configured
+from app.services.billing_service import UNIT_BYTES, _date_status, subscription_is_configured
 from app.services.update_check import MANIFEST_MEDIA_TYPES, _extract_local_digest, _parse_platform, _platform_matches, run_update_check
 
 logger = logging.getLogger(__name__)
@@ -2503,6 +2504,17 @@ class SnapshotManager:
             local_today = datetime.now(tz).date()
             _, expiry_days = _date_status(sub.service_expiry_date, local_today)
             _, payment_days = _date_status(sub.next_payment_date, local_today)
+            quota_bytes = None
+            if (
+                sub.quota_enabled
+                and sub.traffic_quota_value is not None
+                and sub.traffic_quota_unit in UNIT_BYTES
+            ):
+                try:
+                    quota_bytes = int(Decimal(str(sub.traffic_quota_value)) * UNIT_BYTES[sub.traffic_quota_unit])
+                except Exception:
+                    quota_bytes = None
+
             sub_summary = HostSubscriptionSummary(
                 configured=True,
                 provider=sub.provider,
@@ -2517,6 +2529,9 @@ class SnapshotManager:
                 auto_renew=sub.auto_renew,
                 quota_enabled=sub.quota_enabled,
                 traffic_direction=sub.traffic_direction or "both",
+                traffic_quota_value=float(sub.traffic_quota_value) if sub.traffic_quota_value is not None else None,
+                traffic_quota_unit=sub.traffic_quota_unit,
+                traffic_quota_bytes=quota_bytes,
                 management_url=sub.management_url,
             )
 

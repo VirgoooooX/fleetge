@@ -1,5 +1,4 @@
-"""Authenticated Host WAN traffic APIs."""
-
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
@@ -10,6 +9,8 @@ from app.services.agent_client import AgentClient
 from app.services.billing_service import quota_summary
 from app.services.traffic_service import add_open_traffic_bucket as _add_open_bucket
 from app.services.traffic_service import _parse_timestamp, build_traffic_report, sync_host_traffic
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/hosts", tags=["traffic"], dependencies=[Depends(get_current_user)])
 
@@ -90,7 +91,9 @@ async def traffic_summary(
 
     quota = None
     with Session(engine) as session:
-        subscription = session.get(HostSubscription, host_id)
+        subscription = session.exec(
+            select(HostSubscription).where(HostSubscription.host_id == host_id)
+        ).first()
         cursor = session.get(HostTrafficCursor, host_id)
         cursor_error = cursor.last_error if cursor else None
 
@@ -111,7 +114,8 @@ async def traffic_summary(
                 cursor_error=cursor_error,
                 now=_parse_timestamp(month["end"]),
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to compute quota_summary for host %s: %s", host_id, exc)
             quota = None
 
     return {

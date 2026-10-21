@@ -70,6 +70,9 @@ export interface HostSubscriptionSummary {
   auto_renew?: boolean;
   quota_enabled?: boolean;
   traffic_direction?: string;
+  traffic_quota_value?: number | null;
+  traffic_quota_unit?: string | null;
+  traffic_quota_bytes?: number | null;
   management_url?: string | null;
 }
 
@@ -103,6 +106,8 @@ export interface TrafficQuotaSummary {
   overageBytes?: number | null;
   usagePercent?: number | null;
   overQuota?: boolean;
+  rxBytes?: number;
+  txBytes?: number;
 }
 
 export interface HostTrafficSummary {

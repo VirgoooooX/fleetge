@@ -121,66 +121,104 @@
         </div>
       </section>
 
-      <!-- 2. 一体化 WAN 态势舱（网络吞吐与配额） -->
-      <section class="wan-capsule">
-        <div class="capsule-top">
+      <!-- 2. 一体化 WAN 态势舱（两种模式：配额型 VPS vs 自由流量/本地设备） -->
+      <section class="wan-capsule" :class="{ 'is-quota': hasQuota, 'is-unmetered': !hasQuota }">
+        <!-- 顶栏：左侧标题，右侧实时网速仪表槽（以 /s 为右贴齐锚点，零像素抖动） -->
+        <div class="capsule-header">
           <div class="capsule-title">
             <svg class="capsule-globe-icon" xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <line x1="2" y1="12" x2="22" y2="12"/>
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
-            <span>WAN 流量与配额</span>
+            <span>{{ hasQuota ? 'WAN 流量与配额' : '网络流量' }}</span>
           </div>
 
-          <div class="capsule-quota-stat font-mono">
-            <template v-if="effectiveQuota?.quotaBytes">
-              <span>本期</span>
-              <strong>{{ formatBytes(effectiveQuota.usedBytes) }}</strong>
-              <small>/ {{ formatBytes(effectiveQuota.quotaBytes) }}</small>
-            </template>
-            <template v-else>
-              <span>本月总计</span>
-              <strong>{{ formatBytes(effectiveTrafficMonthTotal) }}</strong>
-            </template>
+          <!-- 实时网速：顶栏独占唯一的 ↓ 与 ↑ 箭头指示，作为整列的双通道表头 -->
+          <div class="stream-columns font-mono" :title="`实时下行: ${formatRate(host.metrics?.networkRxRate)} | 实时上行: ${formatRate(host.metrics?.networkTxRate)}`">
+            <span class="col-indicator rx">↓</span>
+            <span class="col-num rx">{{ splitRate(host.metrics?.networkRxRate).val }}</span>
+            <span class="col-unit rx">{{ splitRate(host.metrics?.networkRxRate).unit }}</span>
+            <span class="col-sep">│</span>
+            <span class="col-indicator tx">↑</span>
+            <span class="col-num tx">{{ splitRate(host.metrics?.networkTxRate).val }}</span>
+            <span class="col-unit tx">{{ splitRate(host.metrics?.networkTxRate).unit }}</span>
           </div>
         </div>
 
-        <!-- 配额进度条（若未配置配额则平滑收拢） -->
-        <div v-if="effectiveQuota?.quotaBytes" class="capsule-progress-track">
-          <div
-            class="capsule-progress-fill"
-            :style="{
-              width: `${Math.min(100, effectiveQuota.usagePercent || 0)}%`,
-              background: getQuotaColor(effectiveQuota.usagePercent || 0)
-            }"
-          />
+        <!-- 配额型 VPS 水位轨 (仅在有配额时展示) -->
+        <div v-if="hasQuota" class="capsule-quota-rail">
+          <div class="quota-rail-info font-mono">
+            <span class="quota-ratio">配额 {{ formatBytes(quotaUsedBytes) }} / {{ formatBytes(quotaTotalBytes) }}</span>
+            <span
+              class="quota-remain"
+              :class="{
+                'is-warn': quotaUsagePercent >= 70 && quotaUsagePercent < 85,
+                'is-danger': quotaUsagePercent >= 85
+              }"
+            >
+              剩余 {{ formatBytes(quotaRemainingBytes) }} ({{ quotaUsagePercent }}%)
+            </span>
+          </div>
+          <div class="capsule-progress-track">
+            <div
+              class="capsule-progress-fill"
+              :style="{
+                width: `${Math.min(100, quotaUsagePercent)}%`,
+                background: getQuotaColor(quotaUsagePercent)
+              }"
+            />
+          </div>
         </div>
 
-        <div class="capsule-bottom">
-          <!-- 静态配额/重置日 -->
-          <div class="quota-meta-left">
-            <template v-if="effectiveQuota?.quotaBytes">
-              <span>剩余 {{ formatBytes(effectiveQuota.remainingBytes) }}</span>
-              <span class="meta-dot">·</span>
-              <span>{{ effectiveNextResetText }}</span>
-            </template>
-            <template v-else>
-              <span>今日 {{ formatBytes(effectiveTrafficTodayTotal) }}</span>
-              <span class="meta-dot">·</span>
-              <span>每月 {{ host.traffic_billing_day || 1 }} 日结算</span>
-            </template>
+        <!-- 流量矩阵：本期/本月 与 今日 严格上下垂向对齐 -->
+        <div class="capsule-traffic-matrix">
+          <!-- 行 1: 本期 / 本月流量 -->
+          <div class="traffic-row">
+            <div class="traffic-row-left">
+              <span class="scope-label">{{ hasQuota ? '本期：' : '本月：' }}</span>
+              <span class="total-vol-slot font-mono">
+                <strong class="total-num">{{ splitBytes(hasQuota ? quotaUsedBytes : effectiveTrafficMonthTotal).val }}</strong>
+                <span class="total-unit">{{ splitBytes(hasQuota ? quotaUsedBytes : effectiveTrafficMonthTotal).unit }}</span>
+              </span>
+              <template v-if="hasQuota">
+                <span class="meta-dot">·</span>
+                <span class="reset-tag">{{ effectiveNextResetText }}</span>
+              </template>
+            </div>
+
+            <!-- 本期/本月双通道：去掉重复箭头，槽位完全继承顶栏，单位以中缝为基准右对齐 -->
+            <div class="traffic-row-right stream-columns font-mono">
+              <span class="col-indicator rx" />
+              <span class="col-num rx">{{ splitBytes(effectiveTrafficMonthRx).val }}</span>
+              <span class="col-unit rx">{{ splitBytes(effectiveTrafficMonthRx).unit }}</span>
+              <span class="col-sep">│</span>
+              <span class="col-indicator tx" />
+              <span class="col-num tx">{{ splitBytes(effectiveTrafficMonthTx).val }}</span>
+              <span class="col-unit tx">{{ splitBytes(effectiveTrafficMonthTx).unit }}</span>
+            </div>
           </div>
 
-          <!-- 实时动态吞吐 -->
-          <div class="live-rates-right font-mono">
-            <span class="rate-tag rx" title="当前实时下载吞吐">
-              <span class="arrow">↓</span> {{ formatRate(host.metrics.networkRxRate) }}
-            </span>
-            <span class="rate-sep">/</span>
-            <span class="rate-tag tx" title="当前实时上传吞吐">
-              <span class="arrow">↑</span> {{ formatRate(host.metrics.networkTxRate) }}
-            </span>
+          <!-- 行 2: 今日流量 -->
+          <div class="traffic-row">
+            <div class="traffic-row-left">
+              <span class="scope-label">今日：</span>
+              <span class="total-vol-slot font-mono">
+                <strong class="total-num">{{ splitBytes(effectiveTrafficTodayTotal).val }}</strong>
+                <span class="total-unit">{{ splitBytes(effectiveTrafficTodayTotal).unit }}</span>
+              </span>
+            </div>
+
+            <!-- 今日双通道：与上面完全相同的槽位定义，去箭头，中缝线绝对对齐 -->
+            <div class="traffic-row-right stream-columns font-mono">
+              <span class="col-indicator rx" />
+              <span class="col-num rx">{{ splitBytes(effectiveTrafficTodayRx).val }}</span>
+              <span class="col-unit rx">{{ splitBytes(effectiveTrafficTodayRx).unit }}</span>
+              <span class="col-sep">│</span>
+              <span class="col-indicator tx" />
+              <span class="col-num tx">{{ splitBytes(effectiveTrafficTodayTx).val }}</span>
+              <span class="col-unit tx">{{ splitBytes(effectiveTrafficTodayTx).unit }}</span>
+            </div>
           </div>
         </div>
       </section>
@@ -261,6 +299,9 @@ const props = defineProps<{
     auto_renew?: boolean;
     quota_enabled?: boolean;
     traffic_direction?: string;
+    traffic_quota_value?: number;
+    traffic_quota_unit?: string;
+    traffic_quota_bytes?: number;
   };
   quota?: {
     usedBytes?: number;
@@ -268,6 +309,8 @@ const props = defineProps<{
     remainingBytes?: number;
     usagePercent?: number;
     nextResetText?: string;
+    rxBytes?: number;
+    txBytes?: number;
   };
 }>();
 
@@ -291,17 +334,70 @@ const effectiveExpiryDays = computed(() => {
   return effectiveSubscription.value?.service_days_remaining;
 });
 
-const effectiveQuota = computed(() => {
-  if (props.quota) return props.quota;
-  return props.traffic?.summary?.quota;
+const effectiveTrafficMonthTotal = computed(() => {
+  if (hasQuota.value && (props.quota?.usedBytes != null || props.traffic?.summary?.quota?.usedBytes != null)) {
+    return props.quota?.usedBytes ?? props.traffic?.summary?.quota?.usedBytes ?? 0;
+  }
+  return props.traffic?.summary?.month?.totalBytes ?? 0;
 });
 
-const effectiveTrafficMonthTotal = computed(() => {
-  return props.traffic?.summary?.month?.totalBytes ?? 0;
+const effectiveTrafficMonthRx = computed(() => {
+  if (hasQuota.value && (props.quota?.rxBytes != null || props.traffic?.summary?.quota?.rxBytes != null)) {
+    return props.quota?.rxBytes ?? props.traffic?.summary?.quota?.rxBytes ?? 0;
+  }
+  return props.traffic?.summary?.month?.rxBytes ?? 0;
+});
+
+const effectiveTrafficMonthTx = computed(() => {
+  if (hasQuota.value && (props.quota?.txBytes != null || props.traffic?.summary?.quota?.txBytes != null)) {
+    return props.quota?.txBytes ?? props.traffic?.summary?.quota?.txBytes ?? 0;
+  }
+  return props.traffic?.summary?.month?.txBytes ?? 0;
 });
 
 const effectiveTrafficTodayTotal = computed(() => {
   return props.traffic?.summary?.today?.totalBytes ?? 0;
+});
+
+const effectiveTrafficTodayRx = computed(() => {
+  return props.traffic?.summary?.today?.rxBytes ?? 0;
+});
+
+const effectiveTrafficTodayTx = computed(() => {
+  return props.traffic?.summary?.today?.txBytes ?? 0;
+});
+
+const hasQuota = computed(() => {
+  if (props.quota?.quotaBytes) return true;
+  if (props.traffic?.summary?.quota?.quotaBytes) return true;
+  const sub = effectiveSubscription.value;
+  if (sub?.quota_enabled && (sub.traffic_quota_bytes || sub.traffic_quota_value)) return true;
+  return false;
+});
+
+const quotaTotalBytes = computed(() => {
+  if (props.quota?.quotaBytes) return props.quota.quotaBytes;
+  if (props.traffic?.summary?.quota?.quotaBytes) return props.traffic.summary.quota.quotaBytes;
+  return effectiveSubscription.value?.traffic_quota_bytes ?? 0;
+});
+
+const quotaUsedBytes = computed(() => {
+  if (props.quota?.usedBytes != null) return props.quota.usedBytes;
+  if (props.traffic?.summary?.quota?.usedBytes != null) return props.traffic.summary.quota.usedBytes;
+  return effectiveTrafficMonthTotal.value;
+});
+
+const quotaRemainingBytes = computed(() => {
+  if (props.quota?.remainingBytes != null) return props.quota.remainingBytes;
+  if (props.traffic?.summary?.quota?.remainingBytes != null) return props.traffic.summary.quota.remainingBytes;
+  return Math.max(0, quotaTotalBytes.value - quotaUsedBytes.value);
+});
+
+const quotaUsagePercent = computed(() => {
+  if (props.quota?.usagePercent != null) return props.quota.usagePercent;
+  if (props.traffic?.summary?.quota?.usagePercent != null) return props.traffic.summary.quota.usagePercent;
+  if (!quotaTotalBytes.value) return 0;
+  return Math.round((quotaUsedBytes.value / quotaTotalBytes.value) * 1000) / 10;
 });
 
 const effectivePriceText = computed(() => {
@@ -333,9 +429,9 @@ function getMetricColor(pct: number): string {
 }
 
 function getQuotaColor(pct: number): string {
-  if (pct >= 90) return "var(--danger, #f87171)";
-  if (pct >= 75) return "var(--warning, #fbbf24)";
-  return "var(--accent-cyan, #22d3ee)";
+  if (pct >= 85) return "var(--quota-danger-grad)";
+  if (pct >= 70) return "var(--quota-warn-grad)";
+  return "var(--quota-healthy-grad)";
 }
 
 function getExpiryTier(days?: number): "safe" | "notice" | "warn" | "urgent" | "critical" {
@@ -365,10 +461,9 @@ function getStatusLabel(status: string): string {
 }
 
 const effectiveNextResetText = computed(() => {
-  const q: any = effectiveQuota.value;
-  if (!q) return "";
-  if (q.nextResetText) return q.nextResetText;
-  if (q.nextResetAt) {
+  const q: any = props.quota || props.traffic?.summary?.quota;
+  if (q?.nextResetText) return q.nextResetText;
+  if (q?.nextResetAt) {
     try {
       const d = new Date(q.nextResetAt);
       if (!isNaN(d.getTime())) {
@@ -405,6 +500,37 @@ function formatRate(bytesPerSec?: number | null): string {
   return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
+function splitBytes(bytes?: number | null): { val: string; unit: string } {
+  if (bytes == null || isNaN(bytes) || bytes === 0) return { val: "0", unit: "B" };
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  let val = bytes;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return {
+    val: val < 10 ? val.toFixed(1) : Math.round(val).toString(),
+    unit: units[i]
+  };
+}
+
+function splitRate(bytesPerSec?: number | null): { val: string; unit: string } {
+  const b = Math.abs(bytesPerSec || 0);
+  if (b === 0) return { val: "0", unit: "B/s" };
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let i = 0;
+  let val = b;
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024;
+    i++;
+  }
+  return {
+    val: val < 10 ? val.toFixed(1) : Math.round(val).toString(),
+    unit: units[i]
+  };
+}
+
 function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): string {
   if (amount == null) return "";
   const sym = currency === "USD" ? "$" : currency === "EUR" ? "€" : "¥";
@@ -415,7 +541,11 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
     annual: "年",
     once: "次",
   };
-  return `${sym}${amount.toFixed(0)} / ${cycleMap[cycle] || "年"}`;
+  // 保留小数显示（如 49.9、49.99），整数则展示整数（如 52），绝不截断进位
+  const formattedAmount = Number.isInteger(amount)
+    ? amount.toString()
+    : parseFloat(amount.toFixed(2)).toString();
+  return `${sym}${formattedAmount} / ${cycleMap[cycle] || "年"}`;
 }
 </script>
 
@@ -708,6 +838,9 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 /* 一体化 WAN 态势舱 */
 .wan-capsule {
+  --quota-healthy-grad: linear-gradient(90deg, #10b981, #22d3ee);
+  --quota-warn-grad: linear-gradient(90deg, #f59e0b, #fbbf24);
+  --quota-danger-grad: linear-gradient(90deg, #f87171, #ef4444);
   background: rgba(148, 163, 184, 0.04);
   border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
   border-radius: 8px;
@@ -718,7 +851,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   margin-bottom: 12px;
 }
 
-.capsule-top {
+.capsule-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -736,14 +869,76 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   color: var(--accent-cyan, #22d3ee);
 }
 
-.capsule-quota-stat {
-  font-size: 12px;
+/* 统一双通道流矩阵（顶栏独占箭头，下方两行去箭头，中缝线绝对贯通） */
+.stream-columns {
+  display: inline-grid;
+  grid-template-columns: 10px 32px 28px 14px 10px 32px 28px;
+  align-items: baseline;
+  font-size: 11px;
+}
+
+.col-indicator {
+  text-align: center;
+  font-weight: 700;
+  line-height: 1;
+}
+.col-indicator.rx { color: var(--accent-cyan, #22d3ee); }
+.col-indicator.tx { color: var(--accent-blue, #60a5fa); }
+
+.col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary, #f1f5f9);
+}
+
+.capsule-header .col-num.rx { color: var(--accent-cyan, #22d3ee); }
+.capsule-header .col-num.tx { color: var(--accent-blue, #60a5fa); }
+
+/* 下方行如果染色：采用微柔和或全染测试 */
+.traffic-row-right .col-num.rx { color: var(--accent-cyan, #22d3ee); }
+.traffic-row-right .col-num.tx { color: var(--accent-blue, #60a5fa); }
+
+.col-unit {
+  text-align: right; /* 统一右对齐：顶栏 /s 贴右，下方 B 贴右 */
+  font-size: 10.5px;
+  color: var(--text-muted, #94a3b8);
+}
+.capsule-header .col-unit.rx { color: var(--accent-cyan, #22d3ee); opacity: 0.85; }
+.capsule-header .col-unit.tx { color: var(--accent-blue, #60a5fa); opacity: 0.85; }
+.traffic-row-right .col-unit.rx { color: var(--accent-cyan, #22d3ee); opacity: 0.75; }
+.traffic-row-right .col-unit.tx { color: var(--accent-blue, #60a5fa); opacity: 0.75; }
+
+.col-sep {
+  text-align: center;
+  color: var(--border-subtle, rgba(148, 163, 184, 0.35));
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* 配额水位轨 */
+.capsule-quota-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.quota-rail-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 10.5px;
   color: var(--text-muted, #64748b);
 }
-.capsule-quota-stat strong {
-  font-size: 13px;
-  color: var(--text-primary, #f1f5f9);
-  margin-left: 4px;
+
+.quota-remain.is-warn {
+  color: var(--warning, #fbbf24);
+  font-weight: 600;
+}
+
+.quota-remain.is-danger {
+  color: var(--danger, #f87171);
+  font-weight: 700;
 }
 
 .capsule-progress-track {
@@ -757,40 +952,103 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .capsule-progress-fill {
   height: 100%;
   border-radius: inherit;
-  transition: width 0.3s ease;
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1), background 0.4s ease;
 }
 
-.capsule-bottom {
+/* 流量矩阵 */
+.capsule-traffic-matrix {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.traffic-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
 }
 
-.quota-meta-left {
+.traffic-row-left {
+  display: inline-flex;
+  align-items: baseline;
   color: var(--text-muted, #64748b);
 }
+
+.scope-label {
+  display: inline-block;
+  width: 36px;
+  color: var(--text-secondary, #94a3b8);
+  font-weight: 500;
+}
+
+.total-vol-slot {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.total-num {
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary, #f1f5f9);
+}
+
+.total-unit {
+  width: 22px;
+  text-align: right; /* "B" 严格右对齐锚定 */
+  font-size: 10.5px;
+  color: var(--text-muted, #94a3b8);
+  margin-left: 1.5px;
+}
+
 .meta-dot {
-  margin: 0 3px;
-  opacity: 0.5;
+  margin: 0 4px;
+  opacity: 0.45;
 }
 
-.live-rates-right {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-}
-
-.rate-tag.rx {
-  color: var(--accent-cyan, #22d3ee);
-}
-.rate-tag.tx {
-  color: var(--accent-blue, #60a5fa);
-}
-.rate-sep {
+.reset-tag {
   color: var(--text-muted, #64748b);
-  opacity: 0.4;
+  font-size: 10.5px;
+}
+
+[data-theme="light"] .wan-capsule {
+  --quota-healthy-grad: linear-gradient(90deg, #059669, #0891b2);
+  --quota-warn-grad: linear-gradient(90deg, #d97706, #f59e0b);
+  --quota-danger-grad: linear-gradient(90deg, #dc2626, #ef4444);
+}
+
+[data-theme="light"] .capsule-globe-icon {
+  color: #0a6c82;
+}
+[data-theme="light"] .total-num,
+[data-theme="light"] .col-num {
+  color: #0f172a;
+}
+[data-theme="light"] .col-indicator.rx,
+[data-theme="light"] .capsule-header .col-num.rx,
+[data-theme="light"] .traffic-row-right .col-num.rx {
+  color: #0a6c82;
+  font-weight: 700;
+}
+[data-theme="light"] .capsule-header .col-unit.rx,
+[data-theme="light"] .traffic-row-right .col-unit.rx {
+  color: #0a6c82;
+  opacity: 1;
+  font-weight: 600;
+}
+[data-theme="light"] .col-indicator.tx,
+[data-theme="light"] .capsule-header .col-num.tx,
+[data-theme="light"] .traffic-row-right .col-num.tx {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+[data-theme="light"] .capsule-header .col-unit.tx,
+[data-theme="light"] .traffic-row-right .col-unit.tx {
+  color: #1d4ed8;
+  opacity: 1;
+  font-weight: 600;
 }
 
 /* 兜底状态 */

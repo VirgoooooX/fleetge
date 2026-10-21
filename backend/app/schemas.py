@@ -78,6 +78,9 @@ class HostSubscriptionSummary(BaseModel):
     auto_renew: bool = False
     quota_enabled: bool = False
     traffic_direction: str = "both"
+    traffic_quota_value: Optional[float] = None
+    traffic_quota_unit: Optional[str] = None
+    traffic_quota_bytes: Optional[int] = None
     management_url: Optional[str] = None
 
 
@@ -403,7 +406,7 @@ class AppProfileEntry(BaseModel):
 class HostSubscriptionUpdate(BaseModel):
     provider: Optional[str] = Field(default=None, max_length=120)
     plan_name: Optional[str] = Field(default=None, max_length=160)
-    payment_amount: Optional[Decimal] = Field(default=None, ge=0, max_digits=14, decimal_places=4)
+    payment_amount: Optional[Decimal] = Field(default=None, ge=Decimal(0), max_digits=14, decimal_places=4)
     currency: str = Field(default="CNY", min_length=3, max_length=3)
     payment_cycle: Optional[Literal["monthly", "quarterly", "semiannual", "annual", "once"]] = None
     next_payment_date: Optional[date] = None
@@ -412,7 +415,7 @@ class HostSubscriptionUpdate(BaseModel):
     management_url: Optional[str] = Field(default=None, max_length=2048)
     notes: Optional[str] = Field(default=None, max_length=4000)
     quota_enabled: bool = False
-    traffic_quota_value: Optional[Decimal] = Field(default=None, gt=0, max_digits=16, decimal_places=6)
+    traffic_quota_value: Optional[Decimal] = Field(default=None, gt=Decimal(0), max_digits=16, decimal_places=6)
     traffic_quota_unit: Literal["GB", "TB", "GiB", "TiB"] = "GiB"
     traffic_direction: Literal["upload", "download", "both", "max"] = "both"
     billing_timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)

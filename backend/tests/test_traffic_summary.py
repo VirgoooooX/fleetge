@@ -69,3 +69,24 @@ def test_billing_cycle_clamps_day_to_short_month_end() -> None:
 
     assert _billing_cycle_start(before_february_end, 31) == datetime(2026, 1, 31, tzinfo=timezone.utc)
     assert _billing_cycle_start(after_february_end, 31) == datetime(2026, 2, 28, tzinfo=timezone.utc)
+
+
+def test_traffic_summary_lookup_finds_subscription() -> None:
+    from sqlmodel import Session, select
+    from app.database import engine
+    from app.models import HostSubscription
+
+    with Session(engine) as session:
+        sub = HostSubscription(host_id="test-traffic-summary", quota_enabled=True, traffic_quota_value=500, traffic_quota_unit="GB")
+        session.add(sub)
+        session.commit()
+        session.refresh(sub)
+        try:
+            found = session.exec(select(HostSubscription).where(HostSubscription.host_id == "test-traffic-summary")).first()
+            assert found is not None
+            assert found.host_id == "test-traffic-summary"
+            assert found.traffic_quota_value == 500
+        finally:
+            session.delete(sub)
+            session.commit()
+
