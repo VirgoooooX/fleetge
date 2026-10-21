@@ -2,6 +2,10 @@
   <article
     class="host-card host-card-v1"
     :class="[`is-${host.status}`, { 'has-error': !!host.error_message }]"
+    tabindex="0"
+    :aria-label="`${host.display_name}，查看主机详情`"
+    @keydown.enter.self.prevent="$emit('click')"
+    @keydown.space.self.prevent="$emit('click')"
     @click="$emit('click')"
   >
     <!-- Top Header: Identity & Actionable Badges -->
@@ -34,13 +38,13 @@
           <span class="chip-text">{{ displayUpdateCount }} {{ t('dashboard.updates') || '更新' }}</span>
         </button>
 
-        <!-- 到期天数：五级状态阶梯渐变色（>30天青蓝, 15-30天靛蓝, 8-14天琥珀, 1-7天橙红, <=0天红警报） -->
+        <!-- 到期天数：远期弱化，临近到期逐级强调 -->
         <button
           v-if="effectiveExpiryDays != null"
           type="button"
           class="badge-chip is-expiry"
           :class="`expiry-${getExpiryTier(effectiveExpiryDays)}`"
-          title="点击查看账单与续费详情"
+          :title="effectiveSubscription?.service_expiry_date ? `到期日期：${effectiveSubscription.service_expiry_date} · 点击查看账单与续费详情` : '点击查看账单与续费详情'"
           @click.stop="$emit('open-bill')"
         >
           <svg class="chip-svg" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -67,14 +71,14 @@
         <div class="compute-rail-item">
           <div class="rail-top">
             <span class="rail-label">{{ t('hostCard.cpu') }}</span>
-            <strong class="rail-val font-mono" :style="{ color: getMetricColor(cpuPercent) }">
+            <strong class="rail-val font-mono" :style="{ color: getMetricColor(cpuPercent, 95) }">
               {{ cpuPercent.toFixed(1) }}%
             </strong>
           </div>
           <div class="rail-track">
             <div
               class="rail-fill"
-              :style="{ width: `${cpuPercent}%`, background: getMetricColor(cpuPercent) }"
+              :style="{ width: `${cpuPercent}%`, background: getMetricColor(cpuPercent, 95) }"
             />
           </div>
           <div class="rail-sub font-mono">
@@ -134,14 +138,39 @@
             <span>{{ hasQuota ? 'WAN 流量与配额' : '网络流量' }}</span>
           </div>
 
-          <!-- 实时网速：顶栏独占唯一的 ↓ 与 ↑ 箭头指示，作为整列的双通道表头 -->
-          <div class="stream-columns font-mono" :title="`实时下行: ${formatRate(host.metrics?.networkRxRate)} | 实时上行: ${formatRate(host.metrics?.networkTxRate)}`">
-            <span class="col-indicator rx">↓</span>
+          <!-- 右侧实时网速：位置绝对锚定 + 微定向指示灯（8槽固定列宽，零像素水平抖动） -->
+          <div
+            class="stream-anchored font-mono"
+            :title="`实时下行: ${formatRate(host.metrics?.networkRxRate)} | 实时上行: ${formatRate(host.metrics?.networkTxRate)}`"
+          >
+            <!-- 锚定槽 1: 实时标签（绝不漂移） -->
+            <span class="anchored-label">
+              <span class="label-text">实时</span>
+            </span>
+
+            <!-- 锚定槽 2: 下行箭头指示 -->
+            <span class="col-indicator rx">
+              <span class="indicator-glyph">↓</span>
+            </span>
+
+            <!-- 锚定槽 3: 下行数值（固定右对齐） -->
             <span class="col-num rx">{{ splitRate(host.metrics?.networkRxRate).val }}</span>
+
+            <!-- 锚定槽 4: 下行单位（固定左对齐） -->
             <span class="col-unit rx">{{ splitRate(host.metrics?.networkRxRate).unit }}</span>
-            <span class="col-sep">│</span>
-            <span class="col-indicator tx">↑</span>
+
+            <!-- 锚定槽 5: 中缝分隔符（居中锚定） -->
+            <span class="speed-sep">·</span>
+
+            <!-- 锚定槽 6: 上行箭头指示 -->
+            <span class="col-indicator tx">
+              <span class="indicator-glyph">↑</span>
+            </span>
+
+            <!-- 锚定槽 7: 上行数值（固定右对齐） -->
             <span class="col-num tx">{{ splitRate(host.metrics?.networkTxRate).val }}</span>
+
+            <!-- 锚定槽 8: 上行单位（固定左对齐） -->
             <span class="col-unit tx">{{ splitRate(host.metrics?.networkTxRate).unit }}</span>
           </div>
         </div>
@@ -149,7 +178,7 @@
         <!-- 配额型 VPS 水位轨 (仅在有配额时展示) -->
         <div v-if="hasQuota" class="capsule-quota-rail">
           <div class="quota-rail-info font-mono">
-            <span class="quota-ratio">配额 {{ formatBytes(quotaUsedBytes) }} / {{ formatBytes(quotaTotalBytes) }}</span>
+            <span class="quota-ratio">已用 {{ formatBytes(quotaUsedBytes) }} / {{ formatBytes(quotaTotalBytes) }} · {{ quotaUsagePercent }}%</span>
             <span
               class="quota-remain"
               :class="{
@@ -157,7 +186,7 @@
                 'is-danger': quotaUsagePercent >= 85
               }"
             >
-              剩余 {{ formatBytes(quotaRemainingBytes) }} ({{ quotaUsagePercent }}%)
+              剩余 {{ formatBytes(quotaRemainingBytes) }}
             </span>
           </div>
           <div class="capsule-progress-track">
@@ -165,13 +194,14 @@
               class="capsule-progress-fill"
               :style="{
                 width: `${Math.min(100, quotaUsagePercent)}%`,
+                minWidth: quotaUsedBytes > 0 ? '4.5px' : '0',
                 background: getQuotaColor(quotaUsagePercent)
               }"
             />
           </div>
         </div>
 
-        <!-- 流量矩阵：本期/本月 与 今日 严格上下垂向对齐 -->
+        <!-- 流量矩阵：本期/本月 与 今日 (下方总流量 100% 保持原有鲜明色彩) -->
         <div class="capsule-traffic-matrix">
           <!-- 行 1: 本期 / 本月流量 -->
           <div class="traffic-row">
@@ -282,27 +312,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
-import type { HostSummary, HostTrafficState } from "@/stores/dashboard";
+import type { HostSummary, HostTrafficState, HostSubscriptionSummary } from "@/stores/dashboard";
 
 const props = defineProps<{
   host: HostSummary;
   updateCount?: number;
   traffic?: HostTrafficState;
-  subscription?: {
-    provider?: string;
-    plan_name?: string;
-    payment_amount?: number;
-    currency?: string;
-    payment_cycle?: string;
-    service_expiry_date?: string;
-    service_days_remaining?: number;
-    auto_renew?: boolean;
-    quota_enabled?: boolean;
-    traffic_direction?: string;
-    traffic_quota_value?: number;
-    traffic_quota_unit?: string;
-    traffic_quota_bytes?: number;
-  };
+  subscription?: HostSubscriptionSummary | null;
   quota?: {
     usedBytes?: number;
     quotaBytes?: number;
@@ -422,9 +438,9 @@ const diskPercent = computed(() => {
   return Math.min(100, Math.round((m.diskUsed / m.diskTotal) * 100));
 });
 
-function getMetricColor(pct: number): string {
-  if (pct >= 85) return "var(--danger, #f87171)";
-  if (pct >= 65) return "var(--warning, #fbbf24)";
+function getMetricColor(pct: number, dangerThreshold = 90): string {
+  if (pct >= dangerThreshold) return "var(--danger, #f87171)";
+  if (pct >= 80) return "#f59e0b";
   return "var(--accent-blue, #60a5fa)";
 }
 
@@ -553,8 +569,8 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .host-card-v1 {
   display: flex;
   flex-direction: column;
-  min-height: 215px;
-  padding: 14px 16px;
+  min-height: 220px;
+  padding: 15px 16px;
   box-sizing: border-box;
   background: var(--surface-panel, #0b1220);
   border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.16));
@@ -571,6 +587,13 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   transform: translateY(-2px);
   border-color: rgba(96, 165, 250, 0.35);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+}
+
+.host-card-v1:focus-visible,
+.badge-chip:focus-visible,
+.price-trigger-btn:focus-visible {
+  outline: 2px solid var(--accent-blue, #60a5fa);
+  outline-offset: 2px;
 }
 
 /* 顶部身份栏 */
@@ -590,8 +613,8 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .status-pulse {
-  width: 8px;
-  height: 8px;
+  width: 8.5px;
+  height: 8.5px;
   border-radius: 50%;
   flex-shrink: 0;
   position: relative;
@@ -613,14 +636,14 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 .name-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .host-name {
   margin: 0;
-  font-size: 16px;
+  font-size: 17.5px;
   font-weight: 700;
   color: var(--text-primary, #f1f5f9);
   overflow: hidden;
@@ -629,7 +652,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .host-meta-badge {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted, #64748b);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -654,9 +677,9 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   justify-content: center;
   gap: 5px;
   font-family: inherit;
-  font-size: 11px;
-  height: 22px;
-  padding: 0 8px;
+  font-size: 12px;
+  height: 24px;
+  padding: 0 9px;
   border-radius: 6px;
   border: 1px solid transparent;
   background: transparent;
@@ -667,18 +690,15 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   white-space: nowrap;
   vertical-align: middle;
 }
-.badge-chip:hover {
-  transform: translateY(-1px);
-}
 
 .chip-svg {
   display: block;
-  width: 12px;
-  height: 12px;
+  width: 13px;
+  height: 13px;
   flex-shrink: 0;
 }
 
-/* 文字垂直对齐：与胶囊容器和矢量图标视觉轴心精准居中对齐 */
+/* 图标与文字行框沿同一中心线对齐。 */
 .chip-text {
   display: inline-flex;
   align-items: center;
@@ -703,16 +723,11 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 /* 到期五级色彩梯次 (Expiry 5-tier Gradation) */
-/* Tier 1: 充裕安全 (> 30 天) - 淡雅天青 */
+/* Tier 1: 充裕安全 (> 30 天) - 中性弱标签 */
 .badge-chip.is-expiry.expiry-safe {
-  background: rgba(56, 189, 248, 0.08);
-  border-color: rgba(56, 189, 248, 0.22);
-  color: #38bdf8;
-}
-[data-theme="light"] .badge-chip.is-expiry.expiry-safe {
-  background: rgba(14, 165, 233, 0.08);
-  border-color: rgba(14, 165, 233, 0.25);
-  color: #0284c7;
+  background: rgba(148, 163, 184, 0.06);
+  border-color: var(--border-subtle, rgba(148, 163, 184, 0.16));
+  color: var(--text-secondary, #94a3b8);
 }
 
 /* Tier 2: 月度例行 (15 ~ 30 天) - 典雅微紫靛蓝 */
@@ -799,9 +814,9 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 .rail-top {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .rail-label {
@@ -810,13 +825,13 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .rail-val {
-  font-size: 13px;
+  font-size: 14.5px;
   font-weight: 700;
 }
 
 .rail-track {
   width: 100%;
-  height: 3.5px;
+  height: 4px;
   background: rgba(148, 163, 184, 0.14);
   border-radius: 99px;
   overflow: hidden;
@@ -829,7 +844,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .rail-sub {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted, #64748b);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -844,7 +859,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   background: rgba(148, 163, 184, 0.04);
   border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.12));
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 9px 11px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -855,26 +870,138 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .capsule-title {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   color: var(--text-secondary, #94a3b8);
   font-weight: 600;
 }
 .capsule-globe-icon {
+  display: block;
+  flex-shrink: 0;
   color: var(--accent-cyan, #22d3ee);
+  width: 14px;
+  height: 14px;
 }
 
 /* 统一双通道流矩阵（顶栏独占箭头，下方两行去箭头，中缝线绝对贯通） */
 .stream-columns {
   display: inline-grid;
-  grid-template-columns: 10px 32px 28px 14px 10px 32px 28px;
-  align-items: baseline;
+  grid-template-columns: 11px 36px 30px 14px 11px 36px 30px;
+  align-items: center;
+  font-size: 12px;
+}
+
+/* ── 核心：绝对位置锚定流矩阵 (Strictly Anchored Stream Grid) ── */
+/* 8 槽固定列宽：
+   col 1: 实时标签 (38px, 左对齐，严丝合缝)
+   col 2: 下行箭头 (12px, 居中)
+   col 3: 下行数值 (38px, 右对齐 tabular-nums)
+   col 4: 下行单位 (30px, 左对齐)
+   col 5: 隔离中点 (10px, 居中)
+   col 6: 上行箭头 (12px, 居中)
+   col 7: 上行数值 (38px, 右对齐 tabular-nums)
+   col 8: 上行单位 (30px, 左对齐)
+   总宽度固定 208px，右侧贴齐，左侧坐标绝对锁死，0 像素水平抖动！
+*/
+.stream-anchored {
+  display: inline-grid;
+  grid-template-columns: 38px 12px 38px 30px 10px 12px 38px 30px;
+  align-items: center;
+  justify-items: stretch;
+  width: 208px;
+  user-select: none;
+}
+
+.stream-anchored .anchored-label {
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted, #94a3b8);
+  white-space: nowrap;
+}
+
+.stream-anchored .col-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.stream-anchored .indicator-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.stream-anchored .col-indicator.rx .indicator-glyph {
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--accent-cyan, #22d3ee);
+}
+.stream-anchored .col-indicator.tx .indicator-glyph {
+  background: rgba(96, 165, 250, 0.12);
+  color: var(--accent-blue, #60a5fa);
+}
+
+.stream-anchored .col-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  font-size: 12.5px;
+}
+.stream-anchored .col-num.rx {
+  color: var(--accent-cyan, #22d3ee);
+}
+.stream-anchored .col-num.tx {
+  color: var(--accent-blue, #60a5fa);
+}
+
+.stream-anchored .col-unit {
+  text-align: left;
+  padding-left: 2px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+.stream-anchored .col-unit.rx {
+  color: var(--accent-cyan, #22d3ee);
+}
+.stream-anchored .col-unit.tx {
+  color: var(--accent-blue, #60a5fa);
+}
+
+.stream-anchored .speed-sep {
+  text-align: center;
+  opacity: 0.35;
+  color: var(--text-muted, #94a3b8);
+  font-size: 11px;
+}
+
+/* 浅色模式适配 */
+[data-theme="light"] .stream-anchored .col-num.rx,
+[data-theme="light"] .stream-anchored .col-unit.rx {
+  color: #0a6c82;
+}
+[data-theme="light"] .stream-anchored .col-num.tx,
+[data-theme="light"] .stream-anchored .col-unit.tx {
+  color: #2563eb;
+}
+[data-theme="light"] .stream-anchored .col-indicator.rx .indicator-glyph {
+  background: rgba(10, 108, 130, 0.1);
+  color: #0a6c82;
+}
+[data-theme="light"] .stream-anchored .col-indicator.tx .indicator-glyph {
+  background: rgba(37, 99, 235, 0.1);
+  color: #2563eb;
 }
 
 .col-indicator {
@@ -901,7 +1028,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 .col-unit {
   text-align: right; /* 统一右对齐：顶栏 /s 贴右，下方 B 贴右 */
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--text-muted, #94a3b8);
 }
 .capsule-header .col-unit.rx { color: var(--accent-cyan, #22d3ee); opacity: 0.85; }
@@ -912,7 +1039,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .col-sep {
   text-align: center;
   color: var(--border-subtle, rgba(148, 163, 184, 0.35));
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
 }
 
@@ -926,8 +1053,10 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .quota-rail-info {
   display: flex;
   justify-content: space-between;
-  align-items: baseline;
-  font-size: 10.5px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 12px;
   color: var(--text-muted, #64748b);
 }
 
@@ -943,7 +1072,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 .capsule-progress-track {
   width: 100%;
-  height: 4px;
+  height: 4.5px;
   background: rgba(148, 163, 184, 0.14);
   border-radius: 99px;
   overflow: hidden;
@@ -959,48 +1088,63 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .capsule-traffic-matrix {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 6px;
 }
 
 .traffic-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 11px;
+  min-height: 18px;
+  font-size: 12px;
+}
+
+/* 按字形的大写高度裁去上下留白，再对齐中英文的可见中心。 */
+.traffic-row :is(.scope-label, .total-num, .total-unit, .reset-tag, .col-num, .col-unit) {
+  text-box: trim-both cap alphabetic;
+}
+
+.traffic-row .scope-label {
+  transform: translateY(0.75px);
+}
+
+.traffic-row :is(.total-num, .reset-tag, .col-num) {
+  transform: translateY(0.5px);
 }
 
 .traffic-row-left {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   color: var(--text-muted, #64748b);
 }
 
 .scope-label {
   display: inline-block;
-  width: 36px;
+  width: 42px;
   color: var(--text-secondary, #94a3b8);
   font-weight: 500;
 }
 
 .total-vol-slot {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
 }
 
 .total-num {
-  min-width: 28px;
+  min-width: 30px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary, #f1f5f9);
 }
 
 .total-unit {
-  width: 22px;
+  width: 24px;
   text-align: right; /* "B" 严格右对齐锚定 */
-  font-size: 10.5px;
+  font-size: 11.5px;
   color: var(--text-muted, #94a3b8);
-  margin-left: 1.5px;
+  margin-left: 2px;
 }
 
 .meta-dot {
@@ -1010,7 +1154,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 .reset-tag {
   color: var(--text-muted, #64748b);
-  font-size: 10.5px;
+  font-size: 11.5px;
 }
 
 [data-theme="light"] .wan-capsule {
@@ -1067,12 +1211,12 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 .fallback-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text-primary, #f1f5f9);
 }
 .fallback-desc {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted, #64748b);
 }
 
@@ -1096,9 +1240,9 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary, #94a3b8);
-  padding: 2px 7px;
+  padding: 2.5px 8px;
   border-radius: 6px;
   background: rgba(148, 163, 184, 0.06);
 }
@@ -1108,8 +1252,8 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .dot-indicator {
-  width: 6px;
-  height: 6px;
+  width: 6.5px;
+  height: 6.5px;
   border-radius: 50%;
   flex-shrink: 0;
 }
@@ -1128,12 +1272,12 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted, #64748b);
 }
 .docker-whale-svg {
-  width: 14px;
-  height: 11px;
+  width: 15px;
+  height: 12px;
   color: var(--accent-cyan, #22d3ee);
 }
 
@@ -1141,13 +1285,13 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--text-secondary, #94a3b8);
   background: transparent;
   border: none;
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 2.5px 7px;
   border-radius: 4px;
   transition: all 0.15s ease;
 }
@@ -1157,6 +1301,8 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .trigger-arrow {
+  width: 13px;
+  height: 13px;
   opacity: 0.6;
   transition: transform 0.15s;
 }

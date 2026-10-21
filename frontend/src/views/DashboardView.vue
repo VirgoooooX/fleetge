@@ -73,7 +73,7 @@
       :host-name="activeBillHost?.display_name || ''"
       :subscription="activeBillData"
       :traffic="activeQuotaData"
-      @edit="goToSettings(activeBillHost?.host_id)"
+      @edit="editHostSubscription(activeBillHost?.host_id)"
       @renew="handleRenewSuccess"
     />
 
@@ -152,9 +152,10 @@ function openHostBill(host: any) {
   billDialogVisible.value = true;
 }
 
-function goToSettings(hostId?: string) {
+function editHostSubscription(hostId?: string) {
+  if (!hostId) return;
   billDialogVisible.value = false;
-  router.push({ name: "settings", query: { tab: "hosts", host: hostId } });
+  router.push({ name: "settings", query: { section: "hosts", action: "edit-host", host: hostId } });
 }
 
 function handleRenewSuccess() {

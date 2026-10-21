@@ -567,13 +567,16 @@
     <el-dialog
       v-model="hostDialogVisible"
       :title="hostFormMode === 'create' ? t('settings.hosts.create') : t('settings.hosts.edit')"
-      width="780px"
-      class="ui-dialog subscription-dialog"
+      width="min(760px, calc(100vw - 24px))"
+      top="max(12px, 4vh)"
+      class="ui-dialog host-editor-dialog"
       :before-close="closeHostDialog"
     >
-      <el-form :model="hostForm" label-position="top" ref="hostFormRef" :rules="hostRules" v-loading="hostFormLoading">
-        <div class="dialog-grid">
-          <el-form-item :label="t('settings.hosts.form.id')" prop="host_id">
+      <el-scrollbar max-height="calc(100dvh - 160px)" :tabindex="0">
+      <el-form class="host-editor-form params-settings-form" :model="hostForm" label-position="top" ref="hostFormRef" :rules="hostRules" v-loading="hostFormLoading">
+        <section class="form-cluster">
+          <h3 class="cluster-title">{{ t('settings.hosts.form.basic') }}</h3>
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.id')" prop="host_id">
             <el-input
               class="mono-input"
               v-model="hostForm.host_id"
@@ -582,38 +585,26 @@
             />
           </el-form-item>
 
-          <el-form-item :label="t('settings.hosts.form.name')" prop="display_name">
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.name')" prop="display_name">
             <el-input v-model="hostForm.display_name" :placeholder="t('settings.hosts.form.namePlaceholder')" />
           </el-form-item>
 
-          <el-form-item :label="t('settings.hosts.form.sort')" prop="sort_order">
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.sort')" prop="sort_order">
             <el-input-number v-model="hostForm.sort_order" :min="0" />
           </el-form-item>
 
-          <el-form-item :label="t('settings.hosts.form.trafficBillingDay')" prop="traffic_billing_day">
-            <el-input-number
-              v-model="hostForm.traffic_billing_day"
-              class="billing-day-input"
-              :min="1"
-              :max="31"
-              :step="1"
-            />
-            <div class="form-help">{{ t("settings.hosts.form.trafficBillingDayHelp") }}</div>
-          </el-form-item>
-
-          <el-form-item :label="t('settings.hosts.form.enabled')" prop="enabled">
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.enabled')" prop="enabled">
             <el-switch v-model="hostForm.enabled" />
           </el-form-item>
-        </div>
+        </section>
 
-        <el-divider>{{ t("settings.hosts.form.connection") }}</el-divider>
-
-        <div class="mode-section">
-          <el-form-item :label="t('settings.hosts.form.agentUrl')" prop="agent_url">
+        <section class="form-cluster">
+          <h3 class="cluster-title">{{ t('settings.hosts.form.connection') }}</h3>
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.agentUrl')" prop="agent_url">
             <el-input class="mono-input" v-model="hostForm.agent_url" placeholder="http://your-host:8080/fleetge-random-path" />
             <div class="form-help">{{ t("settings.hosts.form.agentUrlHelp") }}</div>
           </el-form-item>
-          <el-form-item :label="t('settings.hosts.form.agentToken')" prop="agent_token">
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.agentToken')" prop="agent_token">
             <el-input
               class="mono-input"
               v-model="hostForm.agent_token"
@@ -622,19 +613,20 @@
               :placeholder="hostFormMode === 'edit' ? t('settings.hosts.form.unchangedPlaceholder') : t('settings.hosts.form.agentTokenPlaceholder')"
             />
           </el-form-item>
-        </div>
+        </section>
 
-        <el-collapse v-model="hostDialogPanels" class="host-subscription-collapse">
-          <el-collapse-item name="subscription">
-            <template #title>{{ t("settings.hosts.subscription.title") }}</template>
-            <div class="dialog-grid">
-              <el-form-item :label="t('settings.hosts.subscription.provider')">
+        <section class="form-cluster">
+          <header class="host-editor-section-header">
+            <h3 class="cluster-title">{{ t('settings.hosts.subscription.plan') }}</h3>
+            <el-button v-if="hostFormMode === 'edit'" class="ui-button ui-button--compact" @click="openRenewalDialog">{{ t('settings.hosts.renewal.open') }}</el-button>
+          </header>
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.provider')">
                 <el-input v-model="subscriptionForm.provider" />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.planName')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.planName')">
                 <el-input v-model="subscriptionForm.plan_name" />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.amount')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.amount')">
                 <div class="subscription-inline-inputs">
                   <el-input-number v-model="subscriptionForm.payment_amount" :min="0" :precision="4" :step="1" />
                   <el-select v-model="subscriptionForm.currency" class="subscription-currency-select">
@@ -642,31 +634,31 @@
                   </el-select>
                 </div>
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.paymentCycle')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.paymentCycle')">
                 <el-select v-model="subscriptionForm.payment_cycle" clearable>
                   <el-option v-for="cycle in paymentCycles" :key="cycle.value" :label="t(cycle.label)" :value="cycle.value" />
                 </el-select>
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.nextPayment')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.nextPayment')">
                 <el-date-picker v-model="subscriptionForm.next_payment_date" type="date" value-format="YYYY-MM-DD" clearable />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.expiryDate')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.expiryDate')">
                 <el-date-picker v-model="subscriptionForm.service_expiry_date" type="date" value-format="YYYY-MM-DD" clearable />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.autoRenew')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.autoRenew')">
                 <el-switch v-model="subscriptionForm.auto_renew" />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.managementUrl')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.managementUrl')">
                 <el-input v-model="subscriptionForm.management_url" placeholder="https://" />
               </el-form-item>
-            </div>
+        </section>
 
-            <el-divider>{{ t("settings.hosts.subscription.traffic") }}</el-divider>
-            <div class="dialog-grid">
-              <el-form-item :label="t('settings.hosts.subscription.quotaEnabled')">
+        <section class="form-cluster">
+          <h3 class="cluster-title">{{ t('settings.hosts.subscription.trafficAndAlerts') }}</h3>
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.quotaEnabled')">
                 <el-switch v-model="subscriptionForm.quota_enabled" />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.quota')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.quota')">
                 <div class="subscription-inline-inputs">
                   <el-input-number
                     v-model="subscriptionForm.traffic_quota_value"
@@ -680,41 +672,39 @@
                   </el-select>
                 </div>
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.direction')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.direction')">
                 <el-select v-model="subscriptionForm.traffic_direction" :disabled="!subscriptionForm.quota_enabled">
                   <el-option v-for="direction in trafficDirections" :key="direction.value" :label="t(direction.label)" :value="direction.value" />
                 </el-select>
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.timezone')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.form.trafficBillingDay')" prop="traffic_billing_day">
+                <el-input-number v-model="hostForm.traffic_billing_day" :min="1" :max="31" :step="1" />
+                <div class="form-help">{{ t('settings.hosts.form.trafficBillingDayHelp') }}</div>
+              </el-form-item>
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.timezone')">
                 <el-input v-model="subscriptionForm.billing_timezone" placeholder="Asia/Shanghai" :disabled="!subscriptionForm.quota_enabled" />
               </el-form-item>
-            </div>
-            <div class="form-help subscription-help">{{ t("settings.hosts.subscription.trafficHelp") }}</div>
-
-            <el-divider>{{ t("settings.hosts.subscription.alerts") }}</el-divider>
-            <div class="dialog-grid">
-              <el-form-item :label="t('settings.hosts.subscription.alertsEnabled')">
+              <el-form-item class="settings-field-row" :label="t('settings.hosts.subscription.alertsEnabled')">
                 <el-switch v-model="subscriptionForm.alerts_enabled" />
               </el-form-item>
-              <el-form-item :label="t('settings.hosts.subscription.notes')" class="subscription-notes">
-                <el-input v-model="subscriptionForm.notes" type="textarea" :rows="3" maxlength="4000" show-word-limit />
+              <el-form-item class="settings-field-row host-editor-notes" :label="t('settings.hosts.subscription.notes')">
+                <el-input v-model="subscriptionForm.notes" type="textarea" :rows="2" maxlength="4000" show-word-limit />
               </el-form-item>
-            </div>
-            <div v-if="hostFormMode === 'edit'" class="subscription-renewal-action">
-              <el-button size="small" @click="openRenewalDialog">{{ t("settings.hosts.renewal.open") }}</el-button>
-            </div>
-          </el-collapse-item>
-        </el-collapse>
+          <p class="host-editor-help">{{ t('settings.hosts.subscription.trafficHelp') }}</p>
+        </section>
+      </el-form>
+      </el-scrollbar>
 
-        <div class="dialog-actions-row">
-          <el-button type="success" plain @click="testFormConnection" :loading="testConnectionLoading">
+      <template #footer>
+        <div class="host-editor-actions">
+          <el-button class="ui-button" @click="testFormConnection" :loading="testConnectionLoading">
             {{ t("settings.hosts.action.test") }}
           </el-button>
           <div class="spacer"></div>
-          <el-button @click="closeHostDialog">{{ t("compose.cancel") }}</el-button>
-          <el-button type="primary" @click="saveHostForm" :disabled="hostFormMode === 'edit' && !hostSubscriptionLoaded">{{ t("compose.saveAction") }}</el-button>
+          <el-button class="ui-button" @click="closeHostDialog">{{ t('compose.cancel') }}</el-button>
+          <el-button class="ui-button" type="primary" @click="saveHostForm" :loading="hostFormLoading" :disabled="hostFormMode === 'edit' && !hostSubscriptionLoaded">{{ t('compose.saveAction') }}</el-button>
         </div>
-      </el-form>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="renewalDialogVisible" :title="t('settings.hosts.renewal.title')" width="520px" class="ui-dialog">
@@ -1273,7 +1263,6 @@ const testConnectionLoading = ref(false);
 const hostFormRef = ref<FormInstance>();
 const hostSubscriptionLoaded = ref(false);
 let hostDialogRequest = 0;
-const hostDialogPanels = ref<string[]>([]);
 const renewalDialogVisible = ref(false);
 const renewalSaving = ref(false);
 const renewalSuggestion = ref("");
@@ -1394,7 +1383,6 @@ function openCreateHostDialog() {
   hostForm.agent_url = "";
   hostForm.agent_token = "";
   resetSubscriptionForm();
-  hostDialogPanels.value = [];
   hostDialogVisible.value = true;
 }
 
@@ -1410,7 +1398,6 @@ async function openEditHostDialog(row: HostConfigResponse) {
   hostForm.agent_token = "";
   resetSubscriptionForm();
   hostSubscriptionLoaded.value = false;
-  hostDialogPanels.value = [];
   hostDialogVisible.value = true;
   hostFormLoading.value = true;
   try {
@@ -2077,9 +2064,18 @@ function openAuditDrawer(row: AuditEntry) {
   auditDrawerVisible.value = true;
 }
 
+function openHostEditorFromRoute() {
+  const hostId = route.query.host;
+  if (route.query.action !== "edit-host" || typeof hostId !== "string") return;
+  const host = store.hosts.find((item) => item.host_id === hostId);
+  if (!host) return;
+  void router.replace({ name: "settings", query: { section: "hosts" } });
+  void openEditHostDialog(host);
+}
+
 watch(
-  () => route.query,
-  (query) => {
+  [() => route.query, () => store.hosts],
+  ([query]) => {
     const section = Array.isArray(query.section) ? query.section[0] : query.section;
     if (section && validSections.includes(section as SettingsSectionId)) {
       activeSection.value = section as SettingsSectionId;
@@ -2089,6 +2085,7 @@ watch(
       openAddHostChoiceDialog();
       void router.replace({ name: "settings", query: { section: "hosts" } });
     }
+    openHostEditorFromRoute();
   },
   { immediate: true },
 );
@@ -2443,18 +2440,12 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.dialog-grid,
 .icon-form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
 }
 
-.billing-day-input {
-  width: 100%;
-}
-
-.mode-section,
 .add-icon-form {
   background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
@@ -2462,32 +2453,90 @@ onBeforeUnmount(() => {
   padding: 16px;
 }
 
-.host-subscription-collapse {
-  margin-top: 16px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  background: var(--surface-panel);
+:global(.el-dialog.host-editor-dialog) {
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--ui-radius-lg);
 }
 
-.host-subscription-collapse :deep(.el-collapse-item__header) {
-  padding: 0 16px;
-  color: var(--text-primary);
-  background: transparent;
-  font-weight: 700;
+:global(.host-editor-dialog .el-dialog__header) {
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.host-subscription-collapse :deep(.el-collapse-item__wrap) {
-  background: transparent;
+:global(.host-editor-dialog .el-dialog__body) {
+  padding: 0;
 }
 
-.host-subscription-collapse :deep(.el-collapse-item__content) {
-  padding: 16px;
+:global(.host-editor-dialog .el-dialog__footer) {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
 }
 
-.host-subscription-collapse :deep(.el-date-editor.el-input),
-.host-subscription-collapse :deep(.el-select),
-.subscription-inline-inputs .el-input-number {
+.host-editor-form {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.host-editor-form .cluster-title {
+  padding: 9px 12px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  text-transform: none;
+}
+
+.host-editor-form .settings-field-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 16px;
+  padding: 6px 12px;
+}
+
+.host-editor-form .settings-field-row :deep(.el-form-item__label) {
+  display: block;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  white-space: normal;
+}
+
+.host-editor-form .settings-field-row :deep(.el-form-item__content) {
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+.host-editor-form :deep(.el-input),
+.host-editor-form :deep(.el-select),
+.host-editor-form :deep(.el-date-editor.el-input),
+.host-editor-form :deep(.el-textarea) {
   width: 100%;
+}
+
+.host-editor-form :deep(.el-input-number) {
+  width: 148px;
+  max-width: 100%;
+}
+
+.host-editor-form .form-help {
+  margin-top: 4px;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.host-editor-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--ui-dashboard-inset-bg);
+}
+
+.host-editor-section-header .cluster-title {
+  border: 0;
+  background: transparent;
 }
 
 .subscription-inline-inputs {
@@ -2496,22 +2545,54 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.subscription-currency-select {
-  flex: 0 0 96px;
+.subscription-inline-inputs :deep(.el-input-number) {
+  flex: 1;
+  width: 0;
+  min-width: 0;
 }
 
-.subscription-notes {
-  grid-column: 1 / -1;
+.host-editor-form :deep(.subscription-currency-select) {
+  flex: 0 0 88px;
+  width: 88px;
 }
 
-.subscription-help {
-  margin-top: -6px;
+.host-editor-help {
+  margin: 0;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 
-.subscription-renewal-action {
+.host-editor-actions {
   display: flex;
-  justify-content: flex-end;
-  margin-top: 8px;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-editor-actions .spacer {
+  flex: 1;
+}
+
+@media (max-width: 600px) {
+  .host-editor-form {
+    padding: 12px;
+  }
+
+  .host-editor-form .settings-field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .host-editor-form :deep(.el-form-item__label),
+  .host-editor-form :deep(.el-form-item__content) {
+    grid-column: 1;
+  }
+
+  :global(.host-editor-dialog .el-dialog__header),
+  :global(.host-editor-dialog .el-dialog__footer) {
+    padding: 12px;
+  }
 }
 
 .dialog-actions-row {
@@ -2866,7 +2947,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
-  .dialog-grid,
   .icon-form-grid {
     grid-template-columns: 1fr;
   }

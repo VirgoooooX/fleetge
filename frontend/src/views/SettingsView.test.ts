@@ -8,6 +8,7 @@ const parsed = ts.createSourceFile("SettingsView.ts", script, ts.ScriptTarget.La
 const handlers = new Set([
   "openCreateHostDialog", "openEditHostDialog", "closeHostDialog",
   "prepareHostPayload", "resetSubscriptionForm", "applySubscription", "saveHostForm",
+  "openHostEditorFromRoute",
 ]);
 const selected = parsed.statements.filter((node) =>
   (ts.isFunctionDeclaration(node) && node.name && handlers.has(node.name.text)) ||
@@ -22,15 +23,18 @@ function fixture() {
     hostForm: { agent_token: "previous-input" } as Record<string, any>,
     subscriptionForm: {} as Record<string, any>,
     hostFormMode: value("edit"), hostSubscriptionLoaded: value(false),
-    hostDialogPanels: value([]), hostDialogVisible: value(false),
+    hostDialogVisible: value(false),
     hostFormLoading: value(false), renewalDialogVisible: value(false),
     hostFormRef: value({ clearValidate: vi.fn(), validate: vi.fn().mockResolvedValue(true) }),
-    store: { hosts: [], createHost: vi.fn().mockResolvedValue({}), updateHost: vi.fn().mockResolvedValue({}) },
+    store: { hosts: [] as Record<string, any>[], createHost: vi.fn().mockResolvedValue({}), updateHost: vi.fn().mockResolvedValue({}) },
+    route: { query: {} as Record<string, unknown> },
+    router: { replace: vi.fn() },
     apiClient: { get: vi.fn(), put: vi.fn().mockResolvedValue({}) },
     ElMessage: { error: vi.fn(), success: vi.fn() }, t: (key: string) => key,
   };
   const handlers = new Function("ctx", `with (ctx) { ${code}; return {
-    openCreateHostDialog, openEditHostDialog, closeHostDialog, prepareHostPayload, saveHostForm
+    openCreateHostDialog, openEditHostDialog, closeHostDialog, prepareHostPayload, saveHostForm,
+    openHostEditorFromRoute
   }; }`)(ctx);
   return { ctx, handlers };
 }
@@ -44,6 +48,44 @@ function deferred() {
 const host = (id: string) => ({ host_id: id, agent_url: `http://${id}`, display_name: id });
 
 describe("Host editing isolation", () => {
+  it("opens the billed Host editor with its subscription data", async () => {
+    const { ctx, handlers } = fixture();
+    ctx.route.query = { section: "hosts", action: "edit-host", host: "b" };
+    ctx.store.hosts = [host("a"), host("b")];
+    ctx.apiClient.get.mockResolvedValue({ data: { provider: "provider-b" } });
+
+    handlers.openHostEditorFromRoute();
+
+    expect(ctx.hostDialogVisible.value).toBe(true);
+    expect(ctx.hostForm.host_id).toBe("b");
+    expect(ctx.apiClient.get).toHaveBeenCalledWith("/api/hosts/b/subscription");
+    expect(ctx.router.replace).toHaveBeenCalledWith({ name: "settings", query: { section: "hosts" } });
+    await vi.waitFor(() => expect(ctx.subscriptionForm.provider).toBe("provider-b"));
+  });
+
+  it("waits for the requested Host to load without opening a different Host", () => {
+    const { ctx, handlers } = fixture();
+    ctx.route.query = { section: "hosts", action: "edit-host", host: "b" };
+    ctx.store.hosts = [host("a")];
+    handlers.openHostEditorFromRoute();
+    expect(ctx.hostDialogVisible.value).toBe(false);
+    expect(ctx.router.replace).not.toHaveBeenCalled();
+
+    ctx.apiClient.get.mockResolvedValue({ data: {} });
+    ctx.store.hosts = [host("a"), host("b")];
+    handlers.openHostEditorFromRoute();
+    expect(ctx.hostForm.host_id).toBe("b");
+    expect(ctx.hostDialogVisible.value).toBe(true);
+  });
+
+  it("does not reopen the editor after its route action has been consumed", () => {
+    const { ctx, handlers } = fixture();
+    ctx.route.query = { section: "hosts" };
+    ctx.store.hosts = [host("a")];
+    handlers.openHostEditorFromRoute();
+    expect(ctx.hostDialogVisible.value).toBe(false);
+    expect(ctx.apiClient.get).not.toHaveBeenCalled();
+  });
   it("clears the previous Host token before preparing another Host update", async () => {
     const { ctx, handlers } = fixture();
     ctx.apiClient.get.mockResolvedValue({ data: { provider: "B" } });

@@ -4,6 +4,9 @@
  */
 
 export interface I18nSchema {
+  "settings.hosts.form.basic": string;
+  "settings.hosts.subscription.plan": string;
+  "settings.hosts.subscription.trafficAndAlerts": string;
   "audit.skipped": string;
   "audit.uncertain": string;
   "audit.action.autoUpdate": string;
