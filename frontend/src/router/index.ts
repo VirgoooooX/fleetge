@@ -2,9 +2,9 @@ import { createRouter, createWebHistory } from "vue-router";
 import { useAuthStore } from "@/stores/auth";
 import LoginView from "@/views/LoginView.vue";
 import DashboardView from "@/views/DashboardView.vue";
-import HostDetailView from "@/views/HostDetailView.vue";
-import SettingsView from "@/views/SettingsView.vue";
-import AppsView from "@/views/AppsView.vue";
+const HostDetailView = () => import("@/views/HostDetailView.vue");
+const SettingsView = () => import("@/views/SettingsView.vue");
+const AppsView = () => import("@/views/AppsView.vue");
 const FleetMapView = () => import("@/views/FleetMapView.vue");
 
 const router = createRouter({

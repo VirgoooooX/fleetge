@@ -1,4 +1,5 @@
 import axios from "axios";
+import { redirectToLogin } from "./authRedirect";
 
 export const apiClient = axios.create({
   baseURL: "", // Same origin with vite proxy
@@ -19,14 +20,7 @@ apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem("token");
-      localStorage.removeItem("username");
-      if (window.location.pathname !== "/login") {
-        const redirect = `${window.location.pathname}${window.location.search}`;
-        window.location.replace(
-          `/login?redirect=${encodeURIComponent(redirect)}`
-        );
-      }
+      redirectToLogin();
     }
     return Promise.reject(error);
   }

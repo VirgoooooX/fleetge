@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { apiClient } from "@/api/client";
+import { useDashboardStore } from "./dashboard";
 
 export interface SettingItem {
   key: string;
@@ -103,14 +104,7 @@ export const useSettingsStore = defineStore("settings", () => {
       const res = await apiClient.put("/api/admin/settings", { settings: updates });
       settings.value = res.data.settings || [];
       
-      // Proactively refresh dashboard store
-      try {
-        const { useDashboardStore } = await import("./dashboard");
-        const dashboardStore = useDashboardStore();
-        void dashboardStore.fetchHosts();
-      } catch (err) {
-        console.warn("Failed to trigger dashboard store refresh:", err);
-      }
+      void useDashboardStore().fetchHosts();
     } catch (e: any) {
       error.value = e.response?.data?.detail || e.message || "Failed to save settings";
       throw e;
@@ -138,12 +132,7 @@ export const useSettingsStore = defineStore("settings", () => {
     try {
       const res = await apiClient.post("/api/admin/hosts", data);
       await fetchHosts();
-      
-      try {
-        const { useDashboardStore } = await import("./dashboard");
-        const dashboardStore = useDashboardStore();
-        void dashboardStore.fetchHosts();
-      } catch (err) {}
+      void useDashboardStore().fetchHosts();
       
       return res.data;
     } catch (e: any) {
@@ -158,12 +147,7 @@ export const useSettingsStore = defineStore("settings", () => {
     try {
       const res = await apiClient.put(`/api/admin/hosts/${hostId}`, data);
       await fetchHosts();
-      
-      try {
-        const { useDashboardStore } = await import("./dashboard");
-        const dashboardStore = useDashboardStore();
-        void dashboardStore.fetchHosts();
-      } catch (err) {}
+      void useDashboardStore().fetchHosts();
       
       return res.data;
     } catch (e: any) {
@@ -178,12 +162,7 @@ export const useSettingsStore = defineStore("settings", () => {
     try {
       await apiClient.delete(`/api/admin/hosts/${hostId}`);
       await fetchHosts();
-      
-      try {
-        const { useDashboardStore } = await import("./dashboard");
-        const dashboardStore = useDashboardStore();
-        void dashboardStore.fetchHosts();
-      } catch (err) {}
+      void useDashboardStore().fetchHosts();
     } catch (e: any) {
       throw e.response?.data?.detail || e.message || "Failed to delete host";
     } finally {

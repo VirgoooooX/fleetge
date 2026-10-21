@@ -723,132 +723,15 @@
       </template>
     </el-dialog>
 
-    <el-dialog
+    <AppProfilesDialog
+      v-if="appProfilesDialogVisible && selectedHost"
+      :key="selectedHost.host_id"
       v-model="appProfilesDialogVisible"
-      :title="t('settings.appProfiles.title', { name: selectedHost?.display_name })"
-      width="880px"
-      class="ui-dialog"
-    >
-      <div class="icons-dialog-body" v-loading="appProfilesLoading">
-        <div class="current-icons-section">
-          <div class="section-kicker">{{ t("settings.appProfiles.existing") }}</div>
-          <el-table :data="appProfilesList" stripe size="small" class="icons-table" :max-height="appProfilesTableMaxHeight">
-            <el-table-column :label="t('settings.appProfiles.col.pattern')" prop="stack_pattern" width="130">
-              <template #default="{ row }">
-                <code class="pattern-code">{{ row.stack_pattern }}</code>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.title')" prop="title" width="130">
-              <template #default="{ row }">
-                <span>{{ row.title || "-" }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.url')" prop="app_url" min-width="150">
-              <template #default="{ row }">
-                <span class="url-text font-mono">{{ row.app_url || "-" }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.group')" prop="group" width="110" align="center">
-              <template #default="{ row }">
-                <div class="app-profile-group-cell">
-                  <el-tag v-if="row.group" size="small">{{ row.group }}</el-tag>
-                  <span v-else>-</span>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.icon')" width="80" align="center">
-              <template #default="{ row }">
-                <div class="app-profile-icon-cell">
-                  <el-image v-if="getAppProfileIconValue(row)" :src="getIconUrl(getAppProfileIconValue(row))" class="icon-preview-cell" fit="contain">
-                    <template #error>
-                      <el-icon class="icon-placeholder-cell"><Picture /></el-icon>
-                    </template>
-                  </el-image>
-                  <span v-else>-</span>
-                </div>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.actions')" width="98" align="center">
-              <template #default="{ row, $index }">
-                <div class="app-profile-row-actions">
-                  <el-button size="small" type="info" plain :icon="Edit" @click="editAppProfile(row, $index)" />
-                  <el-button size="small" type="danger" plain :icon="Delete" @click="removeAppProfile($index)" />
-                </div>
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-
-        <el-divider class="compact-divider">{{ t("settings.appProfiles.addNew") }}</el-divider>
-
-        <el-form :model="appProfileForm" label-position="top" class="add-icon-form" ref="appProfileFormRef" :rules="appProfileRules">
-          <div class="icon-form-grid">
-            <el-form-item :label="t('settings.appProfiles.form.pattern')" prop="stack_pattern">
-              <el-input v-model="appProfileForm.stack_pattern" :placeholder="t('settings.appProfiles.form.patternPlaceholder')" />
-              <div class="form-help" v-html="t('settings.icons.form.patternHelp')"></div>
-            </el-form-item>
-
-            <el-form-item :label="t('settings.appProfiles.form.title')" prop="title">
-              <el-input v-model="appProfileForm.title" :placeholder="t('settings.appProfiles.form.titlePlaceholder')" />
-            </el-form-item>
-
-            <el-form-item :label="t('settings.appProfiles.form.url')" prop="app_url">
-              <el-input v-model="appProfileForm.app_url" :placeholder="t('settings.appProfiles.form.urlPlaceholder')" />
-            </el-form-item>
-
-            <el-form-item :label="t('settings.appProfiles.form.group')" prop="group">
-              <el-input v-model="appProfileForm.group" :placeholder="t('settings.appProfiles.form.groupPlaceholder')" />
-            </el-form-item>
-
-            <el-form-item :label="t('settings.appProfiles.form.source')">
-              <el-radio-group v-model="appProfileForm.sourceType" size="small">
-                <el-radio-button label="none">{{ t("apps.chip.all") }} (None)</el-radio-button>
-                <el-radio-button label="url">{{ t("settings.appProfiles.form.remoteUrl") }}</el-radio-button>
-                <el-radio-button label="local">{{ t("settings.appProfiles.form.localFile") }}</el-radio-button>
-              </el-radio-group>
-            </el-form-item>
-
-            <el-form-item v-if="appProfileForm.sourceType === 'url'" :label="t('settings.appProfiles.form.remoteUrl')" prop="icon_url">
-              <el-input v-model="appProfileForm.icon_url" placeholder="https://cdn.jsdelivr.net/.../logo.svg" />
-            </el-form-item>
-
-            <el-form-item v-else-if="appProfileForm.sourceType === 'local'" :label="t('settings.appProfiles.form.localFile')" prop="icon_file">
-              <div class="local-file-picker">
-                <el-select v-model="appProfileForm.icon_file" :placeholder="t('settings.appProfiles.form.localPlaceholder')" class="file-select">
-                  <el-option v-for="file in availableFiles" :key="file" :label="file" :value="file" />
-                </el-select>
-
-                <el-upload
-                  action="#"
-                  :auto-upload="false"
-                  :show-file-list="false"
-                  :on-change="handleIconFileSelected"
-                  class="upload-trigger"
-                >
-                  <el-button type="info" :icon="Upload" class="ui-button ui-button--muted">{{ t("settings.appProfiles.form.upload") }}</el-button>
-                </el-upload>
-              </div>
-            </el-form-item>
-          </div>
-
-          <div class="icon-form-action">
-            <el-button v-if="editingAppProfileIndex !== null" class="ui-button ui-button--muted" @click="resetAppProfileForm">
-              {{ t("compose.cancel") }}
-            </el-button>
-            <el-button type="primary" class="ui-button ui-button--compact" @click="addAppProfile">
-              {{ editingAppProfileIndex === null ? t("settings.appProfiles.form.addBtn") : t("settings.appProfiles.form.updateBtn") }}
-            </el-button>
-          </div>
-        </el-form>
-      </div>
-
-      <template #footer>
-        <div class="dialog-actions-row">
-          <el-button @click="appProfilesDialogVisible = false">{{ t("compose.cancel") }}</el-button>
-          <el-button type="primary" @click="saveAppProfiles" :loading="store.saving">{{ t("settings.appProfiles.form.saveBtn") }}</el-button>
-        </div>
-      </template>
-    </el-dialog>
+      :host-id="selectedHost.host_id"
+      :host-name="selectedHost.display_name"
+      :stack-icons="selectedHost.stack_icons"
+      @saved="store.fetchHosts()"
+    />
 
     <el-dialog
       v-model="globalEnvDialogVisible"
@@ -933,8 +816,6 @@ import {
   Plus,
   Edit,
   Delete,
-  Picture,
-  Upload,
   Setting as SettingIcon,
   Link,
   Document,
@@ -959,7 +840,8 @@ import {
 } from "@lucide/vue";
 import dayjs from "dayjs";
 import { apiClient } from "@/api/client";
-import { useSettingsStore, type HostConfigResponse, type AppProfileEntry, type EnrollmentStatus } from "@/stores/settings";
+import { useSettingsStore, type HostConfigResponse, type EnrollmentStatus } from "@/stores/settings";
+import AppProfilesDialog from "@/components/AppProfilesDialog.vue";
 import { useDashboardStore, type UpdateResult } from "@/stores/dashboard";
 import { useMobile } from "@/composables/useMobile";
 import { remainingInviteSeconds } from "@/utils/dateTime";
@@ -1624,235 +1506,13 @@ async function testFormConnection() {
 
 const appProfilesDialogVisible = ref(false);
 const selectedHost = ref<HostConfigResponse | null>(null);
-const appProfilesLoading = ref(false);
-const appProfilesList = ref<AppProfileEntry[]>([]);
-const availableFiles = ref<string[]>([]);
-const appProfilesTableMaxHeight = computed(() => (appProfilesList.value.length > 10 ? 460 : undefined));
 const globalEnvDialogVisible = ref(false);
 const globalEnvLoading = ref(false);
 const globalEnvContent = ref("");
 
-const appProfileForm = reactive({
-  stack_pattern: "",
-  title: "",
-  app_url: "",
-  group: "",
-  sourceType: "none" as "none" | "url" | "local",
-  icon_url: "",
-  icon_file: "",
-});
-
-const appProfileFormRef = ref<FormInstance>();
-const editingAppProfileIndex = ref<number | null>(null);
-const appProfileRules = reactive<FormRules>({
-  stack_pattern: [{ required: true, message: t("settings.icons.required.pattern"), trigger: "blur" }],
-  app_url: [{ validator: validateHttpUrl, trigger: "blur" }],
-  icon_url: [{ validator: validateHttpUrl, trigger: "blur" }],
-});
-
-function resetAppProfileForm() {
-  appProfileForm.stack_pattern = "";
-  appProfileForm.title = "";
-  appProfileForm.app_url = "";
-  appProfileForm.group = "";
-  appProfileForm.sourceType = "none";
-  appProfileForm.icon_url = "";
-  appProfileForm.icon_file = "";
-  editingAppProfileIndex.value = null;
-  appProfileFormRef.value?.clearValidate();
-}
-
-function normalizeAppProfile(row: AppProfileEntry): AppProfileEntry {
-  const legacyRow = row as AppProfileEntry & {
-    icon?: string | null;
-    icon_file?: string | null;
-    icon_url?: string | null;
-  };
-
-  return {
-    stack_pattern: row.stack_pattern,
-    title: row.title || null,
-    app_url: row.app_url || null,
-    group: row.group || null,
-    icon_value: row.icon_value || legacyRow.icon_url || legacyRow.icon_file || legacyRow.icon || null,
-  };
-}
-
-async function openAppProfilesDialog(row: HostConfigResponse) {
+function openAppProfilesDialog(row: HostConfigResponse) {
   selectedHost.value = row;
-  appProfilesList.value = [];
-  availableFiles.value = [];
-  resetAppProfileForm();
   appProfilesDialogVisible.value = true;
-
-  appProfilesLoading.value = true;
-  try {
-    const res = await store.fetchAppProfiles(row.host_id);
-    appProfilesList.value = (res.profiles || []).map(normalizeAppProfile);
-    availableFiles.value = res.available_files || [];
-  } catch (e: any) {
-    ElMessage.error(e || t("settings.appProfiles.fetchError"));
-  } finally {
-    appProfilesLoading.value = false;
-  }
-}
-
-function getIconUrl(value: string | null) {
-  if (!value) return "";
-  if (/^https?:\/\//.test(value)) return value;
-  if (value.startsWith("/api/") || value.startsWith("/")) return value;
-  return `/api/static/icons/${value}`;
-}
-
-function matchIconValue(name: string, mapping?: Record<string, string> | null): string | null {
-  if (!mapping) return null;
-  if (mapping[name]) return mapping[name];
-
-  for (const [key, value] of Object.entries(mapping)) {
-    if (key.endsWith("*") && !key.startsWith("*") && name.startsWith(key.slice(0, -1))) {
-      return value;
-    }
-  }
-
-  for (const [key, value] of Object.entries(mapping)) {
-    if (key.startsWith("*") && !key.endsWith("*") && name.endsWith(key.slice(1))) {
-      return value;
-    }
-  }
-
-  return null;
-}
-
-function getAppProfileIconValue(row: AppProfileEntry): string | null {
-  return row.icon_value || matchIconValue(row.stack_pattern, selectedHost.value?.stack_icons);
-}
-
-function removeAppProfile(index: number) {
-  appProfilesList.value.splice(index, 1);
-  if (editingAppProfileIndex.value === index) {
-    resetAppProfileForm();
-  } else if (editingAppProfileIndex.value !== null && editingAppProfileIndex.value > index) {
-    editingAppProfileIndex.value -= 1;
-  }
-}
-
-function editAppProfile(row: AppProfileEntry, index: number) {
-  editingAppProfileIndex.value = index;
-  appProfileForm.stack_pattern = row.stack_pattern;
-  appProfileForm.title = row.title || "";
-  appProfileForm.app_url = row.app_url || "";
-  appProfileForm.group = row.group || "";
-
-  if (!row.icon_value) {
-    appProfileForm.sourceType = "none";
-    appProfileForm.icon_url = "";
-    appProfileForm.icon_file = "";
-  } else if (/^https?:\/\//.test(row.icon_value) || row.icon_value.startsWith("/")) {
-    appProfileForm.sourceType = "url";
-    appProfileForm.icon_url = row.icon_value;
-    appProfileForm.icon_file = "";
-  } else {
-    appProfileForm.sourceType = "local";
-    appProfileForm.icon_url = "";
-    appProfileForm.icon_file = row.icon_value;
-  }
-}
-
-async function handleIconFileSelected(uploadFile: any) {
-  if (!selectedHost.value) return;
-  const rawFile = uploadFile.raw;
-  if (!rawFile) return;
-
-  if (rawFile.size > 2 * 1024 * 1024) {
-    ElMessage.error(t("settings.icons.upload.tooLarge"));
-    return;
-  }
-
-  const loadingMsg = ElMessage({
-    message: t("settings.icons.upload.progress"),
-    duration: 0,
-    type: "info",
-  });
-
-  try {
-    const filename = await store.uploadIcon(selectedHost.value.host_id, rawFile);
-    loadingMsg.close();
-    ElMessage.success(t("settings.icons.upload.success", { name: filename }));
-
-    if (!availableFiles.value.includes(filename)) {
-      availableFiles.value.push(filename);
-      availableFiles.value.sort();
-    }
-    appProfileForm.icon_file = filename;
-  } catch (e: any) {
-    loadingMsg.close();
-    ElMessage.error(e || t("settings.icons.upload.error"));
-  }
-}
-
-async function addAppProfile() {
-  if (!appProfileForm.stack_pattern.trim()) {
-    ElMessage.error(t("settings.icons.required.pattern"));
-    return;
-  }
-
-  let val: string | null = null;
-  if (appProfileForm.sourceType === "url") {
-    if (!appProfileForm.icon_url.trim()) {
-      ElMessage.error(t("settings.icons.required.url"));
-      return;
-    }
-    if (!/^https?:\/\//.test(appProfileForm.icon_url.trim())) {
-      ElMessage.error(t("settings.hosts.form.invalid.url"));
-      return;
-    }
-    val = appProfileForm.icon_url.trim();
-  } else if (appProfileForm.sourceType === "local") {
-    if (!appProfileForm.icon_file) {
-      ElMessage.error(t("settings.icons.required.file"));
-      return;
-    }
-    val = appProfileForm.icon_file;
-  }
-
-  const editingIndex = editingAppProfileIndex.value;
-  const dupIndex = appProfilesList.value.findIndex((i) => i.stack_pattern === appProfileForm.stack_pattern.trim());
-
-  const newProfile: AppProfileEntry = {
-    stack_pattern: appProfileForm.stack_pattern.trim(),
-    title: appProfileForm.title.trim() || null,
-    app_url: appProfileForm.app_url.trim() || null,
-    group: appProfileForm.group.trim() || null,
-    icon_value: val,
-  };
-
-  if (editingIndex !== null && dupIndex > -1 && dupIndex !== editingIndex) {
-    appProfilesList.value[dupIndex] = newProfile;
-    appProfilesList.value.splice(editingIndex, 1);
-    ElMessage.info(t("settings.icons.mapping.updated", { pattern: appProfileForm.stack_pattern.trim() }));
-  } else if (editingIndex !== null) {
-    appProfilesList.value[editingIndex] = newProfile;
-    ElMessage.info(t("settings.icons.mapping.updated", { pattern: appProfileForm.stack_pattern.trim() }));
-  } else if (dupIndex > -1) {
-    appProfilesList.value[dupIndex] = newProfile;
-    ElMessage.info(t("settings.icons.mapping.updated", { pattern: appProfileForm.stack_pattern.trim() }));
-  } else {
-    appProfilesList.value.push(newProfile);
-  }
-
-  resetAppProfileForm();
-}
-
-async function saveAppProfiles() {
-  if (!selectedHost.value) return;
-  try {
-    await store.saveAppProfiles(selectedHost.value.host_id, appProfilesList.value);
-    ElMessage.success(t("settings.appProfiles.saveSuccess", { name: selectedHost.value.display_name }));
-    appProfilesDialogVisible.value = false;
-    await store.fetchHosts();
-  } catch (e: any) {
-    ElMessage.error(e || t("settings.appProfiles.saveError"));
-  }
 }
 
 async function openGlobalEnvDialog(row: HostConfigResponse) {
@@ -2236,8 +1896,7 @@ onBeforeUnmount(() => {
 }
 
 .input-with-unit,
-.icons-preview-strip,
-.local-file-picker {
+.icons-preview-strip {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2310,8 +1969,7 @@ onBeforeUnmount(() => {
 .host-code-text,
 .audit-code,
 .detail-text,
-.digest-text,
-.url-text {
+.digest-text {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
@@ -2324,16 +1982,6 @@ onBeforeUnmount(() => {
   font-size: var(--text-sm);
   background: rgba(5, 9, 20, 0.78);
   color: #e5edf8;
-  border-radius: 4px;
-  padding: 2px 6px;
-}
-
-.pattern-code {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--text-primary);
-  background: var(--surface-panel-raised);
-  border: 1px solid var(--border-subtle);
   border-radius: 4px;
   padding: 2px 6px;
 }
@@ -2438,19 +2086,6 @@ onBeforeUnmount(() => {
 
 :deep(.audit-row) {
   cursor: pointer;
-}
-
-.icon-form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-.add-icon-form {
-  background: var(--surface-panel-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 16px;
 }
 
 :global(.el-dialog.host-editor-dialog) {
@@ -2607,7 +2242,6 @@ onBeforeUnmount(() => {
   flex: 1;
 }
 
-.icons-dialog-body,
 .global-env-dialog {
   display: flex;
   flex-direction: column;
@@ -2623,56 +2257,6 @@ onBeforeUnmount(() => {
 .global-env-textarea :deep(textarea) {
   font-size: 12px;
   line-height: 1.55;
-}
-
-.icon-preview-cell {
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  background: var(--surface-panel-raised);
-  overflow: hidden;
-  display: grid;
-  place-items: center;
-}
-
-.icon-preview-cell {
-  width: 32px;
-  height: 32px;
-  padding: 2px;
-}
-
-.icon-placeholder-cell {
-  color: var(--text-muted);
-}
-
-.app-profile-group-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-}
-
-.app-profile-icon-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 0;
-}
-
-.app-profile-row-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-}
-
-.app-profile-row-actions :deep(.el-button) {
-  width: 28px;
-  height: 28px;
-  padding: 0;
-}
-
-.app-profile-row-actions :deep(.el-button + .el-button) {
-  margin-left: 0;
 }
 
 .app-profiles-cell {
@@ -2745,41 +2329,6 @@ onBeforeUnmount(() => {
 .host-icon-btn {
   width: 28px;
   padding: 0;
-}
-
-.file-select {
-  flex: 1;
-}
-
-.compact-divider {
-  margin: 8px 0 2px;
-}
-
-.add-icon-form {
-  padding: 12px;
-}
-
-.add-icon-form .icon-form-grid {
-  gap: 8px 14px;
-}
-
-.add-icon-form :deep(.el-form-item) {
-  margin-bottom: 6px;
-}
-
-.add-icon-form .form-help {
-  margin-top: 4px;
-}
-
-.add-icon-form .local-file-picker {
-  gap: 6px;
-}
-
-.icon-form-action {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 4px;
 }
 
 .audit-detail-list {
@@ -2947,10 +2496,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
-  .icon-form-grid {
-    grid-template-columns: 1fr;
-  }
-
   .settings-tabs {
     padding: 5px;
   }

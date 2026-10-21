@@ -91,6 +91,8 @@
 import { computed } from "vue";
 import { ElMessage } from "element-plus";
 
+import { formatBytes } from "@/utils/formatBytes";
+
 const props = defineProps<{
   modelValue: boolean;
   hostName: string;
@@ -137,19 +139,6 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   };
   const cycleText = cycleMap[cycle] || "年";
   return `${sym}${amount.toFixed(2)} / ${cycleText}`;
-}
-
-function formatBytes(bytes?: number): string {
-  if (bytes == null || isNaN(bytes)) return "0 B";
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let i = 0;
-  let val = bytes;
-  while (val >= 1024 && i < units.length - 1) {
-    val /= 1024;
-    i++;
-  }
-  return `${val < 10 ? val.toFixed(1) : Math.round(val)} ${units[i]}`;
 }
 
 function getExpiryTone(days?: number): string {

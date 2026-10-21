@@ -360,7 +360,7 @@ import { useI18n } from "vue-i18n";
 import {
   Activity, ArrowLeft, ChevronRight, Clock3, Crosshair, ExternalLink, Globe, LoaderCircle,
   LocateFixed, MapPinned, Radio, Server, ShieldCheck, TriangleAlert, Users, X,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { ElMessage } from "element-plus";
 import FleetGeoMap from "@/components/FleetGeoMap.vue";
 import { useMobile } from "@/composables/useMobile";

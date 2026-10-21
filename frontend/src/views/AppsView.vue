@@ -288,114 +288,22 @@
       </div>
     </el-dialog>
 
-    <!-- App Profile Edit Dialog -->
-    <el-dialog
+    <AppProfilesDialog
+      v-if="editProfileVisible"
+      :key="selectedHostId"
       v-model="editProfileVisible"
-      :title="t('settings.appProfiles.title', { name: selectedHostName })"
-      width="820px"
-      custom-class="ui-dialog"
-    >
-      <div class="profile-edit-body" v-loading="profilesLoading">
-        <div class="existing-profiles">
-          <div class="section-kicker">{{ t('settings.appProfiles.existing') }}</div>
-          <el-table :data="profilesList" stripe size="small" max-height="250px">
-            <el-table-column :label="t('settings.appProfiles.col.pattern')" prop="stack_pattern" width="130">
-              <template #default="{ row }">
-                <code class="pattern-code">{{ row.stack_pattern }}</code>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.title')" prop="title" width="130" />
-            <el-table-column :label="t('settings.appProfiles.col.url')" prop="app_url" min-width="150" show-overflow-tooltip />
-            <el-table-column :label="t('settings.appProfiles.col.group')" prop="group" width="100" />
-            <el-table-column :label="t('settings.appProfiles.col.icon')" width="80" align="center">
-              <template #default="{ row }">
-                <el-image v-if="row.icon_value" :src="getIconUrl(row.icon_value)" class="mini-profile-icon" fit="contain">
-                  <template #error>
-                    <el-icon><Picture /></el-icon>
-                  </template>
-                </el-image>
-                <span v-else>-</span>
-              </template>
-            </el-table-column>
-            <el-table-column :label="t('settings.appProfiles.col.actions')" width="110" align="center">
-              <template #default="{ row, $index }">
-                <el-button size="small" type="primary" :icon="Edit" circle @click="editProfileEntry(row)" />
-                <el-button size="small" type="danger" :icon="Delete" circle @click="removeProfileEntry($index)" />
-              </template>
-            </el-table-column>
-          </el-table>
-        </div>
-
-        <el-divider>{{ t('settings.appProfiles.addNew') }}</el-divider>
-
-        <el-form :model="profileForm" label-position="top" class="profile-form" ref="profileFormRef" :rules="profileRules">
-          <div class="profile-form-grid">
-            <el-form-item :label="t('settings.appProfiles.form.pattern')" prop="stack_pattern">
-              <el-input v-model="profileForm.stack_pattern" :placeholder="t('settings.appProfiles.form.patternPlaceholder')" />
-            </el-form-item>
-            <el-form-item :label="t('settings.appProfiles.form.title')" prop="title">
-              <el-input v-model="profileForm.title" :placeholder="t('settings.appProfiles.form.titlePlaceholder')" />
-            </el-form-item>
-            <el-form-item :label="t('settings.appProfiles.form.url')" prop="app_url">
-              <el-input v-model="profileForm.app_url" :placeholder="t('settings.appProfiles.form.urlPlaceholder')" />
-            </el-form-item>
-            <el-form-item :label="t('settings.appProfiles.form.group')" prop="group">
-              <el-input v-model="profileForm.group" :placeholder="t('settings.appProfiles.form.groupPlaceholder')" />
-            </el-form-item>
-            <el-form-item :label="t('settings.appProfiles.form.source')" class="full-width">
-              <el-radio-group v-model="profileForm.sourceType" size="small">
-                <el-radio-button label="none">{{ t('apps.chip.all') }} (None)</el-radio-button>
-                <el-radio-button label="url">{{ t('settings.appProfiles.form.remoteUrl') }}</el-radio-button>
-                <el-radio-button label="local">{{ t('settings.appProfiles.form.localFile') }}</el-radio-button>
-              </el-radio-group>
-            </el-form-item>
-            
-            <el-form-item v-if="profileForm.sourceType === 'url'" :label="t('settings.appProfiles.form.remoteUrl')" prop="icon_url" class="full-width">
-              <el-input v-model="profileForm.icon_url" placeholder="https://cdn.jsdelivr.net/.../logo.svg" />
-            </el-form-item>
-
-            <el-form-item v-else-if="profileForm.sourceType === 'local'" :label="t('settings.appProfiles.form.localFile')" class="full-width">
-              <div class="local-picker-row">
-                <el-select v-model="profileForm.icon_file" :placeholder="t('settings.appProfiles.form.localPlaceholder')" class="flex-1">
-                  <el-option v-for="file in availableFiles" :key="file" :label="file" :value="file" />
-                </el-select>
-                <el-upload
-                  action="#"
-                  :auto-upload="false"
-                  :show-file-list="false"
-                  :on-change="handleIconUpload"
-                  class="uploader"
-                >
-                  <el-button type="info" :icon="Upload" class="ui-button ui-button--muted">{{ t('settings.appProfiles.form.upload') }}</el-button>
-                </el-upload>
-              </div>
-            </el-form-item>
-          </div>
-
-          <div class="profile-add-row">
-            <el-button type="primary" class="ui-button ui-button--compact" @click="addProfileEntry">
-              {{ isEditMode ? t('settings.appProfiles.form.updateBtn') : t('settings.appProfiles.form.addBtn') }}
-            </el-button>
-          </div>
-        </el-form>
-      </div>
-
-      <template #footer>
-        <div class="dialog-actions-row">
-          <el-button @click="editProfileVisible = false">{{ t('compose.cancel') }}</el-button>
-          <el-button type="primary" @click="submitAppProfiles" :loading="store.saving">{{ t('settings.appProfiles.form.saveBtn') }}</el-button>
-        </div>
-      </template>
-    </el-dialog>
+      :host-id="selectedHostId"
+      :host-name="selectedHostName"
+      @saved="fetchApps({ silent: true })"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
-import type { FormInstance, FormRules } from "element-plus";
 import {
   Search,
   Collection,
@@ -408,23 +316,19 @@ import {
   Picture,
   FolderOpened,
   Link,
-  Upload,
-  Delete,
   Grid,
-  Edit,
   Operation,
   Filter,
 } from "@element-plus/icons-vue";
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
-import { useSettingsStore, type AppProfileEntry } from "@/stores/settings";
 import { useDashboardStore } from "@/stores/dashboard";
 import StackOperationDock from "@/components/StackOperationDock.vue";
 import UpdateBadge from "@/components/UpdateBadge.vue";
+import AppProfilesDialog from "@/components/AppProfilesDialog.vue";
 
 const router = useRouter();
 const route = useRoute();
-const store = useSettingsStore();
 const dashboardStore = useDashboardStore();
 const { t } = useI18n();
 
@@ -475,33 +379,6 @@ const contextMenuY = ref(0);
 const editProfileVisible = ref(false);
 const selectedHostId = ref("");
 const selectedHostName = ref("");
-const profilesLoading = ref(false);
-const profilesList = ref<AppProfileEntry[]>([]);
-const availableFiles = ref<string[]>([]);
-const profileFormRef = ref<FormInstance>();
-const profileForm = reactive({
-  stack_pattern: "",
-  title: "",
-  app_url: "",
-  group: "",
-  sourceType: "none",
-  icon_url: "",
-  icon_file: "",
-});
-
-const validateHttpUrl = (_rule: any, value: string, callback: any) => {
-  if (value && !/^https?:\/\//.test(value)) {
-    callback(new Error(t("settings.hosts.form.invalid.url")));
-  } else {
-    callback();
-  }
-};
-
-const profileRules = reactive<FormRules>({
-  stack_pattern: [{ required: true, message: t("settings.icons.required.pattern"), trigger: "blur" }],
-  app_url: [{ validator: validateHttpUrl, trigger: "blur" }],
-  icon_url: [{ validator: validateHttpUrl, trigger: "blur" }],
-});
 
 // Fetch apps aggregator from API
 async function fetchApps(options: { silent?: boolean } = {}) {
@@ -793,156 +670,10 @@ function stopOperation() {
 }
 
 // Profile dialog functions
-async function openAppProfileDialogForHost(hostId: string, hostName: string) {
+function openAppProfileDialogForHost(hostId: string, hostName: string) {
   selectedHostId.value = hostId;
   selectedHostName.value = hostName;
-  profilesList.value = [];
-  availableFiles.value = [];
-  
-  profileForm.stack_pattern = "";
-  profileForm.title = "";
-  profileForm.app_url = "";
-  profileForm.group = "";
-  profileForm.sourceType = "none";
-  profileForm.icon_url = "";
-  profileForm.icon_file = "";
-
   editProfileVisible.value = true;
-  profilesLoading.value = true;
-
-  try {
-    const res = await store.fetchAppProfiles(hostId);
-    profilesList.value = res.profiles || [];
-    availableFiles.value = res.available_files || [];
-  } catch (err: any) {
-    ElMessage.error(err || t("settings.appProfiles.fetchError"));
-  } finally {
-    profilesLoading.value = false;
-  }
-}
-
-function removeProfileEntry(index: number) {
-  profilesList.value.splice(index, 1);
-}
-
-function editProfileEntry(row: AppProfileEntry) {
-  profileForm.stack_pattern = row.stack_pattern;
-  profileForm.title = row.title || "";
-  profileForm.app_url = row.app_url || "";
-  profileForm.group = row.group || "";
-  
-  if (!row.icon_value) {
-    profileForm.sourceType = "none";
-    profileForm.icon_url = "";
-    profileForm.icon_file = "";
-  } else if (/^https?:\/\//.test(row.icon_value)) {
-    profileForm.sourceType = "url";
-    profileForm.icon_url = row.icon_value;
-    profileForm.icon_file = "";
-  } else {
-    profileForm.sourceType = "local";
-    profileForm.icon_url = "";
-    profileForm.icon_file = row.icon_value;
-  }
-}
-
-async function handleIconUpload(uploadFile: any) {
-  const rawFile = uploadFile.raw;
-  if (!rawFile) return;
-
-  if (rawFile.size > 2 * 1024 * 1024) {
-    ElMessage.error(t("settings.icons.upload.tooLarge"));
-    return;
-  }
-
-  const loadingMsg = ElMessage({
-    message: t("settings.icons.upload.progress"),
-    duration: 0,
-    type: "info",
-  });
-
-  try {
-    const filename = await store.uploadIcon(selectedHostId.value, rawFile);
-    loadingMsg.close();
-    ElMessage.success(t("settings.icons.upload.success", { name: filename }));
-    
-    if (!availableFiles.value.includes(filename)) {
-      availableFiles.value.push(filename);
-      availableFiles.value.sort();
-    }
-    profileForm.icon_file = filename;
-  } catch (e: any) {
-    loadingMsg.close();
-    ElMessage.error(e || t("settings.icons.upload.error"));
-  }
-}
-
-const isEditMode = computed(() => {
-  if (!profileForm.stack_pattern) return false;
-  return profilesList.value.some(p => p.stack_pattern === profileForm.stack_pattern.trim());
-});
-
-async function addProfileEntry() {
-  if (!profileFormRef.value) return;
-
-  await profileFormRef.value.validate(async (valid) => {
-    if (!valid) return;
-
-    if (!profileForm.stack_pattern.trim()) {
-      ElMessage.error(t("settings.icons.required.pattern"));
-      return;
-    }
-
-    let iconVal: string | null = null;
-    if (profileForm.sourceType === "url") {
-      if (!profileForm.icon_url.trim()) {
-        ElMessage.error(t("settings.icons.required.url"));
-        return;
-      }
-      iconVal = profileForm.icon_url.trim();
-    } else if (profileForm.sourceType === "local") {
-      if (!profileForm.icon_file) {
-        ElMessage.error(t("settings.icons.required.file"));
-        return;
-      }
-      iconVal = profileForm.icon_file;
-    }
-
-    const dupIndex = profilesList.value.findIndex(p => p.stack_pattern === profileForm.stack_pattern.trim());
-    const newEntry: AppProfileEntry = {
-      stack_pattern: profileForm.stack_pattern.trim(),
-      title: profileForm.title.trim() || null,
-      app_url: profileForm.app_url.trim() || null,
-      group: profileForm.group.trim() || null,
-      icon_value: iconVal,
-    };
-
-    if (dupIndex > -1) {
-      profilesList.value[dupIndex] = newEntry;
-      ElMessage.info(t("settings.icons.mapping.updated", { pattern: profileForm.stack_pattern.trim() }));
-    } else {
-      profilesList.value.push(newEntry);
-    }
-
-    profileForm.stack_pattern = "";
-    profileForm.title = "";
-    profileForm.app_url = "";
-    profileForm.group = "";
-    profileForm.sourceType = "none";
-    profileForm.icon_url = "";
-    profileForm.icon_file = "";
-  });
-}
-
-async function submitAppProfiles() {
-  try {
-    await store.saveAppProfiles(selectedHostId.value, profilesList.value);
-    ElMessage.success(t("settings.appProfiles.saveSuccess", { name: selectedHostName.value }));
-    editProfileVisible.value = false;
-    void fetchApps({ silent: true }); // Refresh view
-  } catch (err: any) {
-    ElMessage.error(err || t("settings.appProfiles.saveError"));
-  }
 }
 
 // Component lifecycle
@@ -1474,63 +1205,6 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-/* Dialog and Profiles form */
-.profile-edit-body {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.profile-form {
-  background: var(--surface-panel-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 16px;
-}
-
-.profile-form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
-.profile-form-grid .full-width {
-  grid-column: span 2;
-}
-
-.local-picker-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-}
-
-.uploader {
-  flex-shrink: 0;
-}
-
-.profile-add-row {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: 12px;
-}
-
-.mini-profile-icon {
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  background: var(--surface-panel-raised);
-}
-
-.pattern-code {
-  background: var(--surface-panel-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-family: var(--font-mono);
-  color: var(--accent-blue);
-}
-
 .mb-4 {
   margin-bottom: 16px;
 }
@@ -1571,13 +1245,6 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .apps-grid {
     grid-template-columns: 1fr;
-  }
-
-  .profile-form-grid {
-    grid-template-columns: 1fr;
-  }
-  .profile-form-grid .full-width {
-    grid-column: span 1;
   }
 }
 

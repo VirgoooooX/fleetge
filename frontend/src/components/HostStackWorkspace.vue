@@ -943,96 +943,8 @@ import ComposeDrawer, { type ComposeDeployPayload } from "./ComposeDrawer.vue";
 import MonacoEditor from "@/components/MonacoEditor.vue";
 import UpdateBadge from "./UpdateBadge.vue";
 import AutoUpdateControl from "./AutoUpdateControl.vue";
-import { useDashboardStore } from "@/stores/dashboard";
+import { useDashboardStore, type StackService, type StackSummary, type ContainerPort, type ContainerSummary, type ContainerStats } from "@/stores/dashboard";
 import { sortStacks } from "@/utils/stackSorting";
-
-export interface StackService {
-  name: string;
-  container_id?: string;
-  state: string;
-  status: string;
-}
-
-export interface StackSummary {
-  name: string;
-  status: string;
-  compose_file?: string;
-  service_count: number;
-  running_count: number;
-  services: StackService[];
-  icon_url?: string;  // 自定义图标（网络 URL 或 /api/static/icons/...）
-  management_status?: string;
-  auto_update_enabled?: boolean;
-  auto_update_reason?: string;
-  app_url?: string;
-}
-
-export interface ContainerPort {
-  private_port: number;
-  public_port?: number;
-  ip?: string;
-  type: string;
-}
-
-export interface ContainerSummary {
-  id: string;
-  name: string;
-  image: string;
-  image_id?: string;
-  repo_digests?: string[];
-  state: string;
-  status: string;
-  created: number;
-  ports: ContainerPort[];
-  labels?: Record<string, string>;
-  stack_name?: string;
-  service_name?: string;
-  restart_count?: number;
-  driver?: string;
-  platform?: string;
-  hostname?: string;
-  domainname?: string;
-  user?: string;
-  working_dir?: string;
-  entrypoint?: string[] | string | null;
-  command?: string[] | string | null;
-  restart_policy?: Record<string, any>;
-  network_mode?: string;
-  privileged?: boolean;
-  mounts?: ContainerMount[];
-  networks?: Record<string, ContainerNetwork>;
-  health?: Record<string, any> | null;
-}
-
-export interface ContainerMount {
-  Type?: string;
-  Name?: string;
-  Source?: string;
-  Destination?: string;
-  Mode?: string;
-  RW?: boolean;
-  Propagation?: string;
-}
-
-export interface ContainerNetwork {
-  IPAddress?: string;
-  GlobalIPv6Address?: string;
-  MacAddress?: string;
-  Gateway?: string;
-  NetworkID?: string;
-  Aliases?: string[];
-}
-
-export interface ContainerStatsData {
-  cpu_percent: number;
-  memory_usage: number;
-  memory_limit: number;
-  memory_percent: number;
-  network_rx_bytes: number;
-  network_tx_bytes: number;
-  block_read_bytes: number;
-  block_write_bytes: number;
-}
 
 interface StackLogLine {
   service: string;
@@ -1044,7 +956,7 @@ const props = defineProps<{
   hostId: string;
   stacks: StackSummary[];
   containers: ContainerSummary[];
-  containerStats: Record<string, ContainerStatsData>;
+  containerStats: Record<string, ContainerStats>;
   updateStatuses: Record<string, string>;
   updateLoading?: boolean;
   structureLoading?: boolean;

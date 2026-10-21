@@ -216,6 +216,41 @@ export interface ContainerSummary {
   service_name?: string;
   labels?: Record<string, string>;
   image_id?: string;
+  repo_digests?: string[];
+  restart_count?: number;
+  driver?: string;
+  platform?: string;
+  hostname?: string;
+  domainname?: string;
+  user?: string;
+  working_dir?: string;
+  entrypoint?: string[] | string | null;
+  command?: string[] | string | null;
+  restart_policy?: Record<string, any>;
+  network_mode?: string;
+  privileged?: boolean;
+  mounts?: ContainerMount[];
+  networks?: Record<string, ContainerNetwork>;
+  health?: Record<string, any> | null;
+}
+
+export interface ContainerMount {
+  Type?: string;
+  Name?: string;
+  Source?: string;
+  Destination?: string;
+  Mode?: string;
+  RW?: boolean;
+  Propagation?: string;
+}
+
+export interface ContainerNetwork {
+  IPAddress?: string;
+  GlobalIPv6Address?: string;
+  MacAddress?: string;
+  Gateway?: string;
+  NetworkID?: string;
+  Aliases?: string[];
 }
 
 export interface ContainerStats {

@@ -149,7 +149,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { Maximize2 } from "lucide-vue-next";
+import { Maximize2 } from "@lucide/vue";
 import { feature, mesh as topoMesh } from "topojson-client";
 import { geoGraticule10, geoPath } from "d3-geo";
 import worldTopology from "world-atlas/countries-110m.json";

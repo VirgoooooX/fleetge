@@ -546,7 +546,7 @@ class AutoUpdateManager:
         for container in snap.containers:
             if getattr(container, "stack_name", None) != stack_name:
                 continue
-            state = getattr(container, "state", None) or ("running" if (getattr(container, "status", "") or "").lower().startswith("up") else "running")
+            state = getattr(container, "state", None) or "running"
             if state != "running":
                 continue
             service_name = getattr(container, "service_name", None) or getattr(container, "name", None) or "app"
