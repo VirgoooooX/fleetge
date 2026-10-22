@@ -40,6 +40,17 @@ describe("update run selection", () => {
     expect(store.updateRunForStack("a", "app")?.status).toBe("success");
   });
 
+  it("counts partially successful runs as a finished result", () => {
+    const store = useDashboardStore();
+    const partial = run(6, "a", "partial");
+    store.updateRunsByHost.a = { active: [], recent: [partial] };
+    const batch = store.updateRunBatchForRequest("a", partial.request_id);
+    expect(batch?.finished).toBe(true);
+    expect(batch?.counts.partial).toBe(1);
+    expect(batch?.counts.success).toBe(0);
+    expect(store.updateRunForStack("a", "app")?.status).toBe("partial");
+  });
+
   it("reuses the original request ID after an unconfirmed submission", async () => {
     const store = useDashboardStore();
     vi.mocked(apiClient.post).mockRejectedValue(new Error("connection lost"));

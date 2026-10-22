@@ -146,7 +146,7 @@ export interface UpdateRunItem {
   source: "auto" | "manual" | "bulk";
   requested_by: string;
   stack_name: string;
-  status: "queued" | "running" | "success" | "failed" | "uncertain" | "skipped";
+  status: "queued" | "running" | "success" | "partial" | "failed" | "uncertain" | "skipped";
   stage: string;
   attempts: number;
   detail: string;
@@ -355,7 +355,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     if (!state) return null;
     const items = [...state.active, ...state.recent].filter((item) => item.request_id === requestId);
     if (!items.length) return null;
-    const counts: UpdateRunBatch["counts"] = { queued: 0, running: 0, success: 0, failed: 0, uncertain: 0, skipped: 0 };
+    const counts: UpdateRunBatch["counts"] = { queued: 0, running: 0, success: 0, partial: 0, failed: 0, uncertain: 0, skipped: 0 };
     items.forEach((item) => { counts[item.status] += 1; });
     return { host_id: hostId, request_id: requestId, mode: items[0].source, items, finished: counts.queued === 0 && counts.running === 0, counts };
   }

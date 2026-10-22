@@ -347,6 +347,7 @@
               <el-option :label="t('apps.chip.all')" value="" />
               <el-option :label="t('audit.success')" value="success" />
               <el-option :label="t('audit.failure')" value="error" />
+              <el-option :label="t('audit.partial')" value="partial" />
               <el-option :label="t('audit.uncertain')" value="uncertain" />
               <el-option :label="t('audit.skipped')" value="skipped" />
             </el-select>
@@ -1685,11 +1686,11 @@ const filteredAuditLogs = computed(() => {
 });
 
 function auditResultType(result: string) {
-  return result === "success" ? "success" : result === "skipped" ? "info" : result === "uncertain" ? "warning" : "danger";
+  return result === "success" ? "success" : result === "skipped" ? "info" : result === "uncertain" || result === "partial" ? "warning" : "danger";
 }
 
 function auditResultLabel(result: string): string {
-  return t(result === "success" ? "audit.success" : result === "skipped" ? "audit.skipped" : result === "uncertain" ? "audit.uncertain" : "audit.failure");
+  return t(result === "success" ? "audit.success" : result === "skipped" ? "audit.skipped" : result === "partial" ? "audit.partial" : result === "uncertain" ? "audit.uncertain" : "audit.failure");
 }
 
 function actionLabel(action: string): string {

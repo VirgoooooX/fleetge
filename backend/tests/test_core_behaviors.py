@@ -1223,8 +1223,8 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not found in running stack", summaries[0].verdict)
         self.assertIn("compose/runtime", summaries[0].verdict)
 
-    async def test_finalize_repolls_on_mismatch(self):
-        """Digest mismatch triggers a single re-poll; poll matches -> cleared."""
+    async def test_finalize_keeps_mismatched_target_without_registry_repoll(self):
+        """Digest mismatch is left for the scheduled image checker."""
         from app.database import engine as db_engine, Session as DbSession
         from app.schemas import ContainerSummary
 
@@ -1268,14 +1268,13 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
             summaries = await self.manager.finalize_stack_update(
                 self.host_id, "my-stack", ["nginx:latest"]
             )
-            mock_check.assert_called_once()
+            mock_check.assert_not_awaited()
 
-        self.assertTrue(summaries[0].cleared)
-        self.assertIn("tag advanced", summaries[0].verdict)
-        self.assertIn("re-confirmed", summaries[0].verdict)
+        self.assertFalse(summaries[0].cleared)
+        self.assertIn("awaiting the next scheduled image check", summaries[0].verdict)
 
-    async def test_finalize_shows_all_digests_on_mismatch_with_failed_repoll(self):
-        """Digest mismatch + re-poll failure -> shows local/cached/registry."""
+    async def test_finalize_shows_local_and_cached_digest_on_mismatch(self):
+        """Digest mismatch reports existing evidence without registry I/O."""
         from app.database import engine as db_engine, Session as DbSession
         from app.schemas import ContainerSummary
 
@@ -1319,9 +1318,8 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(summaries[0].cleared)
         self.assertIn("sha256:img", summaries[0].verdict)
         self.assertIn("sha256:cached_a", summaries[0].verdict)
-        # The fresh digest is truncated to [:19] in the verdict, so check the
-        # untruncated prefix "sha256:registry_C"
-        self.assertIn("sha256:registry_c", summaries[0].verdict)
+        mock_check.assert_not_awaited()
+        self.assertIn("awaiting the next scheduled image check", summaries[0].verdict)
 
     # ------------------------------------------------------------------
     # _stack_convergence_block_reason unit tests

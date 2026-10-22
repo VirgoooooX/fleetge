@@ -437,8 +437,13 @@ def test_update_services_generates_pull_and_no_deps_up(stack_base, monkeypatch):
     async def fake_self_info():
         return {"stack_name": "other-stack", "service_name": "fleetge-agent"}
 
+    from unittest.mock import AsyncMock
     monkeypatch.setattr(compose_runner, "_stream_docker_command", fake_stream)
     monkeypatch.setattr(compose_runner, "_get_agent_self_info", fake_self_info)
+    monkeypatch.setattr(compose_runner, "_selected_services_running", AsyncMock(return_value=True))
+    pulled = [{"service": "web", "image": "nginx", "image_id": "sha256:new", "platform": "linux/amd64"}]
+    capture = AsyncMock(return_value=pulled)
+    monkeypatch.setattr(compose_runner, "_capture_pulled_images", capture)
 
     with client.websocket_connect(
         "/api/agent/stacks/test-stack/execute?token=test-secret-token-0123456789abcdef"
@@ -446,11 +451,13 @@ def test_update_services_generates_pull_and_no_deps_up(stack_base, monkeypatch):
         ws.send_json({"action": "updateServices", "services": ["web"]})
         assert ws.receive_json()["type"] == "stdout"
         assert ws.receive_json()["type"] == "stdout"
-        assert ws.receive_json() == {"type": "exit", "code": 0}
+        result = ws.receive_json()
+        assert result == {"type": "exit", "code": 0, "stage": "up", "up_executed": True, "pulled_images": pulled}
+    capture.assert_awaited_once_with(str(stack_dir), ["web"])
 
     assert commands == [
         ["compose", "pull", "web"],
-        ["compose", "up", "-d", "--no-deps", "web"],
+        ["compose", "up", "-d", "--no-deps", "--pull", "never", "web"],
     ]
 
 

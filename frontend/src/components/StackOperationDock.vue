@@ -10,7 +10,7 @@
       <div class="terminal-tools">
         <span v-if="status !== 'running'" class="terminal-state" :class="`state-${status}`">
           <el-icon v-if="status === 'success'"><SuccessFilled /></el-icon>
-          <el-icon v-else-if="status === 'error'"><WarningFilled /></el-icon>
+          <el-icon v-else-if="status === 'error' || status === 'partial'"><WarningFilled /></el-icon>
           {{ statusLabel }}
         </span>
         <el-button v-if="status === 'running' && canStopPending" type="danger" link size="small" @click.stop="$emit('stop-pending')">
@@ -45,7 +45,7 @@ const props = withDefaults(defineProps<{
   stackName: string;
   action?: string;
   lines: string[];
-  status: "running" | "success" | "error" | "idle";
+  status: "running" | "success" | "partial" | "error" | "idle";
   message: string;
   compact?: boolean;
   canStopPending?: boolean;
@@ -113,6 +113,7 @@ const actionTitle = computed(() => {
 
 const statusLabel = computed(() => {
   if (props.status === "success") return t("stackOp.completed");
+  if (props.status === "partial") return t("workspace.updateRunStatus.partial");
   if (props.status === "error") return t("stackOp.failed");
   if (props.status === "idle") return t("stackOp.finished");
   return "";
@@ -286,6 +287,11 @@ async function copyOutput() {
   box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.10);
 }
 
+.operation-terminal.is-partial {
+  border-color: var(--warning);
+  box-shadow: none;
+}
+
 .operation-terminal.is-idle {
   border-color: var(--border-strong);
   box-shadow: none;
@@ -360,6 +366,10 @@ async function copyOutput() {
 
 .state-success {
   color: var(--success);
+}
+
+.state-partial {
+  color: var(--warning);
 }
 
 .state-error {

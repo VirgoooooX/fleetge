@@ -784,10 +784,8 @@ class SnapshotManager:
 
             healthy/running + local == cached registry_digest
                 -> clear tag, "up to date (digest matched)"
-            healthy/running + local != cached, re-poll == local
-                -> clear tag, "up to date (tag advanced, re-checked)"
-            healthy/running + local != cached, re-poll != local / failed
-                -> keep, show local/cached/fresh digests
+            healthy/running + local != cached
+                -> keep, await the next scheduled registry check
             stack not converged (created/exited/restarting/unhealthy/starting)
                 -> keep, "waiting for health" or the blocking state
             local digest missing
@@ -907,40 +905,17 @@ class SnapshotManager:
                 ))
                 continue
 
-            # Mismatch: do ONE confirmatory re-poll to distinguish "tag
-            # advanced" (container is actually newer) from a real digest
-            # discrepancy. This is the only registry round-trip, and only on
-            # the already-abnormal path.
-            fresh_target = await self._confirm_registry_digest(
-                host_id,
-                image,
-                primary_container.repo_digests,
-                local_image_id=local_image_digest,
-                platform=primary_container.tag_platform or primary_container.platform,
-            )
-            if fresh_target and fresh_target in local_candidates:
-                self._clear_updatable_tag(host_id, image, local_candidates[0])
-                summaries.append(FinalizeSummary(
-                    image=image,
-                    cleared=row.status == "updatable",
-                    verified=True,
-                    verdict=(
-                        f"{image}: up to date (tag advanced since last check; "
-                        f"re-confirmed against registry)"
-                    ),
-                ))
-                continue
-
+            # Finalization never performs registry I/O. A moving tag is
+            # reconciled by the next explicit or scheduled image check.
             cached_txt = cached_target or "unknown"
-            fresh_txt = fresh_target or "unavailable"
             local_txt = ",".join(candidate[:19] for candidate in local_candidates)
             summaries.append(FinalizeSummary(
                 image=image,
                 cleared=False,
                 verdict=(
                     f"{image}: updated, but digest does not match target "
-                    f"(local={local_txt} cached={cached_txt[:19]} "
-                    f"registry={fresh_txt[:19]})"
+                    f"(local={local_txt} cached={cached_txt[:19]}); "
+                    "awaiting the next scheduled image check"
                 ),
             ))
 
@@ -964,7 +939,11 @@ class SnapshotManager:
         wait_timeout: float = 180.0,
         wait_interval: float = 2.0,
     ) -> tuple[str, str]:
-        """Verify every preflight service against the images captured after pull."""
+        """Verify runtime identity and health against the task's cached registry target.
+
+        This path only reads local Docker evidence; registry checks belong to
+        the explicit/scheduled image-check workflow.
+        """
         deadline = time.monotonic() + wait_timeout
         last_reason = "Updated container evidence is not available yet."
         uncertain_reason = ""
@@ -1025,26 +1004,48 @@ class SnapshotManager:
                             elif health_status != "healthy":
                                 failure_reasons.append(f"{service_name}/{container.name}: health is {health_status}")
                 if not failure_reasons and not missing_evidence and not pending_health:
-                    image_refs = [
-                        (container.image, container.repo_digests, container.image_config_digest,
-                         container.platform, container.image_manifest_digest)
-                        for container in snap.containers
-                        if container.stack_name == stack_name and container.service_name in targets
-                        and (container.labels or {}).get("com.docker.compose.oneoff", "False").lower() != "true"
-                    ]
-                    try:
-                        results = await run_update_check(host_id, image_refs, force=True)
-                        self.persist_update_check_results(host_id, results)
-                    except Exception:
-                        logger.warning("Post-update registry verification failed for %s/%s", host_id, stack_name)
-                        return "uncertain", "容器运行镜像和健康校验通过，但无法确认上游目标镜像；更新结果尚未确认。"
-                    stale = [result for result in results if result.status == "updatable"]
-                    if stale:
-                        images = ", ".join(result.image for result in stale)
-                        return "failed", f"容器运行正常，但本次拉取的镜像仍与上游目标不一致：{images}。可能是镜像源返回旧镜像，或更新期间上游发布了新镜像；尚未更新到目标版本。"
-                    if not results or len(results) != len({item[0] for item in image_refs}) or any(result.status != "up_to_date" for result in results):
-                        return "uncertain", "容器运行镜像和健康校验通过，但上游镜像身份检查未完成；更新结果尚未确认。"
-                    return "success", "All updated services match the registry target images and are healthy."
+                    mismatched: list[str] = []
+                    for service_name, target in targets.items():
+                        cached = target.get("cached_target") or {}
+                        cached_platform = _parse_platform(cached.get("platform"))
+                        for container in snap.containers:
+                            if container.stack_name != stack_name or container.service_name != service_name:
+                                continue
+                            if (container.labels or {}).get("com.docker.compose.oneoff", "False").lower() == "true":
+                                continue
+                            local = expected = None
+                            if container.image_config_digest and cached.get("registry_config_digest"):
+                                local, expected = container.image_config_digest, cached["registry_config_digest"]
+                            elif container.image_manifest_digest and cached.get("registry_manifest_digest"):
+                                local, expected = container.image_manifest_digest, cached["registry_manifest_digest"]
+                            if (not local or not expected or not cached_platform
+                                    or not _platform_matches(_parse_platform(container.platform), cached_platform, exact_variant=False)
+                                    or _normalize_image_id(local) != _normalize_image_id(expected)):
+                                mismatched.append(service_name)
+                    if mismatched:
+                        return "uncertain", (
+                            "服务已重建并通过本地镜像与健康检查，但镜像与缓存目标不同或缺少同类摘要："
+                            + ", ".join(dict.fromkeys(mismatched)) + "。待下次定时检测确认。"
+                        )
+                    # Reconcile badges using the latest stored target, without changing
+                    # its check time or overwriting a concurrent registry sweep.
+                    images = {target.get("image") for target in targets.values()}
+                    with Session(engine) as session:
+                        rows = session.exec(select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)).all()
+                        for row in rows:
+                            if row.image in images and row.status in {"updatable", "up_to_date"}:
+                                row.status = "up_to_date"
+                        self._apply_update_cache_rows_to_snapshot(snap, rows, {c.image for c in snap.containers if c.image})
+                        by_image = {result.image: result for result in snap.update_check_results}
+                        for row in rows:
+                            result = by_image.get(row.image)
+                            if row.image in images and result and result.status in {"updatable", "up_to_date"}:
+                                row.status = result.status
+                                row.current_digest = result.current_digest
+                                row.matched_field = result.matched_field
+                                session.add(row)
+                        session.commit()
+                    return "success", "本地运行镜像与缓存目标一致，容器运行及健康检查通过。"
                 last_reason = "; ".join(failure_reasons + missing_evidence) or "Container healthchecks are still starting."
                 uncertain_reason = "; ".join(missing_evidence)
 
@@ -1078,31 +1079,6 @@ class SnapshotManager:
             row.updated_at = now
             session.add(row)
             session.commit()
-
-    async def _confirm_registry_digest(
-        self,
-        host_id: str,
-        image: str,
-        repo_digests: list[str],
-        local_image_id: str | None = None,
-        platform: str | None = None,
-    ) -> Optional[str]:
-        """Single forced re-poll of the registry for one image.
-
-        Returns the freshly fetched registry digest, or None on any failure
-        (network, auth, parse). Failures are non-fatal — the caller falls back
-        to reporting all three digests without clearing the tag.
-        """
-        try:
-            results = await run_update_check(
-                host_id, [(image, repo_digests, local_image_id, platform)], force=True
-            )
-            if results:
-                self.persist_update_check_results(host_id, results)
-                return _normalize_image_id(results[0].registry_digest)
-        except Exception as exc:
-            logger.warning("Confirmatory registry re-poll failed for %s: %s", image, exc)
-        return None
 
 
     def _evaluate_local_digest_against_cache(

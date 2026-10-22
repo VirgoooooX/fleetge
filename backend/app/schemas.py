@@ -309,6 +309,7 @@ class UpdateRunCounts(BaseModel):
     queued: int = 0
     running: int = 0
     success: int = 0
+    partial: int = 0
     failed: int = 0
     uncertain: int = 0
     skipped: int = 0

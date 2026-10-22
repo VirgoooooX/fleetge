@@ -16,7 +16,7 @@ os.environ.setdefault("CREDENTIALS_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 os.environ.setdefault("ADMIN_PASSWORD", "test-password")
 os.environ.setdefault("DATABASE_URL", f"sqlite:///{tempfile.gettempdir()}/host_dashboard_test.db")
 
-from app.models import AutoUpdateRun, HostConfig, StackAutoUpdate
+from app.models import AutoUpdateRun, HostConfig, ImageUpdateCache, StackAutoUpdate
 from app.schemas import ContainerSummary, UpdateCheckResult
 from app.services import auto_update as module
 from app.services.agent_client import AgentClient
@@ -38,7 +38,14 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
             image="example/app:latest", image_id="sha256:old", image_config_digest="sha256:old",
             platform="linux/amd64", state="running", status="Up", created=0)]
         self.snap.update_results = {"example/app:latest": "updatable"}
-        self.snap.update_check_results = [SimpleNamespace(image="example/app:latest", status="updatable", last_failure_status=None)]
+        self.snap.update_check_results = [UpdateCheckResult(
+            host_id="nas", image="example/app:latest", status="updatable",
+            registry_config_digest="sha256:new", registry_digest="sha256:new", platform="linux/amd64",
+        )]
+        with Session(self.engine) as session:
+            session.add(ImageUpdateCache(host_id="nas", image="example/app:latest", status="updatable",
+                registry_config_digest="sha256:new", registry_digest="sha256:new", platform="linux/amd64"))
+            session.commit()
         async def refresh_snapshot(*args, **kwargs):
             self.snap.containers_updated += 1
 
@@ -81,7 +88,7 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         applied = False
         events = []
 
-        async def execute(*args):
+        async def execute(*args, **kwargs):
             nonlocal applied
             applied = True
             events.append("up")
@@ -168,7 +175,9 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_live_update_keeps_terminal_frames_and_persists_logs_once(self):
         chunks = ["\x1b[32mPulling\x1b[0m\r\n", "\x1b[1A\x1b[2KDownloaded\r\n", "Container app Started secret-token\r\n"]
-        async def action(name, action, log_queue):
+        async def action(name, action, log_queue, services):
+            self.assertEqual(action, "updateServices")
+            self.assertEqual(services, ["app"])
             for chunk in chunks:
                 await log_queue.put(chunk)
             await log_queue.put(None)
@@ -265,6 +274,90 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.run_record().status, "uncertain")
         self.assertFalse(module.stack_policy("nas", "app").enabled)
         self.manager.execute.assert_not_awaited()
+
+    async def test_local_image_failure_does_not_block_database_update(self):
+        local = self.snap.containers[0].model_copy(update={
+            "id": "local", "name": "local-app", "service_name": "local-app", "image": "family-health:local",
+        })
+        self.snap.containers.insert(0, local)
+        self.snap.update_check_results.append(UpdateCheckResult(host_id="nas", image=local.image, status="needs_auth"))
+        await self.run_update()
+        self.manager.execute.assert_awaited_once()
+        self.assertEqual(self.manager.execute.await_args.kwargs["services"], ["app"])
+        results = json.loads(self.run_record().targets_json)["results"]
+        self.assertEqual(results["local-app"]["status"], "skipped")
+        self.assertEqual(results["app"]["status"], "success")
+        self.assertEqual(self.run_record().status, "success")
+
+    async def test_failed_service_does_not_block_next_service_and_reports_partial(self):
+        self.snap.containers.append(self.snap.containers[0].model_copy(update={
+            "id": "second", "name": "db", "service_name": "db", "image": "postgres:16-alpine",
+        }))
+        self.snap.update_results["postgres:16-alpine"] = "updatable"
+        self.snap.update_check_results.append(UpdateCheckResult(
+            host_id="nas", image="postgres:16-alpine", status="updatable",
+            registry_config_digest="sha256:db-new", platform="linux/amd64",
+        ))
+        db_success = {"success": True, "up_executed": True, "stage": "up", "pulled_images": [
+            {"service": "db", "image": "postgres:16-alpine", "image_id": "sha256:db-new", "platform": "linux/amd64"},
+        ]}
+        self.manager.execute.side_effect = [({"success": False, "stage": "pull"}, "")] * 2 + [(db_success, "")]
+        await self.run_update()
+        self.assertEqual([call.kwargs["services"] for call in self.manager.execute.await_args_list], [["app"], ["app"], ["db"]])
+        run = self.run_record()
+        self.assertEqual(run.status, "partial")
+        results = json.loads(run.targets_json)["results"]
+        self.assertEqual(results["app"]["status"], "failed")
+        self.assertEqual(results["db"]["status"], "success")
+        self.assertIn("部分成功", run.detail)
+
+    async def test_no_update_or_missing_cached_identity_never_executes(self):
+        self.snap.update_results.clear()
+        await self.run_update()
+        self.manager.execute.assert_not_awaited()
+        self.snap.update_results["example/app:latest"] = "updatable"
+        self.snap.update_check_results[0].registry_config_digest = None
+        await self.run_update()
+        self.manager.execute.assert_not_awaited()
+        self.assertEqual(self.run_record().status, "skipped")
+
+    async def test_only_old_service_is_selected_when_services_share_a_tag(self):
+        self.snap.containers.append(self.snap.containers[0].model_copy(update={
+            "id": "current", "name": "current", "service_name": "current", "image_config_digest": "sha256:new",
+        }))
+        await self.run_update()
+        self.manager.execute.assert_awaited_once()
+        self.assertEqual(self.manager.execute.await_args.kwargs["services"], ["app"])
+
+    async def test_frozen_target_survives_cache_changes_during_pull(self):
+        async def execute(*args, **kwargs):
+            self.snap.update_check_results[0].registry_config_digest = "sha256:next"
+            return self.success, ""
+        self.manager.execute.side_effect = execute
+        await self.run_update()
+        target = self.snapshots.verify_update_targets.await_args.args[2]["app"]["cached_target"]
+        self.assertEqual(target["registry_config_digest"], "sha256:new")
+
+    async def test_control_stack_uses_cache_and_isolates_service_jobs(self):
+        self.snap.containers.append(self.snap.containers[0].model_copy(update={
+            "id": "agent", "name": "agent", "service_name": "agent", "image": "agent:latest",
+        }))
+        self.snap.update_results["agent:latest"] = "updatable"
+        self.snap.update_check_results.append(UpdateCheckResult(
+            host_id="nas", image="agent:latest", status="updatable",
+            registry_config_digest="sha256:agent-new", platform="linux/amd64",
+        ))
+        with Session(self.engine) as session:
+            run = AutoUpdateRun(host_id="nas", stack_name="app", source="manual", status="queued")
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+            run_id = run.id
+        self.manager._run_control_service_job = AsyncMock(side_effect=[("failed", "pull failed"), ("success", "healthy")])
+        await self.manager._run_self_stack_update(self.conn, run_id, self.snap, "app", {"service_name": "agent"})
+        calls = self.manager._run_control_service_job.await_args_list
+        self.assertEqual([call.args[4] for call in calls], ["agent", "app"])
+        self.assertEqual(self.run_record().status, "partial")
 
     async def test_notifications_are_optional_and_not_backfilled(self):
         await self.run_update()
@@ -410,7 +503,13 @@ class BulkUpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(stack_name="s3", image="img3:latest", state="running", service_name="app3"),
         ]
         self.snap.update_results = {"img1:latest": "updatable", "img2:latest": "updatable", "img3:latest": "updatable"}
-        self.snap.update_check_results = []
+        self.snap.update_check_results = [UpdateCheckResult(
+            host_id="nas", image=f"img{index}:latest", status="updatable",
+            registry_config_digest="sha256:new", registry_digest="sha256:new", platform="linux/amd64",
+        ) for index in (1, 2, 3)]
+        for container in self.snap.containers:
+            container.platform = "linux/amd64"
+            container.image_config_digest = "sha256:old"
         async def refresh_snapshot(*args, **kwargs):
             self.snap.containers_updated += 1
 
@@ -435,14 +534,16 @@ class BulkUpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.engine_patch.stop()
         self.engine.dispose()
 
-    async def test_bulk_continues_after_failure_and_stops_after_uncertain(self):
-        # s1 fails (not retryable up failure), s2 is uncertain (interrupted), s3 should be skipped
-        async def fake_execute(conn, stack_name, run_id=None):
+    async def test_bulk_continues_after_failure_and_uncertain(self):
+        # Unrelated Stacks continue even when one service result is uncertain.
+        async def fake_execute(conn, stack_name, run_id=None, *, services):
             if stack_name == "s1":
                 return {"success": False, "stage": "up"}, ""
             if stack_name == "s2":
                 return {"success": False, "interrupted": True}, ""
-            return {"success": True, "stage": "up", "up_executed": True}, ""
+            return {"success": True, "stage": "up", "up_executed": True, "pulled_images": [
+                {"service": "app3", "image": "img3:latest", "image_id": "sha256:new", "platform": "linux/amd64"},
+            ]}, ""
 
         self.manager.execute = fake_execute
 
@@ -459,12 +560,11 @@ class BulkUpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         items = {item["stack_name"]: item for item in batch["items"]}
         self.assertEqual(items["s1"]["status"], "failed")
         self.assertEqual(items["s2"]["status"], "uncertain")
-        self.assertEqual(items["s3"]["status"], "skipped")
-        self.assertIn("结果未确认", items["s3"]["detail"])
+        self.assertEqual(items["s3"]["status"], "success")
 
     async def test_bulk_continues_and_succeeds_when_second_is_success(self):
         # s1 fails, s2 succeeds, s3 succeeds
-        async def fake_execute(conn, stack_name, run_id=None):
+        async def fake_execute(conn, stack_name, run_id=None, *, services):
             if stack_name == "s1":
                 return {"success": False, "stage": "up"}, ""
             suffix = stack_name[1:]

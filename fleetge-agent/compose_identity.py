@@ -5,7 +5,9 @@ import subprocess
 from typing import Sequence
 
 
-def capture_pulled_images(stack_path: str, compose_config_args: Sequence[str]) -> list[dict]:
+def capture_pulled_images(
+    stack_path: str, compose_config_args: Sequence[str], selected_services: Sequence[str] | None = None,
+) -> list[dict]:
     """Return per-service image IDs, RepoDigests and platforms without logging env data."""
     try:
         config_result = subprocess.run(
@@ -28,8 +30,12 @@ def capture_pulled_images(stack_path: str, compose_config_args: Sequence[str]) -
     if not isinstance(services, dict) or not services:
         raise RuntimeError("Compose configuration contains no services to verify.")
 
+    if selected_services and any(name not in services for name in selected_services):
+        raise RuntimeError("Requested service is missing from the effective Compose configuration.")
     pulled_images: list[dict] = []
     for service_name, service in services.items():
+        if selected_services is not None and service_name not in selected_services:
+            continue
         image = service.get("image") if isinstance(service, dict) else None
         if not isinstance(image, str) or not image.strip():
             raise RuntimeError(f"Compose service '{service_name}' has no effective image reference.")

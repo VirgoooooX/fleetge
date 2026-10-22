@@ -1063,7 +1063,7 @@ async def _stream_update_run(host_id: str, request_id: str, stack_name: str, aft
         if run["stage"] != last_stage:
             yield _sse_event("stage", {"stage": run["stage"], "status": run["status"]})
             last_stage = run["stage"]
-        if run["status"] in {"success", "failed", "uncertain", "skipped"}:
+        if run["status"] in {"success", "partial", "failed", "uncertain", "skipped"}:
             yield _sse_event("complete", {
                 "status": "success" if run["status"] == "success" else "error",
                 "outcome": run["status"],

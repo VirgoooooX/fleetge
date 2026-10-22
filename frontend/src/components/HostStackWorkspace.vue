@@ -1063,7 +1063,7 @@ const terminalOutputs = reactive<Record<string, string[]>>({});
 const runningOperations = reactive<Record<string, { abort: () => void; action: string }>>({});
 const operationPanelVisible = ref(false);
 const operationPanelStack = ref("");
-const operationPanelStatus = ref<"running" | "success" | "error" | "idle">("idle");
+const operationPanelStatus = ref<"running" | "success" | "partial" | "error" | "idle">("idle");
 const operationPanelMessage = ref("");
 const operationPanelAction = ref("");
 let operationAutoCloseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2012,6 +2012,7 @@ function onOperationComplete(stackName: string, state: OperationState) {
   }
   operationPanelStatus.value = state.status === "success"
     ? "success"
+    : state.status === "partial" ? "partial"
     : state.status === "error" || state.status === "uncertain" || state.status === "timeout"
       ? "error"
       : "idle";
@@ -2040,7 +2041,7 @@ function onOperationComplete(stackName: string, state: OperationState) {
 
 function handleOperationComplete(stackName: string, state: OperationState) {
   onOperationComplete(stackName, state);
-  if (state.status === "success" && state.action === "update") {
+  if ((state.status === "success" || state.status === "partial") && state.action === "update") {
     emit("check-updates");
   }
 }

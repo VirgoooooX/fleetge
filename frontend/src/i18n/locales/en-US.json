@@ -1,5 +1,6 @@
 {
   "audit.skipped": "Skipped",
+  "audit.partial": "Partially succeeded",
   "audit.uncertain": "Unconfirmed",
   "audit.action.autoUpdate": "Automatic stack update",
   "audit.action.autoUpdateConfigure": "Automatic update settings",
@@ -401,6 +402,7 @@
   "workspace.updateRunStatus.queued": "Queued",
   "workspace.updateRunStatus.running": "Running",
   "workspace.updateRunStatus.success": "Succeeded",
+  "workspace.updateRunStatus.partial": "Partially succeeded",
   "workspace.updateRunStatus.failed": "Failed",
   "workspace.updateRunStatus.uncertain": "Result uncertain",
   "workspace.updateRunStatus.skipped": "Skipped",

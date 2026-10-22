@@ -13,16 +13,16 @@ import httpx
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models import AuditLog, AutoUpdateRun, Setting, StackAutoUpdate
+from app.models import AuditLog, AutoUpdateRun, ImageUpdateCache, Setting, StackAutoUpdate
 from app.services.agent_client import AgentClient
 from app.services.crypto import decrypt_string, encrypt_string
-from app.services.update_check import run_update_check
+from app.services.update_check import _normalize_digest, _parse_platform, _platform_matches
 
 logger = logging.getLogger(__name__)
 NOTIFY_KEYS = ("NOTIFYHUB_URL", "NOTIFYHUB_KEY", "NOTIFYHUB_RECIPIENT")
 PULL_RETRY_DELAY = 10
 OPERATION_TIMEOUT = 600
-TERMINAL_STATES = {"success", "failed", "uncertain", "skipped"}
+TERMINAL_STATES = {"success", "partial", "failed", "uncertain", "skipped"}
 
 
 def now_utc() -> datetime:
@@ -202,9 +202,9 @@ class AutoUpdateManager:
             if not fresh.intersection(images) or (host_id, stack.name) in self.active:
                 continue
             checks = {r.image: r for r in snap.update_check_results}
-            if any(not checks.get(image) or checks[image].status not in {"updatable", "up_to_date"} or checks[image].last_failure_status for image in images):
-                continue
-            targets = [image for image in images if snap.update_results.get(image) == "updatable"]
+            targets = [image for image in images if snap.update_results.get(image) == "updatable"
+                       and checks.get(image) and checks[image].status == "updatable"
+                       and not checks[image].last_failure_status]
             if not targets:
                 continue
             request_id = str(uuid.uuid4())
@@ -257,28 +257,9 @@ class AutoUpdateManager:
                 finally:
                     self.active.discard((host_id, stack_name))
 
-                with Session(get_engine()) as session:
-                    run = session.get(AutoUpdateRun, run_id)
-                    is_uncertain = bool(run and run.status == "uncertain")
-                    source = run.source if run else ""
-                    request_id = run.request_id if run else ""
+                # Each Stack/service owns its outcome. An uncertain result does
+                # not cancel unrelated updates in the same host batch.
 
-                if is_uncertain and source == "bulk" and request_id:
-                    with Session(get_engine()) as session:
-                        remaining_runs = session.exec(select(AutoUpdateRun).where(
-                            AutoUpdateRun.host_id == host_id,
-                            AutoUpdateRun.request_id == request_id,
-                            AutoUpdateRun.status == "queued",
-                        )).all()
-                        now = now_utc()
-                        for rem in remaining_runs:
-                            rem.status = "skipped"
-                            rem.stage = "skipped"
-                            rem.detail = f"前序任务 '{stack_name}' 结果未确认，已停止后续项目执行。"
-                            rem.finished_at = now
-                            session.add(rem)
-                            self.pending.get(host_id, {}).pop(rem.stack_name, None)
-                        session.commit()
         finally:
             self.workers.pop(host_id, None)
             self.pending.pop(host_id, None)
@@ -397,7 +378,7 @@ class AutoUpdateManager:
     def batch_payload(cls, runs: list[AutoUpdateRun]) -> dict:
         if not runs:
             return {}
-        counts = {status: 0 for status in ("queued", "running", "success", "failed", "uncertain", "skipped")}
+        counts = {status: 0 for status in ("queued", "running", "success", "partial", "failed", "uncertain", "skipped")}
         for run in runs:
             if run.status in counts:
                 counts[run.status] += 1
@@ -478,7 +459,7 @@ class AutoUpdateManager:
             session.add(run)
             session.commit()
         if changed_stage and stage == "verify":
-            self._append_run_log(run_id, "\r\n[Fleetge] 正在校验运行镜像、容器健康与上游目标…\r\n")
+            self._append_run_log(run_id, "\r\n[Fleetge] 正在本地校验运行镜像与缓存目标，并等待容器健康检查（不查询仓库）…\r\n")
 
     def _publish_run_output(self, run_id: int, text: str, token: str = "") -> None:
         if not text:
@@ -508,9 +489,9 @@ class AutoUpdateManager:
             session.commit()
             return run.log_tail
 
-    async def execute(self, conn: AgentClient, stack_name: str, run_id: int | None = None) -> tuple[dict, str]:
+    async def execute(self, conn: AgentClient, stack_name: str, run_id: int | None = None, *, services: list[str]) -> tuple[dict, str]:
         queue: asyncio.Queue = asyncio.Queue()
-        task = asyncio.create_task(conn.stack_action(stack_name, "updateStack", log_queue=queue))
+        task = asyncio.create_task(conn.stack_action(stack_name, "updateServices", log_queue=queue, services=services))
         last_saved = 0.0
         unsaved = ""
         tail = ""
@@ -549,46 +530,105 @@ class AutoUpdateManager:
             state = getattr(container, "state", None) or "running"
             if state != "running":
                 continue
-            service_name = getattr(container, "service_name", None) or getattr(container, "name", None) or "app"
+            service_name = getattr(container, "service_name", None)
+            if not service_name:
+                continue
             if (getattr(container, "labels", None) or {}).get("com.docker.compose.oneoff", "False").lower() == "true":
                 continue
             services.setdefault(service_name, []).append(container)
         return services
 
+    def _select_update_services(self, snap, stack_name: str) -> tuple[dict[str, dict], dict[str, dict]]:
+        """Freeze typed registry evidence from the existing check cache."""
+        checks = {result.image: result for result in snap.update_check_results}
+        with Session(get_engine()) as session:
+            rows = session.exec(select(ImageUpdateCache).where(ImageUpdateCache.host_id == snap.host_config.host_id)).all()
+            checked_at = {row.image: row.checked_at.isoformat() for row in rows}
+        selected: dict[str, dict] = {}
+        skipped: dict[str, dict] = {}
+        for service, containers in self._running_services(snap, stack_name).items():
+            image = containers[0].image
+            result = checks.get(image)
+            if not result or result.status not in {"updatable", "up_to_date"} or result.last_failure_status:
+                reason = f"镜像检测不可用（{getattr(result, 'last_failure_status', None) or getattr(result, 'status', 'unknown')}），请检查更新。"
+            elif snap.update_results.get(image) != "updatable":
+                reason = "没有检测到更新。"
+            elif not result.platform or not (result.registry_config_digest or result.registry_manifest_digest):
+                reason = "缓存缺少有效的平台或目标摘要，请检查更新。"
+            else:
+                if all(
+                    _platform_matches(_parse_platform(container.platform), _parse_platform(result.platform), exact_variant=False)
+                    and (
+                        (container.image_config_digest and result.registry_config_digest
+                         and _normalize_digest(container.image_config_digest) == _normalize_digest(result.registry_config_digest))
+                        or (not container.image_config_digest and container.image_manifest_digest and result.registry_manifest_digest
+                            and _normalize_digest(container.image_manifest_digest) == _normalize_digest(result.registry_manifest_digest))
+                    )
+                    for container in containers
+                ):
+                    skipped[service] = {"status": "skipped", "detail": "服务已使用缓存目标镜像。"}
+                    continue
+                selected[service] = {
+                    "image": image,
+                    "container_count": len(containers),
+                    "cached_target": {
+                        "registry_config_digest": result.registry_config_digest,
+                        "registry_manifest_digest": result.registry_manifest_digest,
+                        "platform": result.platform,
+                        "checked_at": checked_at.get(image),
+                    },
+                }
+                continue
+            skipped[service] = {"status": "skipped", "detail": reason}
+        return selected, skipped
+
+    @staticmethod
+    def _service_outcome(results: dict[str, dict]) -> tuple[str, str]:
+        states = [result["status"] for result in results.values()]
+        if "success" in states and any(state in {"failed", "uncertain"} for state in states):
+            status = "partial"
+        elif "uncertain" in states:
+            status = "uncertain"
+        elif "failed" in states:
+            status = "failed"
+        elif "success" in states:
+            status = "success"
+        else:
+            status = "skipped"
+        labels = {"success": "成功", "failed": "失败", "uncertain": "待确认", "skipped": "跳过", "partial": "部分成功"}
+        detail = labels[status] + "；" + "；".join(
+            f"{service}：{labels[result['status']]}，{result['detail']}"
+            for service, result in results.items()
+        ) if results else "跳过：Stack 没有可更新的运行服务。"
+        return status, detail
+
     async def _run_self_stack_update(self, conn: AgentClient, run_id: int, snap, stack_name: str, self_info: dict) -> None:
-        service_containers = self._running_services(snap, stack_name)
-        if not service_containers:
-            self.finish(run_id, "skipped", "控制 Stack 没有可更新的运行服务。")
-            return
+        selected, service_results = self._select_update_services(snap, stack_name)
+        task_targets = {"services": selected, "results": service_results}
+        self._set_run_stage(run_id, "preflight", targets=task_targets)
+        # The detached job survives either the Dashboard or Agent restarting.
+        # Submit one service at a time so a failed pull cannot block siblings.
+        agent_service = self_info.get("service_name")
+        # Update the Agent first: its detached job survives the handoff, while
+        # recreating the Dashboard can stop this scheduler before the next job.
+        for service in sorted(selected, key=lambda name: name != agent_service):
+            try:
+                status, detail = await self._run_control_service_job(
+                    conn, run_id, snap, stack_name, service, selected[service], self_info,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                status, detail = "uncertain", f"控制服务执行结果未确认：{exc}"
+            service_results[service] = {"status": status, "detail": detail}
+            self._append_run_log(run_id, f"\r\n[Fleetge] {service}: {status} — {detail}\r\n")
+            self._set_run_stage(run_id, "service_done", targets=task_targets)
+        status, detail = self._service_outcome(service_results)
+        self.finish(run_id, status, detail)
 
-        image_refs = [
-            (container.image, container.repo_digests, container.image_config_digest, container.platform, container.image_manifest_digest)
-            for containers in service_containers.values()
-            for container in containers
-            if container.image
-        ]
-        results = await run_update_check(snap.host_config.host_id, image_refs, force=True)
-        self.snapshots().persist_update_check_results(snap.host_config.host_id, results)
-        by_image = {result.image: result for result in results}
-        check_failures = []
-        selected_services = []
-        for service, containers in service_containers.items():
-            result = by_image.get(containers[0].image)
-            if result is None or result.status not in {"updatable", "up_to_date"}:
-                check_failures.append(f"{service}={result.status if result else 'check_failed'}")
-            elif self.snapshots().get_snapshot(snap.host_config.host_id).update_results.get(result.image) == "updatable":
-                selected_services.append(service)
-        if check_failures:
-            self.finish(run_id, "failed", "控制 Stack 镜像身份检查失败：" + ", ".join(check_failures))
-            return
-        if not selected_services:
-            self.finish(run_id, "skipped", "控制 Stack 的镜像均已是最新。")
-            return
-
-        preflight = {
-            service: {"container_count": len(service_containers[service])}
-            for service in selected_services
-        }
+    async def _run_control_service_job(self, conn, run_id, snap, stack_name, service, target, self_info) -> tuple[str, str]:
+        selected_services = [service]
+        before_update = snap.containers_updated
         agent_service = self_info.get("service_name")
         action = "selfUpdate" if agent_service in selected_services else "updateServicesJob"
         queue: asyncio.Queue = asyncio.Queue()
@@ -608,17 +648,15 @@ class AutoUpdateManager:
 
         if not result.get("success", result.get("ok", False)):
             if result.get("error_code") == "stack_busy":
-                self.finish(run_id, "skipped", result.get("message") or "控制 Stack 正在执行其他操作。")
+                return "skipped", result.get("message") or "控制 Stack 正在执行其他操作。"
             elif result.get("interrupted"):
-                self.finish(run_id, "uncertain", result.get("message") or "Agent 连接中断，控制 Stack 更新结果未确认。")
+                return "uncertain", result.get("message") or "Agent 连接中断，控制 Stack 更新结果未确认。"
             else:
-                self.finish(run_id, "failed", result.get("message", "控制 Stack 更新任务启动失败。"))
-            return
+                return "failed", result.get("message", "控制 Stack 更新任务启动失败。")
 
         job_id = result.get("job_id")
         if not job_id:
-            self.finish(run_id, "uncertain", "Agent 未返回可跟踪的控制 Stack 更新任务 ID。")
-            return
+            return "uncertain", "Agent 未返回可跟踪的控制 Stack 更新任务 ID。"
         with Session(get_engine()) as session:
             run = session.get(AutoUpdateRun, run_id)
             run.agent_job_id = job_id
@@ -641,51 +679,38 @@ class AutoUpdateManager:
                 await asyncio.sleep(2.0)
                 continue
             self._set_run_stage(run_id, job.get("phase") or job.get("status") or "running")
-            if job.get("status") in TERMINAL_STATES:
+            if job.get("status") in TERMINAL_STATES | {"error"}:
                 break
             await asyncio.sleep(2.0)
         else:
-            self.finish(run_id, "uncertain", f"Agent job {job_id} did not reach a confirmed terminal state.")
-            return
+            return "uncertain", f"Agent job {job_id} did not reach a confirmed terminal state."
 
         if job.get("status") == "failed" or job.get("status") == "error":
-            self.finish(run_id, "failed", job.get("message") or f"Agent job {job_id} failed.")
-            return
+            return "failed", job.get("message") or f"Agent job {job_id} failed."
         if job.get("status") in {"uncertain", "skipped"}:
-            self.finish(run_id, job["status"], job.get("message") or f"Agent job {job_id} ended as {job['status']}.")
-            return
+            return job["status"], job.get("message") or f"Agent job {job_id} ended as {job['status']}."
         if job.get("status") != "success":
-            self.finish(run_id, "uncertain", f"Agent job {job_id} returned no final result.")
-            return
+            return "uncertain", f"Agent job {job_id} returned no final result."
         if job.get("up_executed") is False:
-            self.finish(run_id, "skipped", "Agent job completed without executing Compose up.")
-            return
+            return "skipped", "Agent job completed without executing Compose up."
         if job.get("up_executed") is not True:
-            self.finish(run_id, "uncertain", "Agent job did not report whether Compose up was executed.")
-            return
+            return "uncertain", "Agent job did not report whether Compose up was executed."
 
         pulled = {item.get("service"): item for item in (job.get("pulled_images") or []) if isinstance(item, dict)}
-        targets: dict[str, dict] = {}
-        for service in selected_services:
-            item = pulled.get(service)
-            if not item or not item.get("image_id") or not item.get("platform"):
-                self.finish(run_id, "uncertain", f"Agent job did not provide pulled image identity for service '{service}'.")
-                return
-            targets[service] = {
-                "image": item.get("image"),
-                "image_id": item["image_id"],
-                "repo_digests": item.get("repo_digests") or [],
-                "platform": item["platform"],
-                "container_count": preflight[service]["container_count"],
-            }
-        self._set_run_stage(run_id, "verify", targets={"services": targets, "agent_job_id": job_id})
-        status, detail = await self.snapshots().verify_update_targets(
-            snap.host_config.host_id, stack_name, targets, not_before=snap.containers_updated,
+        item = pulled.get(service)
+        if not item or item.get("image") != target["image"] or not item.get("image_id") or not item.get("platform"):
+            return "uncertain", f"Agent job did not provide matching pulled image identity for service '{service}'."
+        target.update({
+            "image_id": item["image_id"],
+            "repo_digests": item.get("repo_digests") or [],
+            "platform": item["platform"],
+        })
+        self._set_run_stage(run_id, "verify")
+        return await self.snapshots().verify_update_targets(
+            snap.host_config.host_id, stack_name, {service: target}, not_before=before_update,
         )
-        self.finish(run_id, status, detail)
 
     async def run_stack(self, host_id: str, stack_name: str, targets: list[str], run_id: int | None = None) -> None:
-        created_inline = False
         conn: AgentClient | None = None
         try:
             await self.snapshots().refresh_host_docker(host_id, trigger_initial_update_check=False)
@@ -724,7 +749,6 @@ class AutoUpdateManager:
                     session.commit()
                     session.refresh(run)
                     run_id = run.id
-                    created_inline = True
             else:
                 with Session(get_engine()) as session:
                     run = session.get(AutoUpdateRun, run_id)
@@ -739,71 +763,27 @@ class AutoUpdateManager:
                 run = session.get(AutoUpdateRun, run_id)
                 source = run.source or "auto"
 
-            service_containers = self._running_services(snap, stack_name)
-            if not service_containers:
-                self.finish(run_id, "skipped", "Stack 没有可验证的运行服务。")
-                return
-            if source in {"auto", "bulk"} and not any(snap.update_results.get(image) == "updatable" for image in targets):
-                self.finish(run_id, "skipped", "重新检查后 Stack 已无待更新镜像。")
-                return
-
-            preflight = {
-                service: {
-                    "container_count": len(containers),
-                    "images": list(dict.fromkeys(container.image for container in containers if getattr(container, "image", None))),
-                }
-                for service, containers in service_containers.items()
-            }
-            before_update = getattr(snap, "containers_updated", 0)
-            for attempt in (1, 2):
-                self._set_run_stage(run_id, "pull", attempts=attempt)
-                result, _ = await self.execute(conn, stack_name, run_id)
-                stage = result.get("stage") or "unknown"
-                self._set_run_stage(run_id, stage)
-                if result.get("error_code") == "stack_busy":
-                    self.finish(run_id, "skipped", result.get("message") or "Stack 正在执行其他操作。")
-                    return
-                if result.get("interrupted"):
-                    self.finish(run_id, "uncertain", result.get("message") or "Agent 连接中断，升级结果未确认。")
-                    return
-                if not result.get("success"):
-                    if stage == "pull" and attempt == 1:
-                        self._append_run_log(run_id, f"\r\n[Fleetge] 拉取失败，{PULL_RETRY_DELAY:g} 秒后重试一次…\r\n")
-                        await asyncio.sleep(PULL_RETRY_DELAY)
-                        await self.snapshots().refresh_host_docker(host_id, trigger_initial_update_check=False)
-                        if source == "auto" and self.eligible(host_id, stack_name, source) is None:
-                            self.finish(run_id, "skipped", "拉取失败后自动更新已关闭或 Stack 不再可更新，取消重试。")
-                            return
-                        continue
-                    self.finish(run_id, "failed", f"升级失败，阶段：{stage}。{result.get('message', '')}")
-                    return
-                if result.get("up_executed") is False:
-                    self.finish(run_id, "skipped", "拉取完成时 Stack 已不处于运行状态，未执行 up。")
-                    return
-
-                if result.get("up_executed") is not True or not result.get("pulled_images"):
-                    self.finish(run_id, "uncertain", "Agent 未提供完整的拉取目标和 Compose up 执行证据，无法确认更新结果。")
-                    return
-                pulled = {item.get("service"): item for item in result["pulled_images"] if isinstance(item, dict)}
-                verify_targets: dict[str, dict] = {}
-                for service, expected in preflight.items():
-                    item = pulled.get(service)
-                    if not item or not item.get("image") or not item.get("image_id") or not item.get("platform"):
-                        self.finish(run_id, "uncertain", f"无法确认服务 '{service}' 的拉取镜像身份或平台。")
-                        return
-                    verify_targets[service] = {
-                        "image": item["image"],
-                        "image_id": item["image_id"],
-                        "repo_digests": item.get("repo_digests") or [],
-                        "platform": item["platform"],
-                        "container_count": expected["container_count"],
-                    }
-                self._set_run_stage(run_id, "verify", targets={"preflight": preflight, "services": verify_targets})
-                verified, message = await self.snapshots().verify_update_targets(
-                    host_id, stack_name, verify_targets, not_before=before_update,
-                )
-                self.finish(run_id, verified, message)
-                return
+            selected, service_results = self._select_update_services(snap, stack_name)
+            task_targets = {"services": selected, "results": service_results}
+            self._set_run_stage(run_id, "preflight", targets=task_targets)
+            for service, target in selected.items():
+                if source == "auto" and not stack_policy(host_id, stack_name).enabled:
+                    service_results[service] = {"status": "skipped", "detail": "自动更新已关闭。"}
+                    continue
+                self._append_run_log(run_id, f"\r\n[Fleetge] 更新服务 {service}…\r\n")
+                try:
+                    outcome, message = await self._update_service(conn, host_id, stack_name, run_id, source, service, target, task_targets)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("Service update failed for %s/%s/%s", host_id, stack_name, service)
+                    outcome, message = "uncertain", f"执行或校验未获得明确结果：{exc}"
+                service_results[service] = {"status": outcome, "detail": message}
+                self._append_run_log(run_id, f"\r\n[Fleetge] {service}: {outcome} — {message}\r\n")
+                self._set_run_stage(run_id, "service_done", targets=task_targets)
+            status, message = self._service_outcome(service_results)
+            self.finish(run_id, status, message)
+            return
         except asyncio.CancelledError:
             if run_id is not None:
                 self.finish(run_id, "uncertain", "Fleetge 已停止，升级执行结果未确认。请检查容器状态。")
@@ -820,6 +800,42 @@ class AutoUpdateManager:
             except Exception:
                 logger.warning("Could not refresh containers after update")
 
+    async def _update_service(self, conn, host_id, stack_name, run_id, source, service, target, task_targets) -> tuple[str, str]:
+        before_update = self.snapshots().get_snapshot(host_id).containers_updated
+        for attempt in (1, 2):
+            self._set_run_stage(run_id, "pull", attempts=attempt, targets=task_targets)
+            result, _ = await self.execute(conn, stack_name, run_id, services=[service])
+            stage = result.get("stage") or "unknown"
+            self._set_run_stage(run_id, stage)
+            if result.get("error_code") == "stack_busy":
+                return "skipped", result.get("message") or "Stack 正在执行其他操作。"
+            if result.get("interrupted"):
+                return "uncertain", "Agent 连接中断，该服务更新结果未确认。"
+            if not result.get("success"):
+                if stage == "pull" and attempt == 1:
+                    self._append_run_log(run_id, f"\r\n[Fleetge] {service} 拉取失败，{PULL_RETRY_DELAY:g} 秒后重试一次…\r\n")
+                    await asyncio.sleep(PULL_RETRY_DELAY)
+                    if source == "auto" and not stack_policy(host_id, stack_name).enabled:
+                        return "skipped", "自动更新已关闭，取消重试。"
+                    continue
+                return "failed", f"升级失败，阶段：{stage}。{result.get('message', '')}"
+            if result.get("up_executed") is False:
+                return "skipped", "拉取完成时 Stack 已不处于运行状态，未执行 up。"
+            pulled = {item.get("service"): item for item in result.get("pulled_images", []) if isinstance(item, dict)}
+            item = pulled.get(service)
+            if (result.get("up_executed") is not True or not item
+                    or item.get("image") != target["image"] or not item.get("image_id") or not item.get("platform")):
+                return "uncertain", "Agent 未提供匹配的拉取目标及 Compose up 执行证据。"
+            target.update({
+                "image_id": item["image_id"], "repo_digests": item.get("repo_digests") or [],
+                "platform": item["platform"],
+            })
+            self._set_run_stage(run_id, "verify", targets=task_targets)
+            return await self.snapshots().verify_update_targets(
+                host_id, stack_name, {service: target}, not_before=before_update,
+            )
+        return "failed", "镜像拉取失败。"
+
     def finish(self, run_id: int, status: str, detail: str, logs: str = "") -> None:
         if status not in TERMINAL_STATES:
             raise ValueError(f"Invalid update run terminal status: {status}")
@@ -834,7 +850,7 @@ class AutoUpdateManager:
             run.detail = scrub_log(detail)
             run.finished_at = now_utc()
 
-            if run.source == "auto" and status in {"failed", "uncertain"}:
+            if run.source == "auto" and status in {"partial", "failed", "uncertain"}:
                 policy = session.exec(select(StackAutoUpdate).where(
                     StackAutoUpdate.host_id == run.host_id,
                     StackAutoUpdate.stack_name == run.stack_name,
@@ -857,7 +873,7 @@ class AutoUpdateManager:
             if run.source == "auto" and status != "skipped":
                 config = notify_settings(session)
                 if all(config.get(key) for key in NOTIFY_KEYS):
-                    label = {"success": "成功", "failed": "失败", "uncertain": "结果未确认"}[status]
+                    label = {"success": "成功", "partial": "部分成功", "failed": "失败", "uncertain": "结果未确认"}[status]
                     run.notify_url = config["NOTIFYHUB_URL"]
                     run.notify_recipient = config["NOTIFYHUB_RECIPIENT"]
                     run.notify_payload = json.dumps({

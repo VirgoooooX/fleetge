@@ -1,5 +1,6 @@
 {
   "audit.skipped": "已跳过",
+  "audit.partial": "部分成功",
   "audit.uncertain": "待确认",
   "audit.action.autoUpdate": "自动更新 Stack",
   "audit.action.autoUpdateConfigure": "自动更新设置",
@@ -401,6 +402,7 @@
   "workspace.updateRunStatus.queued": "排队中",
   "workspace.updateRunStatus.running": "执行中",
   "workspace.updateRunStatus.success": "成功",
+  "workspace.updateRunStatus.partial": "部分成功",
   "workspace.updateRunStatus.failed": "失败",
   "workspace.updateRunStatus.uncertain": "结果未确认",
   "workspace.updateRunStatus.skipped": "已跳过",

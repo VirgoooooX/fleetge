@@ -145,6 +145,7 @@ def main() -> int:
             pulled_images = capture_pulled_images(
                 stack_dir,
                 compose_args(stack_dir, "config", "--format", "json"),
+                services,
             )
             pulled_images = [item for item in pulled_images if item.get("service") in services]
             if len(pulled_images) != len(services):
@@ -167,7 +168,7 @@ def main() -> int:
             args.jobs_dir,
             args.job_id,
             stack_dir,
-            compose_args(stack_dir, "up", "-d", "--no-deps", *services),
+            compose_args(stack_dir, "up", "-d", "--no-deps", "--pull", "never", *services),
         )
 
     if exit_code == 124:

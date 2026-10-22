@@ -190,7 +190,7 @@ import { useDashboardStore, type UpdateRunItem } from "@/stores/dashboard";
 export type OperationState = {
   hostId?: string;
   action: string;
-  status: "running" | "success" | "error" | "timeout" | "uncertain" | "skipped";
+  status: "running" | "success" | "error" | "timeout" | "partial" | "uncertain" | "skipped";
   message: string;
   logTail?: string;
   updatedAt: number;
@@ -510,15 +510,17 @@ async function viewUpdateRun(run: UpdateRunItem) {
             completed = true;
             const outcome = event.data?.outcome;
             const status: OperationState["status"] = outcome === "success" ? "success"
-              : outcome === "uncertain" ? "uncertain" : outcome === "skipped" ? "skipped" : "error";
+              : outcome === "partial" ? "partial" : outcome === "uncertain" ? "uncertain" : outcome === "skipped" ? "skipped" : "error";
             const message = t(outcome === "success" ? "stack.confirm.updateVerified"
+              : outcome === "partial" ? "workspace.updateRunStatus.partial"
               : outcome === "uncertain" ? "stack.confirm.updateUncertain"
                 : outcome === "skipped" ? "workspace.updateRunStatus.skipped" : "stack.confirm.failure", { action: t("stack.action.update") });
             if (outcome !== "success" && event.data?.message) {
               emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${event.data.message}\r\n` });
             }
             emit("operation-complete", stackName, { hostId, action: "update", status, message, updatedAt: Date.now() });
-            if (status === "success") { ElMessage.success(message); emit("refresh"); }
+            if (status === "success" || status === "partial") emit("refresh");
+            if (status === "success") ElMessage.success(message);
             else if (status === "error") ElMessage.error(message);
             else ElMessage.warning(message);
             void dashboardStore.fetchUpdateRuns(hostId).catch(() => undefined);

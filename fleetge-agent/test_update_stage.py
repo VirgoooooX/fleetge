@@ -27,3 +27,61 @@ def test_update_reports_failure_stage_without_changing_sequence(stack_base, monk
     assert result["code"] == (pull_code or up_code)
     assert result["up_executed"] is (pull_code == 0)
     assert commands == ([["compose", "pull"]] if pull_code else [["compose", "pull"], ["compose", "up", "-d", "--remove-orphans"]])
+
+
+def test_capture_only_selected_service_ignores_unrelated_build(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from compose_identity import capture_pulled_images
+    run = Mock(side_effect=[
+        SimpleNamespace(returncode=0, stdout=json.dumps({"services": {
+            "local": {"build": "."}, "db": {"image": "postgres:16-alpine"},
+        }})),
+        SimpleNamespace(returncode=0, stdout=json.dumps([{
+            "Id": "sha256:new", "Os": "linux", "Architecture": "amd64", "RepoDigests": [],
+        }])),
+    ])
+    monkeypatch.setattr("compose_identity.subprocess.run", run)
+    targets = capture_pulled_images("/stack", ["compose", "config", "--format", "json"], ["db"])
+    assert [target["service"] for target in targets] == ["db"]
+    assert run.call_count == 2
+    assert run.call_args.args[0] == ["docker", "image", "inspect", "postgres:16-alpine"]
+
+
+@pytest.mark.parametrize("exit_code,stage,up_executed", [(1, "pull", False), (0, "up", True)])
+def test_selected_update_reports_stage_and_evidence(stack_base, monkeypatch, exit_code, stage, up_executed):
+    from unittest.mock import AsyncMock
+    folder = stack_base / "selected"
+    folder.mkdir()
+    (folder / "compose.yaml").write_text("services:\n  db:\n    image: postgres:16-alpine\n")
+    commands = []
+    async def stream(websocket, stack_path, args, **kwargs):
+        commands.append(args)
+        return exit_code if "pull" in args else 0
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", stream)
+    monkeypatch.setattr(compose_runner, "_get_agent_self_info", AsyncMock(return_value={"stack_name": "fleetge"}))
+    monkeypatch.setattr(compose_runner, "_selected_services_running", AsyncMock(return_value=True))
+    capture = AsyncMock(return_value=[{"service": "db", "image": "postgres:16-alpine", "image_id": "sha256:new", "platform": "linux/amd64"}])
+    monkeypatch.setattr(compose_runner, "_capture_pulled_images", capture)
+    with client.websocket_connect("/api/agent/stacks/selected/execute?token=test-secret-token-0123456789abcdef") as ws:
+        ws.send_json({"action": "updateServices", "services": ["db"]})
+        result = ws.receive_json()
+    assert result["stage"] == stage
+    assert result["up_executed"] == up_executed
+    assert commands[0] == ["compose", "pull", "db"]
+    if exit_code:
+        assert len(commands) == 1
+        capture.assert_not_awaited()
+    else:
+        assert commands[1] == ["compose", "up", "-d", "--no-deps", "--pull", "never", "db"]
+        assert result["pulled_images"][0]["service"] == "db"
+
+
+def test_selected_service_status_ignores_unrelated_failure(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(compose_runner, "_get_compose_services", AsyncMock(return_value=[
+        {"Service": "app", "State": "exited"}, {"Service": "db", "State": "running"},
+    ]))
+    assert compose_runner.asyncio.run(compose_runner._selected_services_running("/stack", ["db"]))
+    assert not compose_runner.asyncio.run(compose_runner._selected_services_running("/stack", ["app"]))

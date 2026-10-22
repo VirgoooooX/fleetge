@@ -94,18 +94,20 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.snap.update_results[self.image], "updatable")
         self.assertEqual(self.snap.update_count, 1)
 
-    async def test_verified_deployment_checks_only_its_own_runtime_against_registry(self):
+    async def test_verified_deployment_uses_cached_target_without_registry_and_keeps_shared_badge(self):
         self.manager.refresh_host_docker = AsyncMock()
         self.snap.containers.append(self.container("old-stack", "sha256:old"))
-        result = UpdateCheckResult(host_id="nas", image=self.image, status="up_to_date",
-                                   current_digest="sha256:new", registry_digest="sha256:new",
-                                   registry_config_digest="sha256:new", platform="linux/amd64")
-        with patch.object(module, "run_update_check", new=AsyncMock(return_value=[result])) as check:
+        with Session(self.engine) as session:
+            session.add(ImageUpdateCache(host_id="nas", image=self.image, status="updatable",
+                registry_config_digest="sha256:new", registry_digest="sha256:new", platform="linux/amd64"))
+            session.commit()
+        with patch.object(module, "run_update_check", new=AsyncMock(side_effect=AssertionError("registry accessed"))) as check:
             outcome = await self.manager.verify_update_targets("nas", "new", {
-                "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1},
+                "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1,
+                        "cached_target": {"registry_config_digest": "sha256:new", "platform": "linux/amd64"}},
             }, not_before=1, wait_timeout=0)
         self.assertEqual(outcome[0], "success")
-        self.assertEqual(check.await_args.args[1], [(self.image, [], "sha256:new", "linux/amd64", None)])
+        check.assert_not_awaited()
         # Another Stack using the same tag is still old; its badge must remain.
         self.assertEqual(self.snap.update_results[self.image], "updatable")
 
@@ -244,27 +246,26 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.snap.update_count, 0)
             self.assertEqual(self.snap.update_check_results[0].status, "check_failed")
 
-    async def test_healthy_old_mirror_image_is_not_a_successful_update(self):
+    async def test_changed_target_after_pull_is_uncertain_without_registry_retry(self):
         self.manager.refresh_host_docker = AsyncMock()
-        result = UpdateCheckResult(host_id="nas", image=self.image, status="updatable",
-            current_digest="sha256:new", registry_digest="sha256:newer",
-            registry_config_digest="sha256:newer", platform="linux/amd64")
-        with patch.object(module, "run_update_check", new=AsyncMock(return_value=[result])):
+        with patch.object(module, "run_update_check", new=AsyncMock(side_effect=AssertionError("registry accessed"))) as check:
             status, detail = await self.manager.verify_update_targets("nas", "new", {
-                "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1},
+                "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1,
+                        "cached_target": {"registry_config_digest": "sha256:newer", "platform": "linux/amd64"}},
             }, not_before=1, wait_timeout=0)
-        self.assertEqual(status, "failed")
-        self.assertIn("尚未更新到目标版本", detail)
+        self.assertEqual(status, "uncertain")
+        self.assertIn("待下次定时检测确认", detail)
+        check.assert_not_awaited()
 
-    async def test_registry_failure_after_healthy_deployment_is_uncertain(self):
+    async def test_missing_cached_identity_is_uncertain_without_registry_retry(self):
         self.manager.refresh_host_docker = AsyncMock()
-        result = UpdateCheckResult(host_id="nas", image=self.image, status="rate_limited")
-        with patch.object(module, "run_update_check", new=AsyncMock(return_value=[result])):
+        with patch.object(module, "run_update_check", new=AsyncMock(side_effect=AssertionError("registry accessed"))) as check:
             status, detail = await self.manager.verify_update_targets("nas", "new", {
                 "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1},
             }, not_before=1, wait_timeout=0)
         self.assertEqual(status, "uncertain")
-        self.assertIn("上游", detail)
+        self.assertIn("缓存目标", detail)
+        check.assert_not_awaited()
 
     async def test_recent_config_cache_is_rechecked_when_runtime_uses_containerd_manifest(self):
         container = self.snap.containers[0]

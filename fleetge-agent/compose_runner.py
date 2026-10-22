@@ -637,11 +637,12 @@ def _compose_args(stack_path: str, command: str, *extra_options: str) -> list[st
     return args
 
 
-async def _capture_pulled_images(stack_path: str) -> list[dict]:
+async def _capture_pulled_images(stack_path: str, services: list[str] | None = None) -> list[dict]:
     return await asyncio.to_thread(
         capture_pulled_images,
         stack_path,
         _compose_args(stack_path, "config", "--format", "json"),
+        services,
     )
 
 
@@ -843,6 +844,7 @@ async def _run_update_services_job(job_id: str, stack_path: str, services: list[
                     capture_pulled_images,
                     stack_path,
                     _compose_args(stack_path, "config", "--format", "json"),
+                    services,
                 )
                 pulled_images = [item for item in pulled_images if item.get("service") in services]
                 if len(pulled_images) != len(services):
@@ -857,7 +859,7 @@ async def _run_update_services_job(job_id: str, stack_path: str, services: list[
             exit_code = await _run_job_command(
                 job_id,
                 stack_path,
-                _compose_args(stack_path, "up", "-d", "--no-deps", *services),
+                _compose_args(stack_path, "up", "-d", "--no-deps", "--pull", "never", *services),
             )
 
         if exit_code == 124:
@@ -1133,6 +1135,13 @@ async def _get_compose_services(stack_path: str) -> list[dict]:
     return []
 
 
+async def _selected_services_running(stack_path: str, services: list[str]) -> bool:
+    """Do not let an unrelated stopped service block a selected update."""
+    rows = await _get_compose_services(stack_path)
+    running = {row.get("Service") for row in rows if str(row.get("State", "")).lower() == "running"}
+    return all(service in running for service in services)
+
+
 @router.get("/stacks/{name}/services")
 async def list_stack_services(name: str):
     """Return service status from docker compose ps."""
@@ -1380,6 +1389,9 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                     return
 
                 if action == "updateServices":
+                    stage = "pull"
+                    up_executed = False
+                    pulled_images: list[dict] = []
                     exit_code = await _stream_docker_command(
                         websocket,
                         stack_path,
@@ -1388,14 +1400,24 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                         rows=rows,
                     )
                     if exit_code == 0:
-                        exit_code = await _stream_docker_command(
-                            websocket,
-                            stack_path,
-                            _compose_args(stack_path, "up", "-d", "--no-deps", *service_names),
-                            cols=cols,
-                            rows=rows,
-                        )
-                    await websocket.send_json({"type": "exit", "code": exit_code})
+                        stage = "target"
+                        pulled_images = await _capture_pulled_images(stack_path, service_names)
+                        if len(pulled_images) != len(service_names):
+                            raise RuntimeError("Could not resolve every requested service image.")
+                        if await _selected_services_running(stack_path, service_names):
+                            stage = "up"
+                            up_executed = True
+                            exit_code = await _stream_docker_command(
+                                websocket,
+                                stack_path,
+                                _compose_args(stack_path, "up", "-d", "--no-deps", "--pull", "never", *service_names),
+                                cols=cols,
+                                rows=rows,
+                            )
+                    await websocket.send_json({
+                        "type": "exit", "code": exit_code, "stage": stage,
+                        "up_executed": up_executed, "pulled_images": pulled_images,
+                    })
                     await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"services={','.join(service_names)} exit_code={exit_code}")
                 elif action == "updateServicesJob":
                     job_id = await _start_update_services_job(name, stack_path, service_names)
