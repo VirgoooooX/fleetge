@@ -1252,6 +1252,8 @@ async def execute_stack_command(websocket: WebSocket, name: str):
     await websocket.accept()
     client = _client_host(websocket)
     action = ""
+    stage = "preflight"
+    up_executed = False
 
     try:
         # Validate path
@@ -1454,7 +1456,11 @@ async def execute_stack_command(websocket: WebSocket, name: str):
         traceback.print_exc()
         await _write_audit(f"stack.{action or 'execute'}", "error", stack=name, client=client, detail=str(exc))
         try:
-            await websocket.send_json({"type": "error", "message": f"Unexpected execution error: {exc}"})
+            message = _redact_sensitive_text(f"Unexpected execution error: {exc}")
+            payload = {"type": "error", "message": message}
+            if action in {"update", "updateServices"}:
+                payload.update(stage=stage, up_executed=up_executed)
+            await websocket.send_json(payload)
         except Exception:
             pass
     finally:

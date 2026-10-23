@@ -85,3 +85,46 @@ def test_selected_service_status_ignores_unrelated_failure(monkeypatch):
     ]))
     assert compose_runner.asyncio.run(compose_runner._selected_services_running("/stack", ["db"]))
     assert not compose_runner.asyncio.run(compose_runner._selected_services_running("/stack", ["app"]))
+
+
+def test_config_failure_exposes_redacted_stderr_without_resolved_environment(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from compose_identity import capture_pulled_images
+    monkeypatch.setattr("compose_identity.subprocess.run", Mock(return_value=SimpleNamespace(
+        returncode=1, stdout='{"environment":{"PASSWORD":"stdout-secret"}}',
+        stderr='env file /host/metarail.env not found\nAPI_TOKEN="private value" PASSWORD=hidden https://user:pass@registry.invalid',
+    )))
+    with pytest.raises(RuntimeError) as error:
+        capture_pulled_images("/stack", ["compose", "config", "--format", "json"], ["db"])
+    message = str(error.value)
+    assert "/host/metarail.env not found" in message
+    assert "exit 1" in message
+    assert "stdout-secret" not in message
+    assert "private value" not in message
+    assert "hidden" not in message
+    assert "user:pass" not in message
+
+
+def test_target_capture_error_reports_target_stage_and_does_not_recreate(stack_base, monkeypatch):
+    from unittest.mock import AsyncMock
+    folder = stack_base / "target-error"
+    folder.mkdir()
+    (folder / "compose.yaml").write_text("services:\n  db:\n    image: postgres:16-alpine\n")
+    commands = []
+    async def stream(websocket, stack_path, args, **kwargs):
+        commands.append(args)
+        return 0
+    monkeypatch.setattr(compose_runner, "_stream_docker_command", stream)
+    monkeypatch.setattr(compose_runner, "_get_agent_self_info", AsyncMock(return_value={"stack_name": "fleetge"}))
+    monkeypatch.setattr(compose_runner, "_capture_pulled_images", AsyncMock(side_effect=RuntimeError(
+        "Could not resolve the effective Compose service configuration: env file /host/metarail.env not found"
+    )))
+    with client.websocket_connect("/api/agent/stacks/target-error/execute?token=test-secret-token-0123456789abcdef") as ws:
+        ws.send_json({"action": "updateServices", "services": ["db"]})
+        result = ws.receive_json()
+    assert result["type"] == "error"
+    assert result["stage"] == "target"
+    assert result["up_executed"] is False
+    assert "/host/metarail.env not found" in result["message"]
+    assert commands == [["compose", "pull", "db"]]

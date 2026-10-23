@@ -86,6 +86,48 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.snap.containers[0].image_config_digest, "sha256:new")
         await asyncio.gather(*self.manager._stats_tasks.values())
 
+    async def test_pull_without_recreate_keeps_reference_and_update_badge(self):
+        # After pull moves the tag, Docker list returns the old SHA as Image,
+        # while inspect.Config.Image still retains the original reference.
+        self.snap.host_config.agent_url = "http://agent"
+        with Session(self.engine) as session:
+            session.add(ImageUpdateCache(host_id="nas", image=self.image, status="updatable",
+                current_digest="sha256:old", registry_digest="sha256:new",
+                registry_config_digest="sha256:new", platform="linux/amd64"))
+            session.commit()
+        proxy = SimpleNamespace(
+            version=AsyncMock(return_value={}), info=AsyncMock(return_value={}),
+            disk_usage=AsyncMock(return_value={}), list_images=AsyncMock(return_value=[]),
+            list_containers=AsyncMock(return_value=[{
+                "Id": "unchanged", "Names": ["/old-db"], "Image": "sha256:old",
+                "ImageID": "sha256:old", "State": "running", "Status": "Up 9 days (healthy)",
+            }]),
+            container_inspect=AsyncMock(return_value={
+                "Config": {"Image": self.image}, "State": {"Status": "running"},
+            }),
+        )
+        async def inspect_image(reference):
+            return {"Id": "sha256:new" if reference == self.image else "sha256:old",
+                    "Os": "linux", "Architecture": "amd64"}
+        proxy.image_inspect = AsyncMock(side_effect=inspect_image)
+        self.manager._agent_clients["nas"] = proxy
+        self.manager._refresh_stacks = AsyncMock()
+        self.manager._refresh_container_stats = AsyncMock()
+        with patch.object(module, "run_update_check", new=AsyncMock(side_effect=AssertionError("registry accessed"))) as check:
+            for _ in range(2):
+                await self.manager._refresh_host_docker_locked("nas", trigger_initial_update_check=False)
+                container = self.snap.containers[0]
+                self.assertEqual(container.image, self.image)
+                self.assertEqual(container.image_id, "sha256:old")
+                self.assertEqual(container.tag_image_id, "sha256:new")
+                self.assertEqual(self.snap.update_results[self.image], "updatable")
+                self.assertEqual(self.snap.update_count, 1)
+            check.assert_not_awaited()
+        with Session(self.engine) as session:
+            row = session.exec(select(ImageUpdateCache).where(ImageUpdateCache.image == self.image)).one()
+            self.assertEqual(row.status, "updatable")
+        await asyncio.gather(*self.manager._stats_tasks.values())
+
     async def test_shared_tag_with_old_instance_stays_updatable(self):
         self.snap.containers.append(self.container("old-stack", "sha256:old"))
         row = ImageUpdateCache(host_id="nas", image=self.image, status="up_to_date",

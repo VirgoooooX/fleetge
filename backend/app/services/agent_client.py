@@ -440,7 +440,11 @@ class AgentClient:
                             break
                         elif msg_type == "error":
                             received_result = True
-                            metadata = {"error_code": msg.get("error_code")}
+                            metadata = {
+                                key: msg[key]
+                                for key in ("stage", "up_executed", "pulled_images", "error_code")
+                                if key in msg
+                            }
                             error_msg = msg.get("message", "Unknown error")
                             if log_queue is not None:
                                 await log_queue.put(f"ERROR: {error_msg}")

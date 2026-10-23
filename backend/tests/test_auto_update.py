@@ -460,6 +460,7 @@ class AgentUpdateResultTests(unittest.IsolatedAsyncioTestCase):
             for message, expected in [
                 ({"type": "exit", "code": 1, "stage": "pull", "up_executed": False}, False),
                 ({"type": "exit", "code": 0, "stage": "up", "up_executed": True}, True),
+                ({"type": "error", "stage": "target", "up_executed": False, "message": "env file is not accessible"}, False),
                 (None, False),
             ]:
                 ws = AsyncMock()

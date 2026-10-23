@@ -1456,7 +1456,10 @@ class SnapshotManager:
                     ContainerSummary(
                         id=c.get("Id", "")[:12],
                         name=container_name,
-                        image=c.get("Image", ""),
+                        # Docker's list API can replace an untagged running
+                        # image reference with its SHA after a newer pull.
+                        # Config.Image retains the reference used to create it.
+                        image=config.get("Image") or c.get("Image", ""),
                         image_id=c.get("ImageID", ""),
                         image_manifest_digest=(runtime_descriptor.get("digest") if runtime_descriptor.get("mediaType") in MANIFEST_MEDIA_TYPES else None),
                         state=c.get("State", "unknown"),

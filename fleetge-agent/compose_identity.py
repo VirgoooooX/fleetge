@@ -1,6 +1,7 @@
 """Resolve Compose services to the image identities currently available after pull."""
 
 import json
+import re
 import subprocess
 from typing import Sequence
 
@@ -20,11 +21,27 @@ def capture_pulled_images(
             timeout=60,
             check=False,
         )
-        if config_result.returncode != 0:
-            raise ValueError
-        config = json.loads(config_result.stdout)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Could not resolve the effective Compose service configuration: command timed out after 60 seconds.") from exc
     except Exception as exc:
-        raise RuntimeError("Could not resolve the effective Compose service configuration.") from exc
+        raise RuntimeError("Could not run docker compose config to resolve the service configuration.") from exc
+    if config_result.returncode != 0:
+        # Only expose bounded, redacted stderr. Resolved configuration stdout
+        # contains environment values and must never appear in an error.
+        detail = re.sub(
+            r'''(?i)\b([A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|KEY|AUTH|CREDENTIAL)[A-Z0-9_]*\s*[=:]\s*)(?:"[^"]*"|'[^']*'|\S+)''',
+            r"\1[REDACTED]", config_result.stderr or "",
+        )
+        detail = re.sub(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[REDACTED]", detail)
+        detail = re.sub(r"(https?://)[^\s/@]+:[^\s/@]+@", r"\1[REDACTED]@", detail).strip()[:1500]
+        raise RuntimeError(
+            "Could not resolve the effective Compose service configuration "
+            f"(docker compose config exit {config_result.returncode}): {detail or 'no error details returned'}"
+        )
+    try:
+        config = json.loads(config_result.stdout)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("Docker Compose returned invalid JSON while resolving the service configuration.") from exc
 
     services = config.get("services") if isinstance(config, dict) else None
     if not isinstance(services, dict) or not services:
