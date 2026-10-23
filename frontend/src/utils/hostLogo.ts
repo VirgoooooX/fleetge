@@ -35,9 +35,8 @@ export const HOST_LOGO_PRESETS: HostLogoPreset[] = [
   {
     key: "lightlayer",
     label: "Lightlayer",
-    src: "/vendor-logos/lightlayer.png",
-    darkSrc: "/vendor-logos/lightlayer-dark.png",
-    isWide: true,
+    src: "/vendor-logos/lightlayer.svg",
+    darkSrc: "/vendor-logos/lightlayer-dark.svg",
   },
 ];
 

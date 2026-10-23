@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52" width="52" height="52">
+  <path d="M19 4 A5 5 0 0 1 24 9 V30 H19 Z" fill="#f7931e"/>
+  <path d="M19 11 A5 5 0 0 1 24 16 V30 H19 Z" fill="#f15a24"/>
+  <path d="M19 18 A5 5 0 0 1 24 23 V30 H19 Z" fill="#ed1c24"/>
+  <path d="M19 25 A5 5 0 0 1 24 30 V43 A1 1 0 0 0 25 44 H32.5 A4 4 0 0 1 36.5 48 H23 A4 4 0 0 1 19 44 Z" fill="#202020"/>
+</svg>
