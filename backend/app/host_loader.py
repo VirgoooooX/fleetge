@@ -89,6 +89,8 @@ def load_hosts_from_yaml() -> int:
                 existing.enabled = entry.get("enabled", True)
                 existing.sort_order = entry.get("sort_order", 0)
                 existing.traffic_billing_day = _traffic_billing_day(entry.get("traffic_billing_day"))
+                if "logo" in entry:
+                    existing.logo = (entry.get("logo") or "").strip() or None
                 existing.agent_url = agent_url
                 existing.agent_token_encrypted = agent_token_encrypted
                 existing.agent_instance_id = agent.get("instance_id") or existing.agent_instance_id
@@ -117,6 +119,7 @@ def load_hosts_from_yaml() -> int:
                     enabled=entry.get("enabled", True),
                     sort_order=entry.get("sort_order", 0),
                     traffic_billing_day=_traffic_billing_day(entry.get("traffic_billing_day")),
+                    logo=(entry.get("logo") or "").strip() or None,
                     agent_url=agent_url,
                     agent_token_encrypted=agent_token_encrypted,
                     agent_instance_id=agent.get("instance_id") or None,

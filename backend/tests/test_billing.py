@@ -29,7 +29,11 @@ from app.services import billing_service, traffic_service
 @contextmanager
 def notify_transport(handler):
     real_client = httpx.AsyncClient
-    transport = httpx.MockTransport(handler)
+    def with_media(request):
+        if request.url.path == "/api/v1/media":
+            return httpx.Response(201, json={"id": "media_test_cover"})
+        return handler(request)
+    transport = httpx.MockTransport(with_media)
     with patch.object(billing_service.httpx, "AsyncClient", side_effect=lambda **kwargs: real_client(transport=transport, **kwargs)), patch.object(
         billing_service, "decrypt_string", return_value="test-key",
     ):
@@ -443,14 +447,21 @@ class BillingPersistenceAndApiTests(unittest.TestCase):
             session.commit()
         key = f"fleetge:billing:vps:{due}:1"
         self.manager._enqueue(host_id="vps", alert_type="billing_due", alert_key=key, title="due", content="due")
+        # A logo configured after enqueue is picked up before the first send.
+        with Session(self.engine) as session:
+            host = session.exec(select(HostConfig).where(HostConfig.host_id == "vps")).one()
+            host.logo = "cloudcone"
+            session.add(host)
+            session.commit()
         requests = []
         def send(request):
             requests.append(json.loads(request.content))
             if len(requests) == 1:
                 return httpx.Response(503)
             return httpx.Response(202, json={"data": {"status": "duplicate", "event_id": "evt"}})
-        with notify_transport(send):
+        with notify_transport(send), patch.object(billing_service, "prepare_notification", wraps=billing_service.prepare_notification) as prepare:
             asyncio.run(self.manager.dispatch_pending())
+            self.assertEqual(prepare.call_args.args[3]["_host_icon"], "cloudcone")
             with Session(self.engine) as session:
                 alert = session.exec(select(HostBillingAlertState)).one()
                 self.assertEqual(alert.status, "pending")
@@ -461,6 +472,9 @@ class BillingPersistenceAndApiTests(unittest.TestCase):
             asyncio.run(restarted.dispatch_pending())
             asyncio.run(restarted.dispatch_pending())
         self.assertEqual([item["event_key"] for item in requests], [key, key])
+        self.assertEqual(requests[0], requests[1])
+        self.assertEqual(requests[0]["message_type"], "article")
+        self.assertNotIn("_host_icon", requests[0])
         with Session(self.engine) as session:
             alert = session.exec(select(HostBillingAlertState)).one()
             self.assertEqual(alert.status, "sent")
@@ -491,7 +505,8 @@ class BillingPersistenceAndApiTests(unittest.TestCase):
             received = asyncio.Event()
             def send(request):
                 sent.append(json.loads(request.content))
-                received.set()
+                if {item["event_type"] for item in sent} >= {"fleetge.host.billing_due", "fleetge.host.traffic_quota"}:
+                    received.set()
                 return httpx.Response(202, json={"data": {"status": "accepted", "event_id": f"evt{len(sent)}"}})
             with ExitStack() as stack:
                 for obj, name in ((main, "auto_update_manager"), (main, "enrollment_monitor")):

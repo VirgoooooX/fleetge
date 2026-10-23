@@ -8,6 +8,7 @@ export interface HostSummary {
   host_id: string;
   display_name: string;
   traffic_billing_day?: number;
+  logo?: string | null;
   status: "online" | "offline" | "degraded" | "unknown";
   metrics?: {
     hostname: string;

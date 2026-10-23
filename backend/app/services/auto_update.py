@@ -16,6 +16,7 @@ from app.database import engine
 from app.models import AuditLog, AutoUpdateRun, ImageUpdateCache, Setting, StackAutoUpdate
 from app.services.agent_client import AgentClient
 from app.services.crypto import decrypt_string, encrypt_string
+from app.services.notification_cover import prepare_notification
 from app.services.update_check import _normalize_digest, _parse_platform, _platform_matches
 
 logger = logging.getLogger(__name__)
@@ -876,14 +877,17 @@ class AutoUpdateManager:
                     label = {"success": "成功", "partial": "部分成功", "failed": "失败", "uncertain": "结果未确认"}[status]
                     run.notify_url = config["NOTIFYHUB_URL"]
                     run.notify_recipient = config["NOTIFYHUB_RECIPIENT"]
+                    snap = self.snapshots().get_snapshot(run.host_id)
+                    stack = next((item for item in snap.stacks if item.name == run.stack_name), None) if snap else None
                     run.notify_payload = json.dumps({
                         "event_type": "fleetge.stack.auto_update",
                         "event_key": f"fleetge:auto-update:{run.id}:{status}:{run.started_at.isoformat()}",
-                        "title": f"Stack 自动更新{label}：{run.stack_name}"[:200],
-                        "content": f"主机：{run.host_id}\nStack：{run.stack_name}\n结果：{label}\n尝试次数：{run.attempts}\n时间：{run.finished_at.isoformat()}\n{run.detail}\n" + ("自动更新已暂停。请在 Dashboard 查看详情。" if status != "success" else ""),
+                        "title": f"【Fleetge】更新{label}｜{run.stack_name}"[:40],
+                        "content": f"主机：{run.host_id}\n" + ("已完成更新，运行检查通过。" if status == "success" else "该 Stack 的自动更新已暂停，请在 Fleetge 查看记录并处理。"),
                         "level": "info" if status == "success" else "warning",
                         "recipients": [run.notify_recipient],
                         "message_type": "text",
+                        "_stack_icon": getattr(stack, "icon_url", None),
                     }, ensure_ascii=False)
                     run.notify_status = "pending"
                     run.notify_next_at = now_utc()
@@ -916,7 +920,16 @@ class AutoUpdateManager:
                         status, error = "blocked", "通知配置已删除或目标已改变。"
                     else:
                         try:
-                            response = await client.post(run.notify_url + "/api/v1/events", json=json.loads(run.notify_payload), headers={"X-API-Key": decrypt_string(config["NOTIFYHUB_KEY"])})
+                            api_key = decrypt_string(config["NOTIFYHUB_KEY"])
+                            payload = await prepare_notification(client, run.notify_url, api_key, json.loads(run.notify_payload))
+                            # Freeze the actual media reference or text fallback before sending.
+                            # A timeout/restart retries the same event and the same payload.
+                            with Session(get_engine()) as session:
+                                row = session.get(AutoUpdateRun, run.id)
+                                row.notify_payload = json.dumps(payload, ensure_ascii=False)
+                                session.add(row)
+                                session.commit()
+                            response = await client.post(run.notify_url + "/api/v1/events", json=payload, headers={"X-API-Key": api_key})
                             if response.status_code == 202:
                                 data = response.json().get("data", {})
                                 if data.get("status") == "accepted" and data.get("event_id"):

@@ -33,6 +33,8 @@ def write_hosts_to_yaml() -> None:
             "sort_order": h.sort_order,
             "traffic_billing_day": h.traffic_billing_day,
         }
+        if h.logo:
+            host_entry["logo"] = h.logo
 
         # Agent block
         if h.agent_url:

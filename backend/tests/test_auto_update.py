@@ -368,9 +368,13 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
     async def test_notification_timeout_reuses_payload_and_event_key(self):
         module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
         await self.run_update()
-        original = self.run_record().notify_payload
+        original = json.loads(self.run_record().notify_payload)
         client = AsyncMock()
-        client.post.side_effect = [httpx.ReadTimeout("timeout"), httpx.Response(202, json={"data": {"status": "accepted", "event_id": "evt_1", "duplicate": True}})]
+        client.post.side_effect = [
+            httpx.Response(201, json={"id": "media_cover"}, request=httpx.Request("POST", "http://notify/api/v1/media")),
+            httpx.ReadTimeout("timeout"),
+            httpx.Response(202, json={"data": {"status": "accepted", "event_id": "evt_1", "duplicate": True}}),
+        ]
         with patch.object(module.httpx, "AsyncClient") as factory:
             factory.return_value.__aenter__ = AsyncMock(return_value=client)
             factory.return_value.__aexit__ = AsyncMock()
@@ -383,22 +387,27 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
                 session.commit()
             await self.manager.send_notifications()
         self.assertEqual(self.run_record().notify_status, "accepted")
-        self.assertEqual(self.run_record().notify_payload, original)
+        frozen = json.loads(self.run_record().notify_payload)
+        self.assertEqual(frozen["event_key"], original["event_key"])
+        self.assertEqual(frozen["message_type"], "article")
+        self.assertEqual(frozen["media_asset_id"], "media_cover")
+        self.assertNotIn("_stack_icon", frozen)
         calls = client.post.await_args_list
-        self.assertEqual(calls[0].kwargs["json"], calls[1].kwargs["json"])
-        self.assertNotIn("nfy_testkey", original)
+        self.assertEqual(calls[1].kwargs["json"], calls[2].kwargs["json"])
+        self.assertNotIn("nfy_testkey", self.run_record().notify_payload)
 
     async def test_unauthorized_notification_blocks_until_config_is_saved(self):
         module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
         await self.run_update()
         client = AsyncMock()
-        client.post.return_value = httpx.Response(403)
+        client.post.return_value = httpx.Response(403, request=httpx.Request("POST", "http://notify/api/v1/events"))
         with patch.object(module.httpx, "AsyncClient") as factory:
             factory.return_value.__aenter__ = AsyncMock(return_value=client)
             factory.return_value.__aexit__ = AsyncMock()
             await self.manager.send_notifications()
             await self.manager.send_notifications()
-        self.assertEqual(client.post.await_count, 1)
+        # A media permission failure falls back to text, then event permission blocks.
+        self.assertEqual(client.post.await_count, 2)
         self.assertEqual(self.run_record().notify_status, "blocked")
         module.save_notify_settings("http://notify", "person_1", "nfy_fixed")
         self.assertEqual(self.run_record().notify_status, "pending")

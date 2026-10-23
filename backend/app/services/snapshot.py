@@ -2519,6 +2519,7 @@ class SnapshotManager:
             display_name=cfg.display_name or cfg.host_id,
             status=effective_status,
             traffic_billing_day=cfg.traffic_billing_day,
+            logo=cfg.logo,
             metrics=snap.metrics,
             docker_version=info.version if info else None,
             api_version=info.api_version if info else None,

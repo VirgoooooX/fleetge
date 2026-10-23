@@ -88,6 +88,7 @@ def create_engine_and_tables():
                     "enrollment_callback_ip": "TEXT",
                     "enrollment_callback_mode": "TEXT",
                     "traffic_billing_day": "INTEGER DEFAULT 1",
+                    "logo": "TEXT",
                 }
                 for column_name, column_ddl in host_config_columns.items():
                     if column_name not in columns:

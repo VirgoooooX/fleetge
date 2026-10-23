@@ -18,6 +18,7 @@ class HostConfig(SQLModel, table=True):
     sort_order: int = 0
     # Per-Host traffic billing cycle. Day 29-31 is clamped to month end.
     traffic_billing_day: int = 1
+    logo: Optional[str] = Field(default=None)
 
     # Connection URLs
     # Fleetge Agent fields (primary)

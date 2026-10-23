@@ -590,6 +590,36 @@
             <el-input v-model="hostForm.display_name" :placeholder="t('settings.hosts.form.namePlaceholder')" />
           </el-form-item>
 
+          <el-form-item class="settings-field-row" :label="t('settings.hosts.form.logo')" prop="logo">
+            <div class="host-logo-picker">
+              <el-select
+                v-model="hostForm.logo"
+                clearable
+                filterable
+                allow-create
+                default-first-option
+                :placeholder="t('settings.hosts.form.logoPlaceholder')"
+                class="host-logo-select"
+              >
+                <el-option :label="t('settings.hosts.form.logoNone')" value="" />
+                <el-option
+                  v-for="preset in HOST_LOGO_PRESETS"
+                  :key="preset.key"
+                  :label="preset.label"
+                  :value="preset.key"
+                >
+                  <div class="host-logo-option">
+                    <img :src="preset.src" :alt="preset.label" class="host-logo-option-img" />
+                    <span>{{ preset.label }}</span>
+                  </div>
+                </el-option>
+              </el-select>
+              <div v-if="selectedFormLogo" class="host-logo-preview" :title="hostForm.logo">
+                <img :src="selectedFormLogo.src" alt="" class="host-logo-preview-img" />
+              </div>
+            </div>
+          </el-form-item>
+
           <el-form-item class="settings-field-row" :label="t('settings.hosts.form.sort')" prop="sort_order">
             <el-input-number v-model="hostForm.sort_order" :min="0" />
           </el-form-item>
@@ -846,6 +876,7 @@ import AppProfilesDialog from "@/components/AppProfilesDialog.vue";
 import { useDashboardStore, type UpdateResult } from "@/stores/dashboard";
 import { useMobile } from "@/composables/useMobile";
 import { remainingInviteSeconds } from "@/utils/dateTime";
+import { HOST_LOGO_PRESETS, resolveHostLogo } from "@/utils/hostLogo";
 import UpdateBadge from "@/components/UpdateBadge.vue";
 import NotifyHubSettings from "@/components/NotifyHubSettings.vue";
 
@@ -1219,12 +1250,15 @@ function applySubscription(data: any) {
 const hostForm = reactive({
   host_id: "",
   display_name: "",
+  logo: "",
   enabled: true,
   sort_order: 0,
   traffic_billing_day: 1,
   agent_url: "",
   agent_token: "",
 });
+
+const selectedFormLogo = computed(() => resolveHostLogo(hostForm.logo));
 
 const validateHostId = (_rule: any, value: string, callback: any) => {
   if (!value) {
@@ -1260,6 +1294,7 @@ function openCreateHostDialog() {
   hostSubscriptionLoaded.value = true;
   hostForm.host_id = "";
   hostForm.display_name = "";
+  hostForm.logo = "";
   hostForm.enabled = true;
   hostForm.sort_order = store.hosts.length > 0 ? Math.max(...store.hosts.map((h) => h.sort_order)) + 10 : 10;
   hostForm.traffic_billing_day = 1;
@@ -1274,6 +1309,7 @@ async function openEditHostDialog(row: HostConfigResponse) {
   hostFormMode.value = "edit";
   hostForm.host_id = row.host_id;
   hostForm.display_name = row.display_name;
+  hostForm.logo = row.logo || "";
   hostForm.enabled = row.enabled;
   hostForm.sort_order = row.sort_order;
   hostForm.traffic_billing_day = row.traffic_billing_day || 1;
@@ -1309,6 +1345,7 @@ function closeHostDialog() {
 function prepareHostPayload() {
   const payload: any = {
     display_name: hostForm.display_name,
+    logo: hostForm.logo || "",
     enabled: hostForm.enabled,
     sort_order: hostForm.sort_order,
     traffic_billing_day: hostForm.traffic_billing_day,
@@ -2595,5 +2632,50 @@ onBeforeUnmount(() => {
 .add-host-choice-card:hover .choice-card-arrow {
   color: var(--accent-blue, #3b82f6);
   transform: translateX(3px);
+}
+
+.host-logo-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.host-logo-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.host-logo-preview {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--surface-panel);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+
+.host-logo-preview-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.host-logo-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.host-logo-option-img {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  flex-shrink: 0;
 }
 </style>

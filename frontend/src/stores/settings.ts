@@ -20,6 +20,7 @@ export interface HostConfigResponse {
   enabled: boolean;
   sort_order: number;
   traffic_billing_day: number;
+  logo?: string | null;
   agent_url?: string;
   has_agent_token: boolean;
   agent_instance_id?: string;

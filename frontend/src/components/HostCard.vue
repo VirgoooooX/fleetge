@@ -8,6 +8,21 @@
     @keydown.space.self.prevent="$emit('click')"
     @click="$emit('click')"
   >
+    <!-- Center Brand Watermark (between card background and foreground content) -->
+    <div
+      v-if="resolvedLogo"
+      class="card-brand-watermark"
+      :class="{ 'is-wide': resolvedLogo.isWide }"
+      aria-hidden="true"
+    >
+      <img
+        :src="watermarkSrc"
+        alt=""
+        class="watermark-img"
+        draggable="false"
+      />
+    </div>
+
     <!-- Top Header: Identity & Actionable Badges -->
     <header class="card-header">
       <div class="identity-left">
@@ -313,7 +328,8 @@
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import type { HostSummary, HostTrafficState, HostSubscriptionSummary } from "@/stores/dashboard";
-
+import { useTheme } from "@/composables/useTheme";
+import { resolveHostLogo } from "@/utils/hostLogo";
 import { formatBytes } from "@/utils/formatBytes";
 
 const props = defineProps<{
@@ -339,6 +355,15 @@ const emit = defineEmits<{
 }>();
 
 const { t } = useI18n();
+const theme = useTheme();
+
+const resolvedLogo = computed(() => resolveHostLogo(props.host.logo));
+const watermarkSrc = computed(() => {
+  if (!resolvedLogo.value) return "";
+  return theme.current.value === "dark"
+    ? resolvedLogo.value.darkSrc
+    : resolvedLogo.value.src;
+});
 
 const displayUpdateCount = computed(() => {
   return props.updateCount ?? props.host.update_count ?? 0;
@@ -576,6 +601,65 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   transform: translateY(-2px);
   border-color: rgba(96, 165, 250, 0.35);
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.3);
+}
+
+/* 居中品牌底纹水印：置于卡片背景之上、前景文字之下 */
+.card-brand-watermark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  height: 60%;
+  width: 60%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  user-select: none;
+  z-index: 0;
+  opacity: 0.12;
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-brand-watermark.is-wide {
+  width: 52%;
+  height: 44%;
+}
+
+.watermark-img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.card-brand-watermark.is-wide .watermark-img {
+  width: 100%;
+  height: auto;
+}
+
+.host-card-v1:hover .card-brand-watermark {
+  opacity: 0.2;
+  transform: translate(-50%, -50%) scale(1.03);
+}
+
+[data-theme="light"] .card-brand-watermark {
+  opacity: 0.09;
+}
+
+[data-theme="light"] .host-card-v1:hover .card-brand-watermark {
+  opacity: 0.16;
+}
+
+.card-header,
+.card-body,
+.card-fallback,
+.card-footer {
+  position: relative;
+  z-index: 1;
 }
 
 .host-card-v1:focus-visible,
@@ -1311,8 +1395,8 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
 }
 [data-theme="light"] .wan-capsule {
-  background: rgba(241, 245, 249, 0.7);
-  border-color: rgba(226, 232, 240, 0.9);
+  background: rgba(241, 245, 249, 0.45);
+  border-color: rgba(226, 232, 240, 0.85);
 }
 [data-theme="light"] .workload-capsule {
   background: rgba(241, 245, 249, 0.9);

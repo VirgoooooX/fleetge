@@ -21,6 +21,7 @@ from app.models import (
 )
 from app.services.agent_client import AgentClient
 from app.services.auto_update import NOTIFY_KEYS, notify_settings
+from app.services.notification_cover import prepare_notification
 from app.services.crypto import decrypt_string
 from app.services.traffic_service import (
     _billing_cycle_start,
@@ -444,6 +445,7 @@ class BillingAlertManager:
             "level": level,
             "recipients": [config["NOTIFYHUB_RECIPIENT"]],
             "message_type": "text",
+            "_host_icon": None,
         }
         if context is not None:
             payload["_billing_context"] = context
@@ -499,12 +501,11 @@ class BillingAlertManager:
             for due_date, (labels, advance_days) in targets.items():
                 days = (due_date - today).days
                 alert_key = f"fleetge:billing:{subscription.host_id}:{due_date.isoformat()}:{advance_days}"
-                title = f"主机即将{ ' / '.join(labels) }：{host_names[subscription.host_id]}"
+                when = "今日" if days == 0 else f"{days} 天后"
+                title = f"【Fleetge】{host_names[subscription.host_id]} {when}{' / '.join(labels)}"[:40]
                 content = (
-                    f"主机：{host_names[subscription.host_id]}（{subscription.host_id}）\n"
-                    f"{ '、'.join(labels) }日期：{due_date.isoformat()}\n"
-                    f"剩余：{days} 天（{advance_days} 天提醒）\n"
-                    f"自动续费状态：{'已开启' if subscription.auto_renew else '未开启'}"
+                    f"{'、'.join(labels)}日期：{due_date.isoformat()}。"
+                    + ("已开启自动续费，请确认扣款结果。" if subscription.auto_renew else "未开启自动续费，请及时续费并更新记录。")
                 )
                 self._enqueue(
                     host_id=subscription.host_id,
@@ -539,13 +540,11 @@ class BillingAlertManager:
                 if quota["usedBytes"] * 100 < quota["quotaBytes"] * threshold:
                     continue
                 alert_key = f"fleetge:traffic:{host.host_id}:{period_key}:{threshold}"
-                estimated = "（估算值，账本存在缺口或同步异常）" if quota["estimated"] else ""
-                title = f"主机流量达到 {threshold}%：{host.display_name or host.host_id}"
+                estimated = "（估算值）" if quota["estimated"] else ""
+                title = f"【Fleetge】流量达到 {threshold}%｜{host.display_name or host.host_id}"[:40]
                 content = (
-                    f"主机：{host.display_name or host.host_id}（{host.host_id}）\n"
-                    f"账单周期起始：{period_key}\n"
-                    f"已用流量：{quota['usedBytes']} / {quota['quotaBytes']} 字节"
-                    f"（{quota['usagePercent']}%）{estimated}"
+                    f"本周期已用 {quota['usedBytes'] / 1_000_000_000:.1f} / "
+                    f"{quota['quotaBytes'] / 1_000_000_000:.1f} GB{estimated}。请关注用量，避免超额。"
                 )
                 self._enqueue(
                     host_id=host.host_id,
@@ -646,11 +645,21 @@ class BillingAlertManager:
                     continue
                 try:
                     payload = json.loads(alert.payload)
-                    payload.pop("_billing_context", None)
+                    context = payload.pop("_billing_context", None)
+                    if "_host_icon" in payload:
+                        payload["_host_icon"] = host.logo
+                    api_key = decrypt_string(config["NOTIFYHUB_KEY"])
+                    payload = await prepare_notification(client, alert.notify_url, api_key, payload)
+                    with Session(get_engine()) as session:
+                        row = session.get(HostBillingAlertState, alert.id)
+                        stored = {**payload, "_billing_context": context} if context is not None else payload
+                        row.payload = json.dumps(stored, ensure_ascii=False)
+                        session.add(row)
+                        session.commit()
                     response = await client.post(
                         alert.notify_url + "/api/v1/events",
                         json=payload,
-                        headers={"X-API-Key": decrypt_string(config["NOTIFYHUB_KEY"])},
+                        headers={"X-API-Key": api_key},
                     )
                     if response.status_code == 202:
                         body = response.json()
