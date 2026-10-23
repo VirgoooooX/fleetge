@@ -158,9 +158,19 @@
       <!-- View: By Host -->
       <template v-else-if="viewMode === 'host'">
         <section v-for="h in appsByHost" :key="h.id" class="apps-section">
-          <h3 class="section-title">
-            <el-icon class="mr-2"><Link /></el-icon>
-            {{ h.name }}
+          <h3 class="section-title host-section-title">
+            <el-image
+              v-if="h.logo"
+              :src="theme.current.value === 'dark' ? h.logo.darkSrc : h.logo.src"
+              class="host-section-logo"
+              :class="{ 'is-wide': h.logo.isWide }"
+              fit="contain"
+              aria-hidden="true"
+            >
+              <template #error><el-icon><Link /></el-icon></template>
+            </el-image>
+            <el-icon v-else class="host-section-logo"><Link /></el-icon>
+            <span class="host-section-name">{{ h.name }}</span>
             <span class="section-count">{{ h.apps.length }}</span>
           </h3>
           <div class="apps-grid">
@@ -238,32 +248,35 @@
     </main>
 
     <!-- Custom Context Menu Overlay -->
-    <div
-      v-if="contextMenuVisible"
-      class="custom-context-menu"
-      :style="{ top: contextMenuY + 'px', left: contextMenuX + 'px' }"
-      @click.stop
-    >
-      <div class="context-item" @click="triggerAction('open-dashboard')">
-        <el-icon><Monitor /></el-icon> <span>{{ t('apps.menu.openDashboard') }}</span>
+    <Teleport to="body">
+      <div
+        v-if="contextMenuVisible"
+        ref="contextMenuRef"
+        class="custom-context-menu"
+        :style="{ top: contextMenuY + 'px', left: contextMenuX + 'px' }"
+        @click.stop
+      >
+        <div class="context-item" @click="triggerAction('open-dashboard')">
+          <el-icon><Monitor /></el-icon> <span>{{ t('apps.menu.openDashboard') }}</span>
+        </div>
+        <div class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('restart')">
+          <el-icon><Refresh /></el-icon> <span>{{ t('apps.menu.restartApp') }}</span>
+        </div>
+        <div v-if="activeApp && isRunning(activeApp.status)" class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('stop')">
+          <el-icon><VideoPause /></el-icon> <span>{{ t('apps.menu.stopApp') }}</span>
+        </div>
+        <div v-else class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('start')">
+          <el-icon><VideoPlay /></el-icon> <span>{{ t('apps.menu.startApp') }}</span>
+        </div>
+        <div class="context-item" :class="{ disabled: !activeApp?.app_url }" @click="triggerAction('copy-url')">
+          <el-icon><DocumentCopy /></el-icon> <span>{{ t('apps.menu.copyUrl') }}</span>
+        </div>
+        <el-divider class="my-1" />
+        <div class="context-item" @click="triggerAction('edit-profile')">
+          <el-icon><Setting /></el-icon> <span>{{ t('apps.menu.editProfile') }}</span>
+        </div>
       </div>
-      <div class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('restart')">
-        <el-icon><Refresh /></el-icon> <span>{{ t('apps.menu.restartApp') }}</span>
-      </div>
-      <div v-if="activeApp && isRunning(activeApp.status)" class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('stop')">
-        <el-icon><VideoPause /></el-icon> <span>{{ t('apps.menu.stopApp') }}</span>
-      </div>
-      <div v-else class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('start')">
-        <el-icon><VideoPlay /></el-icon> <span>{{ t('apps.menu.startApp') }}</span>
-      </div>
-      <div class="context-item" :class="{ disabled: !activeApp?.app_url }" @click="triggerAction('copy-url')">
-        <el-icon><DocumentCopy /></el-icon> <span>{{ t('apps.menu.copyUrl') }}</span>
-      </div>
-      <el-divider class="my-1" />
-      <div class="context-item" @click="triggerAction('edit-profile')">
-        <el-icon><Setting /></el-icon> <span>{{ t('apps.menu.editProfile') }}</span>
-      </div>
-    </div>
+    </Teleport>
 
     <!-- SSE Operations Dialog -->
     <el-dialog
@@ -300,7 +313,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
@@ -323,6 +336,8 @@ import {
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
 import { useDashboardStore } from "@/stores/dashboard";
+import { useTheme } from "@/composables/useTheme";
+import { resolveHostLogo } from "@/utils/hostLogo";
 import StackOperationDock from "@/components/StackOperationDock.vue";
 import UpdateBadge from "@/components/UpdateBadge.vue";
 import AppProfilesDialog from "@/components/AppProfilesDialog.vue";
@@ -330,6 +345,7 @@ import AppProfilesDialog from "@/components/AppProfilesDialog.vue";
 const router = useRouter();
 const route = useRoute();
 const dashboardStore = useDashboardStore();
+const theme = useTheme();
 const { t } = useI18n();
 
 // Component data
@@ -372,6 +388,7 @@ let sseController: AbortController | null = null;
 
 // Context Menu state
 const contextMenuVisible = ref(false);
+const contextMenuRef = ref<HTMLElement | null>(null);
 const contextMenuX = ref(0);
 const contextMenuY = ref(0);
 
@@ -515,7 +532,10 @@ const appsByHost = computed(() => {
       if (indexB === -1) return -1;
       return indexA - indexB;
     })
-    .map(id => ({ id, name: hosts[id].name, apps: hosts[id].apps }));
+    .map(id => ({
+      id, name: hosts[id].name, apps: hosts[id].apps,
+      logo: resolveHostLogo(liveHostsById.value.get(id)?.logo),
+    }));
 });
 
 // Helpers
@@ -558,13 +578,23 @@ function handleAppClick(app: any) {
 }
 
 // Custom Context Menu handlers
-function handleContextMenu(e: MouseEvent, app: any) {
+async function handleContextMenu(e: MouseEvent, app: any) {
   e.preventDefault();
   activeApp.value = app;
   contextMenuX.value = e.clientX;
   contextMenuY.value = e.clientY;
   contextMenuVisible.value = true;
   document.addEventListener("click", closeContextMenu, { once: true });
+  await nextTick();
+  if (!contextMenuRef.value) return;
+  const { width, height } = contextMenuRef.value.getBoundingClientRect();
+  const margin = 8;
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = document.documentElement.clientHeight;
+  const x = e.clientX + width > viewportWidth - margin ? e.clientX - width : e.clientX;
+  const y = e.clientY + height > viewportHeight - margin ? e.clientY - height : e.clientY;
+  contextMenuX.value = Math.max(margin, Math.min(x, viewportWidth - width - margin));
+  contextMenuY.value = Math.max(margin, Math.min(y, viewportHeight - height - margin));
 }
 
 function closeContextMenu() {
@@ -985,6 +1015,36 @@ onUnmounted(() => {
   margin-left: 8px;
 }
 
+.host-section-title {
+  gap: 10px;
+  min-height: 32px;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.host-section-logo {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  font-size: 24px;
+}
+
+.host-section-logo.is-wide {
+  width: 72px;
+}
+
+.host-section-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.host-section-title .section-count {
+  flex-shrink: 0;
+  margin-left: 0;
+}
+
 .apps-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
@@ -1173,6 +1233,10 @@ onUnmounted(() => {
 /* Custom Context Menu */
 .custom-context-menu {
   position: fixed;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100dvh - 16px);
+  overflow: auto;
   z-index: 3000;
   background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
