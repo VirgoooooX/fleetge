@@ -57,8 +57,12 @@ data/
 .codegraph/
 .codex-tmp/
 .agents/
+.tmp/
 tmp/
 temp/
+
+# Pyrefly
+.pyrefly/
 
 # Specs
 docs/superpowers/specs/2026-06-16-i18n-integration-design.md
