@@ -938,8 +938,9 @@ class SnapshotManager:
         not_before: float = 0.0,
         wait_timeout: float = 180.0,
         wait_interval: float = 2.0,
+        require_cached_target: bool = True,
     ) -> tuple[str, str]:
-        """Verify runtime identity and health against the task's cached registry target.
+        """Verify pulled image identity and health, plus the cached target for detected updates.
 
         This path only reads local Docker evidence; registry checks belong to
         the explicit/scheduled image-check workflow.
@@ -1006,6 +1007,8 @@ class SnapshotManager:
                 if not failure_reasons and not missing_evidence and not pending_health:
                     mismatched: list[str] = []
                     for service_name, target in targets.items():
+                        if not require_cached_target:
+                            continue
                         cached = target.get("cached_target") or {}
                         cached_platform = _parse_platform(cached.get("platform"))
                         for container in snap.containers:
@@ -1045,7 +1048,10 @@ class SnapshotManager:
                                 row.matched_field = result.matched_field
                                 session.add(row)
                         session.commit()
-                    return "success", "本地运行镜像与缓存目标一致，容器运行及健康检查通过。"
+                    return "success", (
+                        "本地运行镜像与缓存目标一致，容器运行及健康检查通过。" if require_cached_target
+                        else "本地运行镜像与本次拉取目标一致，容器运行及健康检查通过。"
+                    )
                 last_reason = "; ".join(failure_reasons + missing_evidence) or "Container healthchecks are still starting."
                 uncertain_reason = "; ".join(missing_evidence)
 

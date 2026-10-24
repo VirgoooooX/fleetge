@@ -153,6 +153,47 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
         # Another Stack using the same tag is still old; its badge must remain.
         self.assertEqual(self.snap.update_results[self.image], "updatable")
 
+    async def test_manual_deployment_verifies_pulled_image_without_registry_cache(self):
+        self.manager.refresh_host_docker = AsyncMock()
+        with patch.object(module, "run_update_check", new=AsyncMock(side_effect=AssertionError("registry accessed"))) as check:
+            outcome = await self.manager.verify_update_targets("nas", "new", {
+                "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1},
+            }, not_before=1, wait_timeout=0, require_cached_target=False)
+        self.assertEqual(outcome[0], "success")
+        self.assertIn("本次拉取目标", outcome[1])
+        check.assert_not_awaited()
+
+    async def test_manual_deployment_is_not_blocked_by_outdated_cached_target(self):
+        self.manager.refresh_host_docker = AsyncMock()
+        with Session(self.engine) as session:
+            session.add(ImageUpdateCache(host_id="nas", image=self.image, status="up_to_date",
+                registry_config_digest="sha256:old", registry_digest="sha256:old", platform="linux/amd64"))
+            session.commit()
+        outcome = await self.manager.verify_update_targets("nas", "new", {
+            "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1},
+        }, not_before=1, wait_timeout=0, require_cached_target=False)
+        self.assertEqual(outcome[0], "success")
+        with Session(self.engine) as session:
+            row = session.exec(select(ImageUpdateCache)).one()
+            self.assertEqual(row.registry_config_digest, "sha256:old")
+
+    async def test_manual_deployment_still_requires_image_identity_and_health(self):
+        self.manager.refresh_host_docker = AsyncMock()
+        for failure in ("old_image", "unhealthy", "missing_image_id", "wrong_platform"):
+            with self.subTest(failure=failure):
+                container = self.container("new", "sha256:old" if failure == "old_image" else "sha256:new")
+                if failure == "unhealthy":
+                    container.healthcheck_configured = True
+                    container.health = {"Status": "unhealthy"}
+                if failure == "wrong_platform":
+                    container.platform = "linux/arm64"
+                self.snap.containers = [container]
+                outcome = await self.manager.verify_update_targets("nas", "new", {
+                    "app": {"image": self.image, "image_id": None if failure == "missing_image_id" else "sha256:new",
+                            "platform": "linux/amd64", "container_count": 1},
+                }, not_before=1, wait_timeout=0, require_cached_target=False)
+                self.assertEqual(outcome[0], "uncertain" if failure == "missing_image_id" else "failed")
+
     async def test_matching_index_cannot_override_different_running_config(self):
         lookup = update_check.RegistryLookupResult(digests=update_check.RegistryDigests(
             repo_digests=["sha256:index", "sha256:manifest"], index_digest="sha256:index",

@@ -539,8 +539,8 @@ class AutoUpdateManager:
             services.setdefault(service_name, []).append(container)
         return services
 
-    def _select_update_services(self, snap, stack_name: str) -> tuple[dict[str, dict], dict[str, dict]]:
-        """Freeze typed registry evidence from the existing check cache."""
+    def _select_update_services(self, snap, stack_name: str, *, source: str = "auto") -> tuple[dict[str, dict], dict[str, dict]]:
+        """Manual updates pull running services; automatic updates use confirmed cache evidence."""
         checks = {result.image: result for result in snap.update_check_results}
         with Session(get_engine()) as session:
             rows = session.exec(select(ImageUpdateCache).where(ImageUpdateCache.host_id == snap.host_config.host_id)).all()
@@ -549,10 +549,16 @@ class AutoUpdateManager:
         skipped: dict[str, dict] = {}
         for service, containers in self._running_services(snap, stack_name).items():
             image = containers[0].image
+            if source == "manual":
+                selected[service] = {"image": image, "container_count": len(containers)}
+                continue
             result = checks.get(image)
-            if not result or result.status not in {"updatable", "up_to_date"} or result.last_failure_status:
+            pending_allowed = bool(source == "bulk" and result and result.status == "pending_update")
+            if not result or result.status not in {"updatable", "up_to_date", "pending_update"} or result.last_failure_status:
                 reason = f"镜像检测不可用（{getattr(result, 'last_failure_status', None) or getattr(result, 'status', 'unknown')}），请检查更新。"
-            elif snap.update_results.get(image) != "updatable":
+            elif result.status == "pending_update" and not pending_allowed:
+                reason = "检测到新镜像，等待二次确认后自动更新；也可手动升级。"
+            elif not pending_allowed and snap.update_results.get(image) != "updatable":
                 reason = "没有检测到更新。"
             elif not result.platform or not (result.registry_config_digest or result.registry_manifest_digest):
                 reason = "缓存缺少有效的平台或目标摘要，请检查更新。"
@@ -604,7 +610,7 @@ class AutoUpdateManager:
         return status, detail
 
     async def _run_self_stack_update(self, conn: AgentClient, run_id: int, snap, stack_name: str, self_info: dict) -> None:
-        selected, service_results = self._select_update_services(snap, stack_name)
+        selected, service_results = self._select_update_services(snap, stack_name, source="manual")
         task_targets = {"services": selected, "results": service_results}
         self._set_run_stage(run_id, "preflight", targets=task_targets)
         # The detached job survives either the Dashboard or Agent restarting.
@@ -709,6 +715,7 @@ class AutoUpdateManager:
         self._set_run_stage(run_id, "verify")
         return await self.snapshots().verify_update_targets(
             snap.host_config.host_id, stack_name, {service: target}, not_before=before_update,
+            require_cached_target=False,
         )
 
     async def run_stack(self, host_id: str, stack_name: str, targets: list[str], run_id: int | None = None) -> None:
@@ -764,7 +771,7 @@ class AutoUpdateManager:
                 run = session.get(AutoUpdateRun, run_id)
                 source = run.source or "auto"
 
-            selected, service_results = self._select_update_services(snap, stack_name)
+            selected, service_results = self._select_update_services(snap, stack_name, source=source)
             task_targets = {"services": selected, "results": service_results}
             self._set_run_stage(run_id, "preflight", targets=task_targets)
             for service, target in selected.items():
@@ -834,6 +841,7 @@ class AutoUpdateManager:
             self._set_run_stage(run_id, "verify", targets=task_targets)
             return await self.snapshots().verify_update_targets(
                 host_id, stack_name, {service: target}, not_before=before_update,
+                require_cached_target=source != "manual",
             )
         return "failed", "镜像拉取失败。"
 

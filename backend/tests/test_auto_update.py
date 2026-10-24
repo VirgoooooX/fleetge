@@ -311,6 +311,93 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results["db"]["status"], "success")
         self.assertIn("部分成功", run.detail)
 
+    async def test_explicit_updates_accept_pending_target_with_normal_pull_and_verification(self):
+        self.snap.update_check_results[0].status = "pending_update"
+        self.snap.update_results.clear()
+        for source in ("manual", "bulk"):
+            with self.subTest(source=source):
+                with Session(self.engine) as session:
+                    run = AutoUpdateRun(host_id="nas", stack_name="app", source=source, status="queued")
+                    session.add(run)
+                    session.commit()
+                    session.refresh(run)
+                    run_id = run.id
+                self.manager.execute.reset_mock()
+                self.snapshots.verify_update_targets.reset_mock()
+                await self.manager.run_stack("nas", "app", ["example/app:latest"], run_id=run_id)
+                self.assertEqual(self.run_record().status, "success")
+                self.manager.execute.assert_awaited_once()
+                self.snapshots.verify_update_targets.assert_awaited_once()
+                self.assertEqual(self.manager.execute.await_args.kwargs["services"], ["app"])
+                target = self.snapshots.verify_update_targets.await_args.args[2]["app"]
+                if source == "bulk":
+                    self.assertEqual(target["cached_target"]["registry_config_digest"], "sha256:new")
+                else:
+                    self.assertNotIn("cached_target", target)
+                self.assertEqual(target["image_id"], "sha256:new")
+                self.assertEqual(self.snapshots.verify_update_targets.await_args.kwargs["require_cached_target"], source != "manual")
+
+    def test_automatic_updates_still_wait_for_pending_confirmation(self):
+        self.snap.update_check_results[0].status = "pending_update"
+        self.snap.update_results.clear()
+        selected, results = self.manager._select_update_services(self.snap, "app")
+        self.assertEqual(selected, {})
+        self.assertEqual(results["app"]["status"], "skipped")
+        self.assertIn("等待二次确认", results["app"]["detail"])
+
+    def test_pending_bulk_target_still_requires_identity_and_successful_check(self):
+        result = self.snap.update_check_results[0]
+        result.status = "pending_update"
+        self.snap.update_results.clear()
+        result.registry_config_digest = None
+        selected, results = self.manager._select_update_services(self.snap, "app", source="bulk")
+        self.assertEqual(selected, {})
+        self.assertIn("缓存缺少", results["app"]["detail"])
+        result.registry_config_digest = "sha256:new"
+        result.last_failure_status = "needs_auth"
+        selected, results = self.manager._select_update_services(self.snap, "app", source="bulk")
+        self.assertEqual(selected, {})
+        self.assertIn("needs_auth", results["app"]["detail"])
+
+    async def test_manual_update_pulls_without_update_badge_or_usable_registry_cache(self):
+        for status in (None, "up_to_date", "pending_update", "check_failed", "needs_auth"):
+            with self.subTest(status=status):
+                self.snap.update_results.clear()
+                self.snap.update_check_results = [] if status is None else [UpdateCheckResult(
+                    host_id="nas", image="example/app:latest", status=status,
+                    registry_config_digest="sha256:old", platform="linux/amd64",
+                    last_failure_status="needs_auth" if status == "needs_auth" else None,
+                )]
+                with Session(self.engine) as session:
+                    run = AutoUpdateRun(host_id="nas", stack_name="app", source="manual", status="queued")
+                    session.add(run)
+                    session.commit()
+                    session.refresh(run)
+                    run_id = run.id
+                self.manager.execute.reset_mock()
+                self.snapshots.verify_update_targets.reset_mock()
+                await self.manager.run_stack("nas", "app", ["example/app:latest"], run_id=run_id)
+                self.assertEqual(self.run_record().status, "success")
+                self.manager.execute.assert_awaited_once()
+                self.assertEqual(self.manager.execute.await_args.kwargs["services"], ["app"])
+                self.assertFalse(self.snapshots.verify_update_targets.await_args.kwargs["require_cached_target"])
+
+    async def test_manual_update_reports_pull_failure_instead_of_skipping_failed_check(self):
+        self.snap.update_results.clear()
+        self.snap.update_check_results.clear()
+        self.manager.execute.return_value = ({"success": False, "stage": "pull", "message": "denied"}, "")
+        with Session(self.engine) as session:
+            run = AutoUpdateRun(host_id="nas", stack_name="app", source="manual", status="queued")
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+            run_id = run.id
+        await self.manager.run_stack("nas", "app", ["example/app:latest"], run_id=run_id)
+        self.assertEqual(self.run_record().status, "failed")
+        self.assertEqual(self.manager.execute.await_count, 2)
+        self.snapshots.verify_update_targets.assert_not_awaited()
+        self.assertIn("denied", self.run_record().detail)
+
     async def test_no_update_or_missing_cached_identity_never_executes(self):
         self.snap.update_results.clear()
         await self.run_update()
