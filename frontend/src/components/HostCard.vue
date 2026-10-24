@@ -165,7 +165,11 @@
 
             <!-- 锚定槽 2: 下行箭头指示 -->
             <span class="col-indicator rx">
-              <span class="indicator-glyph">↓</span>
+              <span class="indicator-glyph" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 3v10m-4-4 4 4 4-4" />
+                </svg>
+              </span>
             </span>
 
             <!-- 锚定槽 3: 下行数值（固定右对齐） -->
@@ -175,11 +179,15 @@
             <span class="col-unit rx">{{ splitRate(host.metrics?.networkRxRate).unit }}</span>
 
             <!-- 锚定槽 5: 中缝分隔符（居中锚定） -->
-            <span class="speed-sep">·</span>
+            <span class="speed-sep" aria-hidden="true" />
 
             <!-- 锚定槽 6: 上行箭头指示 -->
             <span class="col-indicator tx">
-              <span class="indicator-glyph">↑</span>
+              <span class="indicator-glyph" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M8 13V3m-4 4 4-4 4 4" />
+                </svg>
+              </span>
             </span>
 
             <!-- 锚定槽 7: 上行数值（固定右对齐） -->
@@ -227,8 +235,8 @@
                 <span class="total-unit">{{ splitBytes(hasQuota ? quotaUsedBytes : effectiveTrafficMonthTotal).unit }}</span>
               </span>
               <template v-if="hasQuota">
-                <span class="meta-dot">·</span>
-                <span class="reset-tag">{{ effectiveNextResetText }}</span>
+                <span class="meta-dot" aria-hidden="true" />
+                <span class="reset-tag" :title="effectiveNextResetText">{{ effectiveNextResetText }}</span>
               </template>
             </div>
 
@@ -237,7 +245,7 @@
               <span class="col-indicator rx" />
               <span class="col-num rx">{{ splitBytes(effectiveTrafficMonthRx).val }}</span>
               <span class="col-unit rx">{{ splitBytes(effectiveTrafficMonthRx).unit }}</span>
-              <span class="col-sep">│</span>
+              <span class="col-sep" aria-hidden="true" />
               <span class="col-indicator tx" />
               <span class="col-num tx">{{ splitBytes(effectiveTrafficMonthTx).val }}</span>
               <span class="col-unit tx">{{ splitBytes(effectiveTrafficMonthTx).unit }}</span>
@@ -259,7 +267,7 @@
               <span class="col-indicator rx" />
               <span class="col-num rx">{{ splitBytes(effectiveTrafficTodayRx).val }}</span>
               <span class="col-unit rx">{{ splitBytes(effectiveTrafficTodayRx).unit }}</span>
-              <span class="col-sep">│</span>
+              <span class="col-sep" aria-hidden="true" />
               <span class="col-indicator tx" />
               <span class="col-num tx">{{ splitBytes(effectiveTrafficTodayTx).val }}</span>
               <span class="col-unit tx">{{ splitBytes(effectiveTrafficTodayTx).unit }}</span>
@@ -926,6 +934,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 /* 一体化 WAN 态势舱 */
 .wan-capsule {
+  --stream-columns: 12px 34px 34px 10px 12px 34px 34px;
   --quota-healthy-grad: linear-gradient(90deg, #10b981, #22d3ee);
   --quota-warn-grad: linear-gradient(90deg, #f59e0b, #fbbf24);
   --quota-danger-grad: linear-gradient(90deg, #f87171, #ef4444);
@@ -943,16 +952,26 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 18px;
   font-size: 13px;
 }
 
 .capsule-title {
   display: flex;
   align-items: center;
+  min-width: 0;
   gap: 6px;
   color: var(--text-secondary, #94a3b8);
   font-weight: 600;
 }
+
+.capsule-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-0.5px);
+}
+
 .capsule-globe-icon {
   display: block;
   flex-shrink: 0;
@@ -964,7 +983,7 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 /* 统一双通道流矩阵（顶栏独占箭头，下方两行去箭头，中缝线绝对贯通） */
 .stream-columns {
   display: inline-grid;
-  grid-template-columns: 11px 36px 30px 14px 11px 36px 30px;
+  grid-template-columns: var(--stream-columns);
   align-items: center;
   font-size: 12px;
 }
@@ -973,20 +992,21 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 /* 8 槽固定列宽：
    col 1: 实时标签 (38px, 左对齐，严丝合缝)
    col 2: 下行箭头 (12px, 居中)
-   col 3: 下行数值 (38px, 右对齐 tabular-nums)
-   col 4: 下行单位 (30px, 左对齐)
+   col 3: 下行数值 (34px, 右对齐 tabular-nums)
+   col 4: 下行单位 (34px, 左对齐，容纳 MB/s)
    col 5: 隔离中点 (10px, 居中)
    col 6: 上行箭头 (12px, 居中)
-   col 7: 上行数值 (38px, 右对齐 tabular-nums)
-   col 8: 上行单位 (30px, 左对齐)
+   col 7: 上行数值 (34px, 右对齐 tabular-nums)
+   col 8: 上行单位 (34px, 左对齐，容纳 MB/s)
    总宽度固定 208px，右侧贴齐，左侧坐标绝对锁死，0 像素水平抖动！
 */
 .stream-anchored {
   display: inline-grid;
-  grid-template-columns: 38px 12px 38px 30px 10px 12px 38px 30px;
+  grid-template-columns: 38px var(--stream-columns);
   align-items: center;
   justify-items: stretch;
   width: 208px;
+  flex-shrink: 0;
   user-select: none;
 }
 
@@ -1012,9 +1032,14 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   justify-content: center;
   width: 14px;
   height: 14px;
+  flex-shrink: 0;
   border-radius: 50%;
-  font-size: 10px;
-  line-height: 1;
+}
+
+.stream-anchored .indicator-glyph svg {
+  display: block;
+  width: 10px;
+  height: 10px;
 }
 
 .stream-anchored .col-indicator.rx .indicator-glyph {
@@ -1030,7 +1055,6 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
-  font-size: 12.5px;
 }
 .stream-anchored .col-num.rx {
   color: var(--accent-cyan, #22d3ee);
@@ -1042,7 +1066,6 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .stream-anchored .col-unit {
   text-align: left;
   padding-left: 2px;
-  font-size: 11px;
   opacity: 0.85;
 }
 .stream-anchored .col-unit.rx {
@@ -1053,10 +1076,19 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 }
 
 .stream-anchored .speed-sep {
-  text-align: center;
+  display: grid;
+  place-items: center;
   opacity: 0.35;
   color: var(--text-muted, #94a3b8);
-  font-size: 11px;
+}
+
+.speed-sep::before,
+.meta-dot::before {
+  content: "";
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 /* 浅色模式适配 */
@@ -1101,7 +1133,6 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 
 .col-unit {
   text-align: right; /* 统一右对齐：顶栏 /s 贴右，下方 B 贴右 */
-  font-size: 11.5px;
   color: var(--text-muted, #94a3b8);
 }
 .capsule-header .col-unit.rx { color: var(--accent-cyan, #22d3ee); opacity: 0.85; }
@@ -1110,10 +1141,16 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .traffic-row-right .col-unit.tx { color: var(--accent-blue, #60a5fa); opacity: 0.75; }
 
 .col-sep {
-  text-align: center;
+  display: grid;
+  place-items: center;
   color: var(--border-subtle, rgba(148, 163, 184, 0.35));
-  font-size: 11px;
-  line-height: 1;
+}
+
+.col-sep::before {
+  content: "";
+  width: 1px;
+  height: 10px;
+  background: currentColor;
 }
 
 /* 配额水位轨 */
@@ -1172,28 +1209,46 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
   font-size: 12px;
 }
 
-/* 按字形的大写高度裁去上下留白，再对齐中英文的可见中心。 */
-.traffic-row :is(.scope-label, .total-num, .total-unit, .reset-tag, .col-num, .col-unit) {
+/* 所有流量文字使用同一种裁剪规则；容器对齐裁剪后的字形盒。 */
+.wan-capsule :is(.label-text, .scope-label, .total-num, .total-unit, .col-num, .col-unit, .quota-ratio, .quota-remain) {
   text-box: trim-both cap alphabetic;
+  white-space: nowrap;
 }
 
-.traffic-row .scope-label {
-  transform: translateY(0.75px);
+/* 总量、下载、上传及单位统一字号，避免左右两套字高。 */
+.wan-capsule :is(.total-num, .total-unit, .col-num, .col-unit) {
+  font-size: 12px;
 }
 
-.traffic-row :is(.total-num, .reset-tag, .col-num) {
-  transform: translateY(0.5px);
+/* 中文字形越过拉丁大写边界，统一补偿其可见中心。 */
+.wan-capsule :is(.label-text, .scope-label, .quota-remain) {
+  transform: translateY(0.25px);
+}
+
+/* “/” 的下伸部分也计入可见中心，网速单位和配额说明需向上补偿。 */
+.stream-anchored .col-unit {
+  transform: translateY(-0.5px);
+}
+
+.quota-ratio {
+  transform: translateY(-0.25px);
 }
 
 .traffic-row-left {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
   color: var(--text-muted, #64748b);
+}
+
+.traffic-row-right {
+  flex-shrink: 0;
 }
 
 .scope-label {
   display: inline-block;
   width: 42px;
+  flex-shrink: 0;
   color: var(--text-secondary, #94a3b8);
   font-weight: 500;
 }
@@ -1201,13 +1256,13 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .total-vol-slot {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .total-num {
   min-width: 30px;
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
   font-weight: 600;
   color: var(--text-primary, #f1f5f9);
 }
@@ -1215,17 +1270,25 @@ function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): strin
 .total-unit {
   width: 24px;
   text-align: right; /* "B" 严格右对齐锚定 */
-  font-size: 11.5px;
   color: var(--text-muted, #94a3b8);
   margin-left: 2px;
 }
 
 .meta-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
   margin: 0 4px;
   opacity: 0.45;
 }
 
 .reset-tag {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-0.5px);
   color: var(--text-muted, #64748b);
   font-size: 11.5px;
 }
