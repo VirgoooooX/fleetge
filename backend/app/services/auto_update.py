@@ -837,6 +837,41 @@ class AutoUpdateManager:
             )
         return "failed", "镜像拉取失败。"
 
+    @staticmethod
+    def _notification_title(run: AutoUpdateRun, label: str) -> str:
+        targets = json.loads(run.targets_json or "{}")
+        results = targets.get("results", {})
+        services = [
+            service for service in targets.get("services", {})
+            if results.get(service, {}).get("status") != "skipped"
+        ]
+        subject = run.stack_name
+        if services and services != [run.stack_name]:
+            subject += " / " + " + ".join(services)
+        title = f"【Fleetge】更新{label}｜{subject}"
+        if len(title) > 40 and services:
+            return f"【Fleetge】更新{label}｜{run.stack_name}（{len(services)} 个服务）"
+        return title
+
+    @staticmethod
+    def _notification_content(run: AutoUpdateRun) -> str:
+        summary = "运行检查通过" if run.status == "success" else "自动更新已暂停，请在 Fleetge 查看记录并处理"
+        parts = [run.host_id, summary]
+        targets = json.loads(run.targets_json or "{}")
+        results = targets.get("results", {})
+        services = [
+            service for service in targets.get("services", {})
+            if results.get(service, {}).get("status") != "skipped"
+        ]
+        if run.status != "success":
+            labels = {"success": "成功", "failed": "失败", "uncertain": "待确认"}
+            outcomes = [f"{service} {labels.get(results.get(service, {}).get('status'), '待确认')}" for service in services]
+            if outcomes:
+                parts.insert(1, " / ".join(outcomes))
+        elif len(f"【Fleetge】更新成功｜{run.stack_name} / {' + '.join(services)}") > 40:
+            parts.append("服务：" + " + ".join(services))
+        return " · ".join(parts)
+
     def finish(self, run_id: int, status: str, detail: str, logs: str = "") -> None:
         if status not in TERMINAL_STATES:
             raise ValueError(f"Invalid update run terminal status: {status}")
@@ -882,8 +917,8 @@ class AutoUpdateManager:
                     run.notify_payload = json.dumps({
                         "event_type": "fleetge.stack.auto_update",
                         "event_key": f"fleetge:auto-update:{run.id}:{status}:{run.started_at.isoformat()}",
-                        "title": f"【Fleetge】更新{label}｜{run.stack_name}"[:40],
-                        "content": f"主机：{run.host_id}\n" + ("已完成更新，运行检查通过。" if status == "success" else "该 Stack 的自动更新已暂停，请在 Fleetge 查看记录并处理。"),
+                        "title": self._notification_title(run, label),
+                        "content": self._notification_content(run),
                         "level": "info" if status == "success" else "warning",
                         "recipients": [run.notify_recipient],
                         "message_type": "text",

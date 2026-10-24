@@ -365,6 +365,75 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
         self.assertEqual(self.run_record().notify_status, "none")
 
+    async def test_success_notification_keeps_host_and_check_in_one_line(self):
+        module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
+        await self.run_update()
+        payload = json.loads(self.run_record().notify_payload)
+        self.assertEqual(payload["title"], "【Fleetge】更新成功｜app")
+        self.assertEqual(payload["content"], "nas · 运行检查通过")
+
+    async def test_notification_title_identifies_updated_service_in_multi_service_compose(self):
+        module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
+        self.snap.containers[0].service_name = "web"
+        for service, image in (("redis", "redis:7"), ("browser", "browserless/chrome:latest")):
+            self.snap.containers.append(self.snap.containers[0].model_copy(update={
+                "id": service, "name": f"app-{service}-1", "service_name": service, "image": image,
+            }))
+            self.snap.update_check_results.append(UpdateCheckResult(host_id="nas", image=image, status="up_to_date"))
+            self.snap.update_results[image] = "up_to_date"
+        self.success["pulled_images"][0]["service"] = "web"
+        await self.run_update()
+        payload = json.loads(self.run_record().notify_payload)
+        self.assertEqual(payload["title"], "【Fleetge】更新成功｜app / web")
+        self.assertEqual(payload["content"], "nas · 运行检查通过")
+
+    async def test_partial_notification_names_attempted_services_in_title(self):
+        module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
+        self.snap.containers.append(self.snap.containers[0].model_copy(update={
+            "id": "db", "name": "app-db-1", "service_name": "db", "image": "postgres:16-alpine",
+        }))
+        self.snap.update_results["postgres:16-alpine"] = "updatable"
+        self.snap.update_check_results.append(UpdateCheckResult(
+            host_id="nas", image="postgres:16-alpine", status="updatable",
+            registry_config_digest="sha256:db-new", platform="linux/amd64",
+        ))
+        self.manager._update_service = AsyncMock(side_effect=[("success", "healthy"), ("failed", "unhealthy")])
+        await self.run_update()
+        payload = json.loads(self.run_record().notify_payload)
+        self.assertEqual(payload["title"], "【Fleetge】更新部分成功｜app / app + db")
+        self.assertEqual(payload["content"], "nas · app 成功 / db 失败 · 自动更新已暂停，请在 Fleetge 查看记录并处理")
+
+    async def test_multiple_successful_services_share_one_notification(self):
+        module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
+        self.snap.containers.append(self.snap.containers[0].model_copy(update={
+            "id": "db", "name": "app-db-1", "service_name": "db", "image": "postgres:16-alpine",
+        }))
+        self.snap.update_results["postgres:16-alpine"] = "updatable"
+        self.snap.update_check_results.append(UpdateCheckResult(
+            host_id="nas", image="postgres:16-alpine", status="updatable",
+            registry_config_digest="sha256:db-new", platform="linux/amd64",
+        ))
+        self.manager._update_service = AsyncMock(return_value=("success", "healthy"))
+        await self.run_update()
+        payload = json.loads(self.run_record().notify_payload)
+        self.assertEqual(payload["title"], "【Fleetge】更新成功｜app / app + db")
+        self.assertEqual(payload["content"], "nas · 运行检查通过")
+        self.assertEqual(self.manager._update_service.await_count, 2)
+        with Session(self.engine) as session:
+            self.assertEqual(len(session.exec(select(AutoUpdateRun)).all()), 1)
+
+    def test_long_service_list_keeps_all_names_in_compact_body(self):
+        names = ["rsshub-web-service", "redis-cache-service", "browserless-service"]
+        run = AutoUpdateRun(host_id="istoreos", stack_name="rsshub", status="success", targets_json=json.dumps({
+            "services": {name: {"image": "example:latest"} for name in names},
+            "results": {name: {"status": "success"} for name in names},
+        }))
+        title = self.manager._notification_title(run, "成功")
+        self.assertEqual(title, "【Fleetge】更新成功｜rsshub（3 个服务）")
+        self.assertLessEqual(len(title), 40)
+        self.assertEqual(self.manager._notification_content(run),
+            "istoreos · 运行检查通过 · 服务：" + " + ".join(names))
+
     async def test_notification_timeout_reuses_payload_and_event_key(self):
         module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
         await self.run_update()
