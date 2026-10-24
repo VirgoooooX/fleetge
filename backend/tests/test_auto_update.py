@@ -365,11 +365,11 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
         self.assertEqual(self.run_record().notify_status, "none")
 
-    async def test_success_notification_keeps_host_and_check_in_one_line(self):
+    async def test_success_notification_names_service_even_when_it_matches_stack(self):
         module.save_notify_settings("http://notify", "person_1", "nfy_testkey")
         await self.run_update()
         payload = json.loads(self.run_record().notify_payload)
-        self.assertEqual(payload["title"], "【Fleetge】更新成功｜app")
+        self.assertEqual(payload["title"], "【Fleetge】更新成功｜app / app")
         self.assertEqual(payload["content"], "nas · 运行检查通过")
 
     async def test_notification_title_identifies_updated_service_in_multi_service_compose(self):

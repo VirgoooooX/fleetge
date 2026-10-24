@@ -846,7 +846,7 @@ class AutoUpdateManager:
             if results.get(service, {}).get("status") != "skipped"
         ]
         subject = run.stack_name
-        if services and services != [run.stack_name]:
+        if services:
             subject += " / " + " + ".join(services)
         title = f"【Fleetge】更新{label}｜{subject}"
         if len(title) > 40 and services:
