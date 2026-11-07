@@ -55,6 +55,10 @@ async def unavailable_reason(snap, stack) -> str:
             return "无法确认 Agent 所属 Stack，暂不能开启自动更新。"
         if control_stack(snap, stack.name, info):
             return "Fleetge／Agent 自身所在的 Stack 暂不支持自动更新。"
+        try:
+            await conn.get_ingress()
+        except Exception:
+            return "Agent 不支持入口端口探测，更新该主机的入口服务前无法避免连接中断。"
         detail = await conn.get_stack(stack.name)
         if not detail or not (detail.get("stack", {}).get("composeYAML") or "").strip():
             return "该 Stack 没有可管理的 Compose 配置。"

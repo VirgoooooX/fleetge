@@ -481,6 +481,46 @@ def test_update_services_refuses_current_agent_service(stack_base, monkeypatch):
         assert "Refusing to update" in msg["message"]
 
 
+def test_ingress_matches_listener_inside_host_network_container(monkeypatch):
+    """A host-network container is reported when its root process holds the listener."""
+    containers = [
+        {
+            "Id": "caddyid1234567890",
+            "Names": ["/caddy"],
+            "Labels": {"com.docker.compose.project": "caddy", "com.docker.compose.service": "caddy"},
+        },
+    ]
+    monkeypatch.setattr(compose_runner, "_listening_inodes", lambda proc_root, ports: {80: {"100"}, 443: {"200"}})
+    monkeypatch.setattr(compose_runner, "_running_host_containers", lambda: containers)
+    monkeypatch.setattr(
+        compose_runner,
+        "_container_socket_inodes",
+        lambda container_id: {"100", "200"} if container_id == "caddyid1234567890" else set(),
+    )
+
+    result = compose_runner.ingress_services()
+    assert result == [{
+        "container_id": result[0]["container_id"],
+        "container_name": "caddy",
+        "stack_name": "caddy",
+        "service_name": "caddy",
+        "ports": [80, 443],
+    }]
+
+
+def test_ingress_endpoint_reports_services(monkeypatch):
+    monkeypatch.setattr(compose_runner, "ingress_services", lambda: [{"stack_name": "caddy", "service_name": "caddy"}])
+    response = client.get(
+        "/api/agent/ingress",
+        headers={"Authorization": "Bearer test-secret-token-0123456789abcdef"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "ports": [80, 443],
+        "services": [{"stack_name": "caddy", "service_name": "caddy"}],
+    }
+
+
 def test_update_services_job_emits_job_id(stack_base, monkeypatch):
     """Fleetge app-only updates are handed to a persisted background job."""
     stack_dir = stack_base / "fleetge"

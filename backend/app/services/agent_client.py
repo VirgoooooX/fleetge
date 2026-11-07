@@ -259,6 +259,12 @@ class AgentClient:
         r.raise_for_status()
         return r.json()
 
+    async def get_ingress(self) -> dict:
+        """GET /api/agent/ingress returns the services holding the host ingress ports."""
+        r = await self._client.get("/api/agent/ingress", headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
     async def get_job(self, job_id: str) -> dict:
         """GET /api/agent/jobs/{job_id}."""
         encoded = urllib.parse.quote(job_id, safe="")

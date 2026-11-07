@@ -55,7 +55,7 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
             verify_update_targets=AsyncMock(return_value=("success", "registry targets matched")),
         )
         self.manager.snapshots = lambda: self.snapshots
-        self.conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app:latest\n"}}), close=AsyncMock(), _token="secret-token")
+        self.conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_ingress=AsyncMock(return_value={"ports": [80, 443], "services": []}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app:latest\n"}}), close=AsyncMock(), _token="secret-token")
         self.agent_patch = patch.object(module, "AgentClient", return_value=self.conn)
         self.agent_patch.start()
         module.set_policy("nas", "app", True)
@@ -446,6 +446,28 @@ class AutoUpdateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[4] for call in calls], ["agent", "app"])
         self.assertEqual(self.run_record().status, "partial")
 
+    async def test_ingress_service_update_survives_connection_loss(self):
+        self.conn.get_ingress.return_value = {"services": [{"stack_name": "app", "service_name": "app"}]}
+        self.manager._run_control_service_job = AsyncMock(return_value=("success", "healthy"))
+        await self.run_update()
+        self.manager.execute.assert_not_awaited()
+        self.manager._run_control_service_job.assert_awaited_once()
+        self.assertEqual(self.manager._run_control_service_job.await_args.args[4], "app")
+        self.assertEqual(self.run_record().status, "success")
+
+    async def test_unreadable_ingress_skips_update_instead_of_guessing(self):
+        self.conn.get_ingress.side_effect = RuntimeError("agent too old")
+        with Session(self.engine) as session:
+            run = AutoUpdateRun(host_id="nas", stack_name="app", source="manual", status="queued")
+            session.add(run)
+            session.commit()
+            session.refresh(run)
+            run_id = run.id
+        await self.manager.run_stack("nas", "app", ["example/app:latest"], run_id=run_id)
+        self.manager.execute.assert_not_awaited()
+        self.assertEqual(self.run_record().status, "skipped")
+        self.assertIn("入口端口", self.run_record().detail)
+
     async def test_notifications_are_optional_and_not_backfilled(self):
         await self.run_update()
         self.assertEqual(self.run_record().notify_status, "none")
@@ -687,6 +709,7 @@ class BulkUpdateExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.manager.snapshots = lambda: self.snapshots
         self.conn = SimpleNamespace(
             get_self=AsyncMock(return_value={"stack_name": "fleetge"}),
+            get_ingress=AsyncMock(return_value={"ports": [80, 443], "services": []}),
             get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: test\n"}}),
             close=AsyncMock(),
             _token="token",

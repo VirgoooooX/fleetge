@@ -117,6 +117,21 @@ def set_policy(host_id: str, stack_name: str, enabled: bool) -> StackAutoUpdate:
         return row
 
 
+def ingress_services(snap, stack_name: str, ingress: dict) -> list[str]:
+    """Services of this stack that currently hold the agent's ingress ports."""
+    services = []
+    for item in ingress.get("services") or []:
+        if not isinstance(item, dict) or item.get("stack_name") != stack_name:
+            continue
+        service = str(item.get("service_name") or "")
+        if service and any(
+            container.stack_name == stack_name and container.service_name == service
+            for container in snap.containers
+        ):
+            services.append(service)
+    return services
+
+
 def control_stack(snap, stack_name: str, self_info: dict) -> bool:
     if self_info.get("stack_name") == stack_name:
         return True
@@ -734,6 +749,12 @@ class AutoUpdateManager:
                 if run_id is not None:
                     self.finish(run_id, "skipped", f"无法确认 Agent 所属 Stack，未执行更新：{exc}")
                 return
+            try:
+                ingress = await conn.get_ingress()
+            except Exception as exc:
+                if run_id is not None:
+                    self.finish(run_id, "skipped", f"无法确认主机入口端口占用，未执行更新：{exc}")
+                return
             if not self_info.get("stack_name") or control_stack(snap, stack_name, self_info):
                 if run_id is not None:
                     with Session(get_engine()) as session:
@@ -774,13 +795,20 @@ class AutoUpdateManager:
             selected, service_results = self._select_update_services(snap, stack_name, source=source)
             task_targets = {"services": selected, "results": service_results}
             self._set_run_stage(run_id, "preflight", targets=task_targets)
+            detached = set(ingress_services(snap, stack_name, ingress))
             for service, target in selected.items():
                 if source == "auto" and not stack_policy(host_id, stack_name).enabled:
                     service_results[service] = {"status": "skipped", "detail": "自动更新已关闭。"}
                     continue
                 self._append_run_log(run_id, f"\r\n[Fleetge] 更新服务 {service}…\r\n")
                 try:
-                    outcome, message = await self._update_service(conn, host_id, stack_name, run_id, source, service, target, task_targets)
+                    if service in detached:
+                        self._append_run_log(run_id, f"\r\n[Fleetge] {service} 持有主机入口端口，改为后台更新，连接中断后继续跟踪。\r\n")
+                        outcome, message = await self._run_control_service_job(
+                            conn, run_id, snap, stack_name, service, target, self_info,
+                        )
+                    else:
+                        outcome, message = await self._update_service(conn, host_id, stack_name, run_id, source, service, target, task_targets)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:

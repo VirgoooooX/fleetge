@@ -67,7 +67,7 @@ class AutoUpdateApiTests(unittest.TestCase):
         self.authenticate()
         stack = SimpleNamespace(name="app", compose_file=None, management_status="deployed")
         snap = SimpleNamespace(host_config=HostConfig(host_id="nas", agent_url="http://agent"), containers=[])
-        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app\n"}}), close=AsyncMock())
+        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_ingress=AsyncMock(return_value={"services": []}), get_stack=AsyncMock(return_value={"stack": {"composeYAML": "services:\n  app:\n    image: example/app\n"}}), close=AsyncMock())
         path = "/api/hosts/nas/stacks/app/auto-update"
         with patch.object(router_module, "require_stack", return_value=(snap, stack)), patch.object(router_module, "AgentClient", return_value=conn):
             self.assertEqual(self.client.get(path).json()["unavailable_reason"], "")
@@ -79,7 +79,7 @@ class AutoUpdateApiTests(unittest.TestCase):
         self.authenticate()
         stack = SimpleNamespace(name="fleetge", compose_file="compose.yaml", management_status="managed")
         snap = SimpleNamespace(host_config=HostConfig(host_id="nas", agent_url="http://agent"), containers=[])
-        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), close=AsyncMock())
+        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_ingress=AsyncMock(return_value={"services": []}), close=AsyncMock())
         with patch.object(router_module, "require_stack", return_value=(snap, stack)), patch.object(router_module, "AgentClient", return_value=conn):
             response = self.client.put("/api/hosts/nas/stacks/fleetge/auto-update", json={"enabled": True})
         self.assertEqual(response.status_code, 409)
@@ -102,7 +102,7 @@ class AutoUpdateApiTests(unittest.TestCase):
             ],
             update_results={},
         )
-        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), close=AsyncMock())
+        conn = SimpleNamespace(get_self=AsyncMock(return_value={"stack_name": "fleetge"}), get_ingress=AsyncMock(return_value={"services": []}), close=AsyncMock())
         req_id = "11111111-1111-1111-1111-111111111111"
         with patch.object(service.auto_update_manager, "snapshots") as snaps, patch.object(router_module, "snapshot_manager") as router_snaps, patch.object(service, "AgentClient", return_value=conn), patch.object(service.auto_update_manager, "_start_worker"):
             snaps.return_value.get_snapshot.return_value = snap
