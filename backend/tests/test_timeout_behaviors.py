@@ -255,6 +255,56 @@ class SnapshotManagerTimeoutTests(unittest.IsolatedAsyncioTestCase):
         except asyncio.CancelledError:
             pass
 
+    async def test_initial_update_check_does_not_block_the_refresh(self):
+        proxy = self.make_proxy()
+        proxy.fetch_snapshot = AsyncMock(return_value={
+            "version": {"Version": "27.3.1"},
+            "info": {"OSType": "linux"},
+            "df": {},
+            "images": [],
+            "containers": [{
+                "Id": "container-1", "Names": ["/app"], "Image": "repo/app:latest",
+                "ImageID": "sha256:running", "State": "running", "Labels": {},
+            }],
+            "container_details": {"container-1": {
+                "Config": {"Image": "repo/app:latest"}, "State": {"Status": "running"}, "HostConfig": {},
+            }},
+            "stack_names": [],
+            "errors": {},
+        })
+        proxy.fetch_image_evidence = AsyncMock(return_value={
+            "running": {"sha256:running": {"Id": "sha256:running", "RepoDigests": []}},
+            "tags": {"repo/app:latest": {"Id": "sha256:running"}},
+            "errors": {},
+        })
+        release = asyncio.Event()
+
+        async def slow_check(*args, **kwargs):
+            await release.wait()
+            return []
+
+        self.manager._refresh_update_checks_for_snapshot = slow_check
+
+        await asyncio.wait_for(
+            self.manager._refresh_host_docker_locked(self.host_id, trigger_initial_update_check=True),
+            timeout=1.0,
+        )
+        task = self.manager._update_check_tasks.get(self.host_id)
+        self.assertIsNotNone(task)
+        self.assertFalse(task.done())
+
+        release.set()
+        await task
+        self.assertEqual(self.snap.status, "online")
+
+        stats_task = self.manager._stats_tasks.pop(self.host_id)
+        stats_task.cancel()
+        try:
+            await stats_task
+        except asyncio.CancelledError:
+            pass
+
+
 if __name__ == "__main__":
     unittest.main()
 

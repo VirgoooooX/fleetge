@@ -85,6 +85,9 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
         self.manager._refresh_container_stats = AsyncMock()
         self.manager._refresh_update_checks_for_snapshot = AsyncMock(return_value=[])
         await self.manager._refresh_host_docker_locked("nas")
+        task = self.manager._update_check_tasks.get("nas")
+        self.assertIsNotNone(task)
+        await task
         self.manager._refresh_update_checks_for_snapshot.assert_awaited_once_with(self.snap, refresh_images={self.image})
         self.assertEqual(self.snap.containers[0].image_config_digest, "sha256:new")
         self.assertIsNone(self.snap.containers[0].image_manifest_digest)

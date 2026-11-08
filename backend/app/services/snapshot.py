@@ -193,6 +193,8 @@ class SnapshotManager:
         self._metrics_idle_deadline: float | None = None
         self._update_check_lock = asyncio.Lock()
         self._stats_tasks: dict[str, asyncio.Task] = {}
+        self._update_check_tasks: dict[str, asyncio.Task] = {}
+        self._pending_update_checks: dict[str, set[str]] = {}
         self._realtime_refresh_tasks: dict[str, asyncio.Task] = {}  # coalesce WebSocket-triggered refreshes
 
         # Update-check gating. Plain bools are the right primitive here:
@@ -458,15 +460,20 @@ class SnapshotManager:
             t.cancel()
         for t in list(self._stats_tasks.values()):
             t.cancel()
+        for t in list(self._update_check_tasks.values()):
+            t.cancel()
         for t in list(self._realtime_refresh_tasks.values()):
             t.cancel()
         await asyncio.gather(
             *self._tasks, *self._stats_tasks.values(),
+            *self._update_check_tasks.values(),
             *self._realtime_refresh_tasks.values(),
             *([self._metrics_broadcast_task] if self._metrics_broadcast_task else []),
             return_exceptions=True,
         )
         self._stats_tasks.clear()
+        self._update_check_tasks.clear()
+        self._pending_update_checks.clear()
         self._realtime_refresh_tasks.clear()
         for c in self._agent_clients.values():
             await c.close()
@@ -1208,6 +1215,37 @@ class SnapshotManager:
 
     # ── Poll helpers ───────────────────────────────────────────────
 
+    def _schedule_update_checks(self, host_id: str, snap: HostSnapshot, images: set[str]) -> None:
+        """Run registry checks off the structure refresh path.
+
+        A single registry lookup costs several seconds over a WAN link, so
+        awaiting them here pushed an otherwise healthy refresh past its timeout.
+        """
+        if not images:
+            return
+        self._pending_update_checks.setdefault(host_id, set()).update(images)
+        task = self._update_check_tasks.get(host_id)
+        if task is not None and not task.done():
+            return
+        self._update_check_tasks[host_id] = asyncio.create_task(
+            self._run_pending_update_checks(host_id, snap)
+        )
+
+    async def _run_pending_update_checks(self, host_id: str, snap: HostSnapshot) -> None:
+        try:
+            while True:
+                images = self._pending_update_checks.get(host_id) or set()
+                if not images:
+                    break
+                self._pending_update_checks[host_id] = set()
+                try:
+                    await self._refresh_update_checks_for_snapshot(snap, refresh_images=images)
+                except Exception as exc:
+                    logger.warning("Update check failed for %s: %s", host_id, exc)
+        finally:
+            self._update_check_tasks.pop(host_id, None)
+            self._pending_update_checks.pop(host_id, None)
+
     async def _poll_loop(self, name: str, interval: int, fn) -> None:
         """Generic async poll loop."""
         while self._running:
@@ -1659,7 +1697,7 @@ class SnapshotManager:
                 and container.image and container.inspection_complete
             }
             if trigger_initial_update_check and changed_images:
-                await self._refresh_update_checks_for_snapshot(snap, refresh_images=changed_images)
+                self._schedule_update_checks(cfg.host_id, snap, changed_images)
 
             # Container stats are useful but must not block stack refresh
             # or the host's online status. Collect them after the core
