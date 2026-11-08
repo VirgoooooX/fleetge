@@ -1038,13 +1038,22 @@ class SnapshotManager:
                             "服务已重建并通过本地镜像与健康检查，但镜像与缓存目标不同或缺少同类摘要："
                             + ", ".join(dict.fromkeys(mismatched)) + "。待下次定时检测确认。"
                         )
-                    # Reconcile badges using the latest stored target, without changing
-                    # its check time or overwriting a concurrent registry sweep.
+                    # Reconcile badges without changing the check time: the
+                    # verified pull becomes the cached target so a tag that moved
+                    # since the last registry check cannot re-mark the image.
                     images = {target.get("image") for target in targets.values()}
+                    verified_targets = {
+                        str(target.get("image")): target
+                        for target in targets.values()
+                        if target.get("image") and target.get("image_id")
+                    }
                     with Session(engine) as session:
                         rows = session.exec(select(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id)).all()
                         for row in rows:
                             if row.image in images and row.status in {"updatable", "up_to_date"}:
+                                target = verified_targets.get(row.image)
+                                if target:
+                                    self._record_verified_target(row, target, snap.containers)
                                 row.status = "up_to_date"
                         self._apply_update_cache_rows_to_snapshot(snap, rows, {c.image for c in snap.containers if c.image})
                         by_image = {result.image: result for result in snap.update_check_results}
@@ -1069,6 +1078,32 @@ class SnapshotManager:
                     return "uncertain", f"Update result could not be confirmed: {uncertain_reason}"
                 return "failed", f"Update verification timed out: {last_reason}"
             await asyncio.sleep(min(wait_interval, remaining))
+
+    def _record_verified_target(
+        self, row: ImageUpdateCache, target: dict, containers: list[ContainerSummary],
+    ) -> None:
+        """Adopt the identity proven by a verified pull as the cached target.
+
+        A pull is registry truth at update time, so a tag re-published after the
+        last registry check must not keep the freshly updated image marked
+        updatable. Only the digest type the running containers expose is
+        recorded; the next registry check refreshes the remaining identities.
+        """
+        image_id = _normalize_image_id(target.get("image_id"))
+        if not image_id:
+            return
+        running = [container for container in containers if container.image == row.image]
+        if any(container.image_config_digest for container in running):
+            row.registry_config_digest = image_id
+            row.matched_field = "config_digest"
+        elif any(container.image_manifest_digest for container in running):
+            row.registry_manifest_digest = image_id
+            row.matched_field = "manifest_digest"
+        else:
+            return
+        row.registry_digest = image_id
+        row.platform = target.get("platform") or row.platform
+        row.identity_error = None
 
     def _clear_updatable_tag(
         self, host_id: str, image: str, local_digest: str

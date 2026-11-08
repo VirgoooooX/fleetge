@@ -188,7 +188,29 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome[0], "success")
         with Session(self.engine) as session:
             row = session.exec(select(ImageUpdateCache)).one()
-            self.assertEqual(row.registry_config_digest, "sha256:old")
+            self.assertEqual(row.registry_config_digest, "sha256:new")
+
+    async def test_verified_pull_clears_badge_when_tag_moved_after_the_last_check(self):
+        # A pull that fetched a newer image than the cached target is registry
+        # truth: the badge must clear instead of being re-marked updatable.
+        self.manager.refresh_host_docker = AsyncMock()
+        with Session(self.engine) as session:
+            session.add(ImageUpdateCache(host_id="nas", image=self.image, status="updatable",
+                current_digest="sha256:old", registry_digest="sha256:old-target",
+                registry_config_digest="sha256:old-target", registry_manifest_digest="sha256:old-manifest",
+                registry_index_digest="sha256:old-index", platform="linux/amd64"))
+            session.commit()
+        outcome = await self.manager.verify_update_targets("nas", "new", {
+            "app": {"image": self.image, "image_id": "sha256:new", "platform": "linux/amd64", "container_count": 1},
+        }, not_before=1, wait_timeout=0, require_cached_target=False)
+        self.assertEqual(outcome[0], "success")
+        self.assertEqual(self.snap.update_results.get(self.image), "up_to_date")
+        with Session(self.engine) as session:
+            row = session.exec(select(ImageUpdateCache)).one()
+            self.assertEqual(row.status, "up_to_date")
+            self.assertEqual(row.registry_config_digest, "sha256:new")
+            self.assertEqual(row.current_digest, "sha256:new")
+            self.assertEqual(row.matched_field, "config_digest")
 
     async def test_manual_deployment_still_requires_image_identity_and_health(self):
         self.manager.refresh_host_docker = AsyncMock()
