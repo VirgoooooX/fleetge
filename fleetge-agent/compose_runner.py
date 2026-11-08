@@ -750,6 +750,25 @@ ACTION_ARGS = {
 }
 
 
+def _expose_host_path(host_path: str, container_path: str) -> None:
+    """Link a translated host path to the mount that holds the same files.
+
+    Docker Compose resolves relative file references (``env_file``, ``extends``,
+    ``configs`` and ``secrets``) against the project directory, so using the
+    host project directory for daemon-side bind paths must not hide those files
+    from the Compose CLI running inside this container.
+    """
+    try:
+        if os.path.normpath(host_path) == os.path.normpath(container_path):
+            return
+        if os.path.lexists(host_path):
+            return
+        os.makedirs(os.path.dirname(host_path), exist_ok=True)
+        os.symlink(container_path, host_path)
+    except OSError:
+        pass
+
+
 def _compose_host_project_dir(stack_path: str) -> str | None:
     """Return the host path when the stack directory is only a container mount.
 
@@ -767,8 +786,9 @@ def _compose_host_project_dir(stack_path: str) -> str | None:
         return None
     inspect = _current_container_inspect_sync()
     host_base, container_base = _host_mount_for_path(inspect, base_real)
-    if os.path.realpath(host_base) == os.path.realpath(container_base):
+    if os.path.normpath(host_base) == os.path.normpath(container_base):
         return None
+    _expose_host_path(host_base, container_base)
     relative = os.path.relpath(stack_real, base_real)
     return host_base if relative == "." else os.path.join(host_base, relative)
 
@@ -1182,11 +1202,18 @@ async def _start_self_updater_container(stack_name: str, stack_path: str, servic
     await _append_job_log(job_id, f"Starting temporary updater container for services: {', '.join(services)}\n")
 
     container_name = f"fleetge-self-updater-{job_id}"
+    mounts = [
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{stacks_host_path}:{stacks_container_path}",
+    ]
+    if os.path.normpath(stacks_host_path) != os.path.normpath(stacks_container_path):
+        # The updater runs Compose with the host project directory, so relative
+        # file references need the same host path to resolve inside it too.
+        mounts += ["-v", f"{stacks_host_path}:{stacks_host_path}"]
     cmd = [
         "run", "-d", "--rm",
         "--name", container_name,
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "-v", f"{stacks_host_path}:{stacks_container_path}",
+        *mounts,
         "-e", f"STACKS_BASE_DIR={stacks_container_path}",
         updater_image,
         "python", "-m", "self_updater",

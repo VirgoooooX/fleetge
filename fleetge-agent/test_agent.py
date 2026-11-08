@@ -447,6 +447,7 @@ def test_self_updater_compose_args_use_local_files_and_host_project(stack_base):
 def test_compose_host_project_dir_translates_agent_mount(tmp_path, monkeypatch):
     """A mounted stacks directory is translated; an identical mount is left unchanged."""
     monkeypatch.setattr(compose_runner, "STACKS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(compose_runner, "_expose_host_path", lambda host_path, container_path: None)
     stack_dir = tmp_path / "caddy"
     stack_dir.mkdir()
     monkeypatch.setattr(
@@ -462,6 +463,22 @@ def test_compose_host_project_dir_translates_agent_mount(tmp_path, monkeypatch):
         lambda: {"Mounts": [{"Source": str(tmp_path), "Destination": str(tmp_path)}]},
     )
     assert compose_runner._compose_host_project_dir(str(stack_dir)) is None
+
+
+def test_expose_host_path_links_container_mount(tmp_path):
+    """Relative compose file references resolve through the host project path."""
+    container_base = tmp_path / "opt" / "stacks"
+    host_base = tmp_path / "host" / "mounts" / "stacks"
+    (container_base / "magpie").mkdir(parents=True)
+    (container_base / "magpie" / ".magpie-web.env").write_text("KEY=1\n")
+
+    compose_runner._expose_host_path(str(host_base), str(container_base))
+    if not os.path.islink(str(host_base)):
+        pytest.skip("symlinks are not available in this environment")
+
+    assert (host_base / "magpie" / ".magpie-web.env").read_text() == "KEY=1\n"
+    compose_runner._expose_host_path(str(host_base), str(container_base))
+    assert (host_base / "magpie" / ".magpie-web.env").read_text() == "KEY=1\n"
 
 
 def test_compose_status_convert_uses_dockge_precedence():
