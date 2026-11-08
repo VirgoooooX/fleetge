@@ -161,6 +161,7 @@ class HostSnapshot:
         self.stacks: list[StackSummary] = []
         self.stacks_updated: float = 0.0
         self.container_stats: dict[str, ContainerStats] = {}  # container_id -> stats
+        self._running_image_metadata: dict[str, tuple] = {}
         self.stats_updated: float = 0.0
         self.error_message: str = ""
         # Update check results per image, keyed by image_ref
@@ -1328,6 +1329,12 @@ class SnapshotManager:
             (container.id, container.image, container.image_id)
             for container in snap.containers
         }
+        previous_snapshot_containers = {
+            container.id: container for container in snap.containers
+        }
+        previous_container_completeness = {
+            container.id: container.inspection_complete for container in snap.containers
+        }
         if not cfg.agent_url:
             logger.warning("Host %s has no agent_url configured", host_id)
             return
@@ -1337,9 +1344,60 @@ class SnapshotManager:
         proxy = self._agent_clients[cfg.host_id]
 
         try:
+            try:
+                structure = await proxy.fetch_snapshot()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in (404, 405, 501):
+                    raise
+                structure = None
+
+            if structure is not None and not (
+                isinstance(structure.get("version"), dict)
+                and isinstance(structure.get("info"), dict)
+                and isinstance(structure.get("containers"), list)
+                and isinstance(structure.get("images"), list)
+            ):
+                # A partially failed aggregate must not blank the host; the
+                # per-endpoint path still returns whatever Docker can serve.
+                structure = None
+
+            if structure is not None:
+                ver = structure["version"]
+                info = structure["info"]
+                raw_images = structure["images"]
+                raw_containers = structure["containers"]
+                inspect_by_id = structure.get("container_details")
+                if not isinstance(inspect_by_id, dict):
+                    inspect_by_id = None
+                df = structure.get("df")
+            else:
+                ver = await proxy.version()
+                info = await proxy.info()
+                raw_images = await proxy.list_images()
+                raw_containers = await proxy.list_containers(all=True)
+                df = await proxy.disk_usage()
+                inspect_by_id = None
+
+            if inspect_by_id is None:
+                inspect_semaphore = asyncio.Semaphore(8)
+
+                async def inspect_container(container_id: str) -> tuple[str, dict]:
+                    async with inspect_semaphore:
+                        return container_id, await proxy.container_inspect(container_id)
+
+                inspect_results = await asyncio.gather(
+                    *(inspect_container(c.get("Id", "")) for c in raw_containers if c.get("Id")),
+                    return_exceptions=True,
+                )
+                inspect_by_id = {}
+                for result in inspect_results:
+                    if isinstance(result, Exception):
+                        logger.debug("Container inspect failed for %s: %s", cfg.host_id, result)
+                        continue
+                    container_id, detail = result
+                    inspect_by_id[container_id] = detail
+
             # Version / Info
-            ver = await proxy.version()
-            info = await proxy.info()
             containerd_store = any(
                 key == "driver-type" and "containerd" in value
                 for key, value in (info.get("DriverStatus") or [])
@@ -1359,8 +1417,13 @@ class SnapshotManager:
             )
 
             # Disk usage (non-fatal, since /system/df can be slow/deadlocked on Windows/WSL2)
-            try:
-                df = await proxy.disk_usage()
+            if df is None:
+                logger.warning(
+                    "Failed to fetch docker disk usage for %s: %s",
+                    cfg.host_id, (structure.get("errors") or {}).get("df") if structure else "unavailable"
+                )
+                snap.docker_disk = None
+            else:
                 snap.docker_disk = DockerDiskUsage(
                     images_total=len(df.get("Images", [])),
                     images_size=sum(
@@ -1380,51 +1443,11 @@ class SnapshotManager:
                         b.get("Size", 0) for b in df.get("BuildCache", [])
                     ),
                 )
-            except Exception as df_exc:
-                logger.warning(
-                    "Failed to fetch docker disk usage for %s: %s",
-                    cfg.host_id, df_exc
-                )
-                snap.docker_disk = None
-
             # /system/df can include extra disk-accounting entries. /images/json
             # matches the visible local image list more closely.
-            raw_images = await proxy.list_images()
             snap.image_count = len(raw_images)
 
             # Container list
-            raw_containers = await proxy.list_containers(all=True)
-            inspect_semaphore = asyncio.Semaphore(8)
-
-            async def inspect_container(container_id: str) -> tuple[str, dict]:
-                async with inspect_semaphore:
-                    return container_id, await proxy.container_inspect(container_id)
-
-            inspect_results = await asyncio.gather(
-                *(
-                    inspect_container(c.get("Id", ""))
-                    for c in raw_containers
-                    if c.get("Id")
-                ),
-                return_exceptions=True,
-            )
-            inspect_by_id: dict[str, dict] = {}
-            for result in inspect_results:
-                if isinstance(result, Exception):
-                    logger.debug(
-                        "Container inspect failed for %s: %s",
-                        cfg.host_id, result,
-                    )
-                    continue
-                try:
-                    container_id, detail = result
-                    inspect_by_id[container_id] = detail
-                except Exception as exc:
-                    logger.debug(
-                        "Container inspect parse failed for %s: %s",
-                        cfg.host_id, exc,
-                    )
-
             snap.containers = []
             for c in raw_containers:
                 inspect = inspect_by_id.get(c.get("Id", ""), {})
@@ -1495,25 +1518,11 @@ class SnapshotManager:
                     )
                 )
 
-            # Inspect the image IDs actually used by containers separately
-            # from mutable local tags. Registry digest evidence belongs to the
-            # running image; tag identity only indicates what a future up uses.
+            # Resolve the new container's image metadata without repeatedly
+            # inspecting unchanged running IDs. Tag targets are refreshed every
+            # round because an external docker pull does not change containers.
             running_image_ids = list({c.image_id for c in snap.containers if c.image_id})
             unique_images = list({c.image for c in snap.containers if c.image})
-            image_semaphore = asyncio.Semaphore(8)
-
-            async def inspect_image(image_ref: str) -> tuple[str, dict]:
-                async with image_semaphore:
-                    return image_ref, await proxy.image_inspect(image_ref)
-
-            running_results = await asyncio.gather(
-                *(inspect_image(image_id) for image_id in running_image_ids),
-                return_exceptions=True,
-            )
-            tag_results = await asyncio.gather(
-                *(inspect_image(image_ref) for image_ref in unique_images),
-                return_exceptions=True,
-            )
 
             def image_metadata(info: dict) -> tuple[list[str], str, str, dict]:
                 digests = info.get("RepoDigests", []) or []
@@ -1522,29 +1531,70 @@ class SnapshotManager:
                 platform_value = "/".join(part for part in platform_parts if part)
                 return digests, image_id, platform_value, info.get("Descriptor") or {}
 
-            running_metadata: dict[str, tuple[list[str], str, str, dict]] = {}
-            for image_id, result in zip(running_image_ids, running_results):
-                if isinstance(result, Exception):
-                    logger.debug("Running image inspect failed for %s/%s: %s", cfg.host_id, image_id, result)
-                    continue
-                try:
-                    inspected_id, info = result
-                    running_metadata[inspected_id] = image_metadata(info)
-                except Exception as exc:
-                    logger.debug("Running image inspect parse failed for %s: %s", image_id, exc)
+            if structure is not None:
+                evidence = await proxy.fetch_image_evidence(
+                    [
+                        image_id for image_id in running_image_ids
+                        if image_id not in getattr(snap, "_running_image_metadata", {})
+                    ],
+                    unique_images,
+                )
+                running_metadata = dict(getattr(snap, "_running_image_metadata", {}))
+                for image_id, info in evidence["running"].items():
+                    running_metadata[image_id] = image_metadata(info)
+                for image_id in list(running_metadata):
+                    if (
+                        image_id not in evidence["running"]
+                        and any(
+                            c.image_id == image_id
+                            and not (
+                                (previous := previous_snapshot_containers.get(c.id)) is not None
+                                and c.image == previous.image and previous.inspection_complete
+                            )
+                            for c in snap.containers
+                        )
+                    ):
+                        del running_metadata[image_id]
+                snap._running_image_metadata = running_metadata
+                tag_metadata = {ref: image_metadata(info) for ref, info in evidence["tags"].items()}
+            else:
+                running_metadata = {}
+                tag_metadata = {}
+                image_semaphore = asyncio.Semaphore(8)
 
-            tag_metadata: dict[str, tuple[list[str], str, str, dict]] = {}
-            for image_ref, result in zip(unique_images, tag_results):
-                if isinstance(result, Exception):
-                    logger.debug("Tag image inspect failed for %s/%s: %s", cfg.host_id, image_ref, result)
-                    continue
-                try:
-                    inspected_ref, info = result
-                    tag_metadata[inspected_ref] = image_metadata(info)
-                except Exception as exc:
-                    logger.debug("Tag image inspect parse failed for %s: %s", image_ref, exc)
+                async def inspect_image(image_ref: str) -> tuple[str, dict]:
+                    async with image_semaphore:
+                        return image_ref, await proxy.image_inspect(image_ref)
+
+                running_results = await asyncio.gather(
+                    *(inspect_image(image_id) for image_id in running_image_ids),
+                    return_exceptions=True,
+                )
+                tag_results = await asyncio.gather(
+                    *(inspect_image(image_ref) for image_ref in unique_images),
+                    return_exceptions=True,
+                )
+                for image_id, result in zip(running_image_ids, running_results):
+                    if not isinstance(result, Exception):
+                        _, info = result
+                        running_metadata[image_id] = image_metadata(info)
+                for image_ref, result in zip(unique_images, tag_results):
+                    if not isinstance(result, Exception):
+                        _, info = result
+                        tag_metadata[image_ref] = image_metadata(info)
 
             for container in snap.containers:
+                previous = previous_snapshot_containers.get(container.id)
+                if (
+                    structure is not None and previous is not None
+                    and previous_container_completeness.get(container.id, False)
+                    and container.image_id == previous.image_id and container.image == previous.image
+                ):
+                    container.repo_digests = previous.repo_digests
+                    container.image_config_digest = previous.image_config_digest
+                    container.image_manifest_digest = container.image_manifest_digest or previous.image_manifest_digest
+                    container.platform = container.platform or previous.platform
+                    container.inspection_complete = previous.inspection_complete
                 running = running_metadata.get(container.image_id)
                 tag = tag_metadata.get(container.image)
                 if running:
@@ -1566,8 +1616,19 @@ class SnapshotManager:
 
             snap.containers_updated = time.monotonic()
 
-            # Stacks from Agent
-            await self._refresh_stacks(snap, cfg)
+            # Stacks from Agent. The aggregate snapshot already includes the
+            # stack names; service states are derived from the container labels.
+            if structure is not None:
+                self._build_stacks_from_container_labels(snap)
+                if structure.get("stack_names"):
+                    existing = {stack.name for stack in snap.stacks}
+                    snap.stacks.extend(
+                        StackSummary(name=name, status="stopped", management_status="file-only")
+                        for name in structure["stack_names"] if name not in existing
+                    )
+                    snap.stacks = self._apply_stack_icons(snap.stacks, cfg)
+            else:
+                await self._refresh_stacks(snap, cfg)
 
             # Read-only mirror of the persisted update cache into the snapshot.
             # Tag clearing (updatable -> up_to_date) is intentionally NOT done

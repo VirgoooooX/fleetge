@@ -34,6 +34,16 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
                                 platform="linux/amd64", state="running", status="Up", created=0,
                                 stack_name=name, service_name="app", inspection_complete=True)
 
+    @staticmethod
+    def legacy_proxy(**kwargs):
+        import httpx
+        return SimpleNamespace(
+            fetch_snapshot=AsyncMock(side_effect=httpx.HTTPStatusError(
+                "legacy agent", request=AsyncMock(), response=SimpleNamespace(status_code=404)
+            )),
+            **kwargs,
+        )
+
     async def asyncTearDown(self):
         self.engine_patch.stop()
         self.engine.dispose()
@@ -60,7 +70,7 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_container_recreation_rechecks_reference_once(self):
         self.snap.host_config.agent_url = "http://agent"
-        proxy = SimpleNamespace(
+        proxy = self.legacy_proxy(
             version=AsyncMock(return_value={}), info=AsyncMock(return_value={}),
             disk_usage=AsyncMock(return_value={}), list_images=AsyncMock(return_value=[]),
             list_containers=AsyncMock(return_value=[{
@@ -95,7 +105,7 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
                 current_digest="sha256:old", registry_digest="sha256:new",
                 registry_config_digest="sha256:new", platform="linux/amd64"))
             session.commit()
-        proxy = SimpleNamespace(
+        proxy = self.legacy_proxy(
             version=AsyncMock(return_value={}), info=AsyncMock(return_value={}),
             disk_usage=AsyncMock(return_value={}), list_images=AsyncMock(return_value=[]),
             list_containers=AsyncMock(return_value=[{
@@ -209,7 +219,7 @@ class RuntimeUpdateChecksTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_containerd_index_is_not_mistaken_for_config(self):
         self.snap.host_config.agent_url = "http://agent"
-        proxy = SimpleNamespace(
+        proxy = self.legacy_proxy(
             version=AsyncMock(return_value={}), info=AsyncMock(return_value={}),
             disk_usage=AsyncMock(return_value={}), list_images=AsyncMock(return_value=[]),
             list_containers=AsyncMock(return_value=[{

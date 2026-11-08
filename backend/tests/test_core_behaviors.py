@@ -487,8 +487,12 @@ class SnapshotManagerAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_host_docker_locked_mirrors_cache_without_clearing_tags(self):
         # 1. Setup mock AgentClient responses
-        self.manager._agent_clients[self.host_id] = MagicMock()
-        proxy = self.manager._agent_clients[self.host_id]
+        proxy = MagicMock()
+        import httpx
+        proxy.fetch_snapshot = AsyncMock(side_effect=httpx.HTTPStatusError(
+            "legacy agent", request=MagicMock(), response=MagicMock(status_code=404)
+        ))
+        self.manager._agent_clients[self.host_id] = proxy
         proxy.version = AsyncMock(return_value={"Version": "1.0"})
         proxy.info = AsyncMock(return_value={"OSType": "linux"})
         proxy.disk_usage = AsyncMock(return_value={})

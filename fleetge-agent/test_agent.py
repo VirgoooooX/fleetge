@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock
 
 # Mock settings before importing app
 os.environ["AGENT_TOKEN"] = "test-secret-token-0123456789abcdef"
@@ -11,9 +12,73 @@ os.environ["STACKS_BASE_DIR"] = "/tmp/test-stacks"
 
 from main import app
 import compose_runner
+import docker_client
 import self_updater
 
 client = TestClient(app)
+
+
+def test_snapshot_aggregates_structure_and_container_details(monkeypatch):
+    async def fake_json(path, params=None):
+        values = {
+            "/version": {"Version": "27.3.1"},
+            "/info": {"OSType": "linux"},
+            "/system/df": {"Images": []},
+            "/images/json": [{"Id": "image-1"}],
+            "/containers/json": [{"Id": "container-1"}],
+            "/containers/container-1/json": {"State": {"Status": "running"}},
+        }
+        return values[path]
+
+    monkeypatch.setattr(docker_client, "_docker_json", fake_json)
+    monkeypatch.setattr(compose_runner, "list_stacks", AsyncMock(return_value=["app"]))
+    response = client.get(
+        "/api/agent/snapshot",
+        headers={"Authorization": "Bearer test-secret-token-0123456789abcdef"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["version"]["Version"] == "27.3.1"
+    assert data["stack_names"] == ["app"]
+    assert data["container_details"]["container-1"]["State"]["Status"] == "running"
+    assert data["errors"] == {}
+
+
+def test_snapshot_keeps_partial_errors_local(monkeypatch):
+    async def fake_json(path, params=None):
+        if path == "/system/df":
+            raise RuntimeError("df unavailable")
+        if path == "/containers/json":
+            return []
+        return {}
+
+    monkeypatch.setattr(docker_client, "_docker_json", fake_json)
+    monkeypatch.setattr(compose_runner, "list_stacks", AsyncMock(return_value=[]))
+    response = client.get(
+        "/api/agent/snapshot",
+        headers={"Authorization": "Bearer test-secret-token-0123456789abcdef"},
+    )
+    assert response.status_code == 200
+    assert response.json()["errors"]["df"] == "df unavailable"
+
+
+def test_image_evidence_separates_running_and_tag_targets(monkeypatch):
+    requested = []
+
+    async def fake_json(path, params=None):
+        requested.append(path)
+        return {"Id": "sha256:local", "RepoDigests": []}
+
+    monkeypatch.setattr(docker_client, "_docker_json", fake_json)
+    response = client.get(
+        "/api/agent/image-evidence?ids=sha256:running&tags=repo/app:latest",
+        headers={"Authorization": "Bearer test-secret-token-0123456789abcdef"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert set(data["running"]) == {"sha256:running"}
+    assert set(data["tags"]) == {"repo/app:latest"}
+    assert len(requested) == 2
 
 
 @pytest.fixture

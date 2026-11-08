@@ -115,6 +115,22 @@ class AgentClient:
         r.raise_for_status()
         return r.json()
 
+    async def fetch_snapshot(self) -> dict:
+        """Fetch the frequently polled Docker structure in one request."""
+        r = await self._client.get("/api/agent/snapshot", headers=self._headers())
+        r.raise_for_status()
+        return r.json()
+
+    async def fetch_image_evidence(self, ids: list[str], tags: list[str]) -> dict:
+        """Inspect only changed running image IDs and current tag targets."""
+        r = await self._client.get(
+            "/api/agent/image-evidence",
+            params={"ids": ",".join(ids), "tags": ",".join(tags)},
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
+
     async def info(self) -> dict:
         """GET /api/agent/docker/info."""
         r = await self._client.get("/api/agent/docker/info", headers=self._headers())

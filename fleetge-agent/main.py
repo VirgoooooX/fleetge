@@ -38,6 +38,7 @@ for uvicorn_logger in ("uvicorn", "uvicorn.error", "uvicorn.access"):
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.requests import HTTPConnection
 from metrics_runner import (
@@ -190,6 +191,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.add_middleware(SecretPathMiddleware, secret_path=AGENT_SECRET_PATH)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.get("/api/agent/health")

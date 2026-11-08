@@ -1,3 +1,4 @@
+import asyncio
 import re
 from typing import AsyncIterator
 from fastapi import APIRouter, Request, HTTPException, Response
@@ -134,6 +135,83 @@ else:
 async def close_docker_client():
     """Close the module-level httpx client (called from app lifespan)."""
     await docker_client.aclose()
+
+
+_DOCKER_SEMAPHORE = asyncio.Semaphore(8)
+
+
+async def _docker_json(path: str, params: dict | None = None) -> object:
+    """Read a Docker JSON endpoint locally, without another public HTTP hop."""
+    async with _DOCKER_SEMAPHORE:
+        response = await docker_client.get(path, params=params, timeout=15.0)
+    response.raise_for_status()
+    return response.json()
+
+
+@router.get("/snapshot")
+async def docker_snapshot():
+    """Return the frequently polled structure in one authenticated request."""
+    from compose_runner import list_stacks
+
+    results = await asyncio.gather(
+        _docker_json("/version"),
+        _docker_json("/info"),
+        _docker_json("/system/df"),
+        _docker_json("/images/json"),
+        _docker_json("/containers/json", {"all": "1"}),
+        list_stacks(),
+        return_exceptions=True,
+    )
+    names = ("version", "info", "df", "images", "containers", "stack_names")
+    payload: dict = {"errors": {}}
+    for name, result in zip(names, results):
+        if isinstance(result, Exception):
+            payload["errors"][name] = str(result)
+            payload[name] = [] if name in ("images", "containers", "stack_names") else None
+        else:
+            payload[name] = result
+
+    containers = payload["containers"]
+    if isinstance(containers, list):
+        ids = [str(c.get("Id") or "") for c in containers if c.get("Id")]
+        details = await asyncio.gather(
+            *(_docker_json(f"/containers/{container_id}/json") for container_id in ids),
+            return_exceptions=True,
+        )
+        payload["container_details"] = {}
+        for container_id, detail in zip(ids, details):
+            if isinstance(detail, Exception):
+                payload["errors"][f"container:{container_id}"] = str(detail)
+            else:
+                payload["container_details"][container_id] = detail
+    else:
+        payload["container_details"] = {}
+    return payload
+
+
+@router.get("/image-evidence")
+async def image_evidence(ids: str = "", tags: str = ""):
+    """Inspect image identities and tag targets only when references change."""
+    import urllib.parse
+
+    requested: list[tuple[str, str]] = []
+    for kind, raw in (("running", ids), ("tag", tags)):
+        for value in raw.split(","):
+            value = value.strip()
+            if value and (kind, value) not in requested:
+                requested.append((kind, value))
+    key_by_kind = {"running": "running", "tag": "tags"}
+    results = await asyncio.gather(
+        *(_docker_json(f"/images/{urllib.parse.quote(value, safe='')}/json") for _, value in requested),
+        return_exceptions=True,
+    )
+    payload: dict = {"running": {}, "tags": {}, "errors": {}}
+    for (kind, value), result in zip(requested, results):
+        if isinstance(result, Exception):
+            payload["errors"][f"{kind}:{value}"] = str(result)
+        else:
+            payload[key_by_kind[kind]][value] = result
+    return payload
 
 
 @router.get("/docker/{docker_path:path}")
