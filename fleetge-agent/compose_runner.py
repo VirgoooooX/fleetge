@@ -377,9 +377,9 @@ def _current_container_candidates() -> list[str]:
         pass
 
     try:
-        with open("/proc/self/cgroup", "r", encoding="utf-8") as f:
+        with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
             text = f.read()
-        for match in re.finditer(r"([0-9a-f]{12,64})", text):
+        for match in re.finditer(r"/containers/([0-9a-f]{12,64})/", text):
             value = match.group(1)
             if value not in candidates:
                 candidates.append(value)
@@ -750,16 +750,73 @@ ACTION_ARGS = {
 }
 
 
+def _compose_host_project_dir(stack_path: str) -> str | None:
+    """Return the host path when the stack directory is only a container mount.
+
+    Docker Compose resolves relative bind mounts against its project directory.
+    The agent runs inside a container while the Docker daemon runs on the host,
+    so leaving the container path as the project directory makes the daemon
+    create missing files and directories on the host.
+    """
+    stack_real = os.path.realpath(stack_path)
+    base_real = os.path.realpath(STACKS_BASE_DIR)
+    try:
+        if os.path.commonpath([base_real, stack_real]) != base_real:
+            return None
+    except ValueError:
+        return None
+    inspect = _current_container_inspect_sync()
+    host_base, container_base = _host_mount_for_path(inspect, base_real)
+    if os.path.realpath(host_base) == os.path.realpath(container_base):
+        return None
+    relative = os.path.relpath(stack_real, base_real)
+    return host_base if relative == "." else os.path.join(host_base, relative)
+
+
+def _current_container_inspect_sync() -> dict:
+    for candidate in _current_container_candidates():
+        try:
+            result = subprocess.run(
+                ["docker", "container", "inspect", candidate],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=False,
+            )
+        except Exception:
+            continue
+        if result.returncode != 0:
+            continue
+        try:
+            payload = json.loads(result.stdout)
+        except Exception:
+            continue
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            return payload[0]
+    return {}
+
+
 def _compose_args(stack_path: str, command: str, *extra_options: str) -> list[str]:
     """Build docker compose arguments using Dockge's env-file behavior."""
     args = ["compose", command, *extra_options]
+    host_project_dir = _compose_host_project_dir(stack_path)
+    if host_project_dir:
+        args[1:1] = ["--project-directory", host_project_dir]
+        compose_file = _find_compose_file(stack_path)
+        if compose_file:
+            args[3:3] = ["--file", os.path.join(stack_path, compose_file)]
     base_real = os.path.realpath(STACKS_BASE_DIR)
     global_env_path = os.path.join(base_real, "global.env")
+    local_env_path = os.path.join(stack_path, ".env")
 
     if os.path.isfile(global_env_path):
-        if os.path.isfile(os.path.join(stack_path, ".env")):
-            args[1:1] = ["--env-file", "./.env"]
-        args[1:1] = ["--env-file", "../global.env"]
+        if os.path.isfile(local_env_path):
+            args[1:1] = ["--env-file", local_env_path if host_project_dir else "./.env"]
+        args[1:1] = ["--env-file", global_env_path if host_project_dir else "../global.env"]
+    elif host_project_dir and os.path.isfile(local_env_path):
+        args[1:1] = ["--env-file", local_env_path]
 
     return args
 
@@ -1138,6 +1195,14 @@ async def _start_self_updater_container(stack_name: str, stack_path: str, servic
         "--jobs-dir", os.path.dirname(job_status_path),
         "--services", *services,
     ]
+    host_project_dir = _compose_host_project_dir(stack_path)
+    if host_project_dir:
+        handoff_args = ["--host-project-dir", host_project_dir]
+        compose_file = _find_compose_file(stack_path)
+        if compose_file:
+            handoff_args += ["--compose-file", os.path.join(stack_path, compose_file)]
+        services_index = cmd.index("--services")
+        cmd[services_index:services_index] = handoff_args
 
     exit_code, output = await _run_docker_command_capture("/", cmd)
     await _append_job_log(job_id, output)

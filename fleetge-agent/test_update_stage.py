@@ -4,6 +4,11 @@ from test_agent import client, stack_base
 import compose_runner
 
 
+@pytest.fixture(autouse=True)
+def _no_host_project_translation(monkeypatch):
+    monkeypatch.setattr(compose_runner, "_compose_host_project_dir", lambda stack_path: None)
+
+
 @pytest.mark.parametrize("pull_code,up_code,expected_stage", [(1, 0, "pull"), (0, 2, "up"), (0, 0, "up")])
 def test_update_reports_failure_stage_without_changing_sequence(stack_base, monkeypatch, pull_code, up_code, expected_stage):
     folder = stack_base / "stage-test"

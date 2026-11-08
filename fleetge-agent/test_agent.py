@@ -11,6 +11,7 @@ os.environ["STACKS_BASE_DIR"] = "/tmp/test-stacks"
 
 from main import app
 import compose_runner
+import self_updater
 
 client = TestClient(app)
 
@@ -19,6 +20,7 @@ client = TestClient(app)
 def stack_base(monkeypatch, tmp_path):
     """Route stack storage into a temporary directory for a single test."""
     monkeypatch.setattr(compose_runner, "STACKS_BASE_DIR", str(tmp_path))
+    monkeypatch.setattr(compose_runner, "_compose_host_project_dir", lambda stack_path: None)
     return tmp_path
 
 
@@ -299,12 +301,13 @@ def test_global_env_read_write_delete(stack_base):
     assert not (stack_base / "global.env").exists()
 
 
-def test_compose_args_match_dockge_env_file_order(stack_base):
+def test_compose_args_match_dockge_env_file_order(stack_base, monkeypatch):
     """global.env enables explicit env-file arguments in Dockge order."""
     stack_dir = stack_base / "test-stack"
     stack_dir.mkdir()
     (stack_dir / ".env").write_text("LOCAL=1\n")
     (stack_base / "global.env").write_text("GLOBAL=1\n")
+    monkeypatch.setattr(compose_runner, "_compose_host_project_dir", lambda stack_path: None)
 
     assert compose_runner._compose_args(str(stack_dir), "up", "-d", "--remove-orphans") == [
         "compose",
@@ -316,6 +319,84 @@ def test_compose_args_match_dockge_env_file_order(stack_base):
         "-d",
         "--remove-orphans",
     ]
+
+
+def test_compose_args_use_host_project_directory(stack_base, monkeypatch):
+    """The CLI reads local files while the daemon receives host bind paths."""
+    stack_dir = stack_base / "caddy"
+    stack_dir.mkdir()
+    compose_file = stack_dir / "compose.yaml"
+    compose_file.write_text("services: {}\n")
+    env_file = stack_dir / ".env"
+    env_file.write_text("LOCAL=1\n")
+    monkeypatch.setattr(
+        compose_runner,
+        "_compose_host_project_dir",
+        lambda stack_path: "/srv/host/stacks/caddy",
+    )
+
+    assert compose_runner._compose_args(str(stack_dir), "up", "-d", "caddy") == [
+        "compose",
+        "--env-file",
+        str(env_file),
+        "--project-directory",
+        "/srv/host/stacks/caddy",
+        "--file",
+        str(compose_file),
+        "up",
+        "-d",
+        "caddy",
+    ]
+
+
+def test_self_updater_compose_args_use_local_files_and_host_project(stack_base):
+    """The detached updater applies the same local/host path split."""
+    stack_dir = stack_base / "caddy"
+    stack_dir.mkdir()
+    compose_file = stack_dir / "compose.yaml"
+    compose_file.write_text("services: {}\n")
+    env_file = stack_dir / ".env"
+    env_file.write_text("LOCAL=1\n")
+
+    assert self_updater.compose_args(
+        str(stack_dir),
+        "up",
+        "-d",
+        "caddy",
+        host_project_dir="/srv/host/stacks/caddy",
+        compose_file=str(compose_file),
+    ) == [
+        "compose",
+        "--env-file",
+        str(env_file),
+        "--project-directory",
+        "/srv/host/stacks/caddy",
+        "--file",
+        str(compose_file),
+        "up",
+        "-d",
+        "caddy",
+    ]
+
+
+def test_compose_host_project_dir_translates_agent_mount(tmp_path, monkeypatch):
+    """A mounted stacks directory is translated; an identical mount is left unchanged."""
+    monkeypatch.setattr(compose_runner, "STACKS_BASE_DIR", str(tmp_path))
+    stack_dir = tmp_path / "caddy"
+    stack_dir.mkdir()
+    monkeypatch.setattr(
+        compose_runner,
+        "_current_container_inspect_sync",
+        lambda: {"Mounts": [{"Source": "/srv/host/stacks", "Destination": str(tmp_path)}]},
+    )
+    assert compose_runner._compose_host_project_dir(str(stack_dir)) == os.path.join("/srv/host/stacks", "caddy")
+
+    monkeypatch.setattr(
+        compose_runner,
+        "_current_container_inspect_sync",
+        lambda: {"Mounts": [{"Source": str(tmp_path), "Destination": str(tmp_path)}]},
+    )
+    assert compose_runner._compose_host_project_dir(str(stack_dir)) is None
 
 
 def test_compose_status_convert_uses_dockge_precedence():

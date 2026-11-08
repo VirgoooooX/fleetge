@@ -59,14 +59,27 @@ def append_log(jobs_dir: str, job_id: str, text: str) -> None:
         f.write(text)
 
 
-def compose_args(stack_dir: str, command: str, *extra: str) -> list[str]:
+def compose_args(
+    stack_dir: str,
+    command: str,
+    *extra: str,
+    host_project_dir: str = "",
+    compose_file: str = "",
+) -> list[str]:
     args = ["compose", command, *extra]
+    if host_project_dir:
+        args[1:1] = ["--project-directory", host_project_dir]
+        if compose_file:
+            args[3:3] = ["--file", compose_file]
     base_dir = os.path.realpath(os.path.dirname(stack_dir))
     global_env_path = os.path.join(base_dir, "global.env")
+    local_env_path = os.path.join(stack_dir, ".env")
     if os.path.isfile(global_env_path):
-        if os.path.isfile(os.path.join(stack_dir, ".env")):
-            args[1:1] = ["--env-file", "./.env"]
-        args[1:1] = ["--env-file", "../global.env"]
+        if os.path.isfile(local_env_path):
+            args[1:1] = ["--env-file", local_env_path if host_project_dir else "./.env"]
+        args[1:1] = ["--env-file", global_env_path if host_project_dir else "../global.env"]
+    elif host_project_dir and os.path.isfile(local_env_path):
+        args[1:1] = ["--env-file", local_env_path]
     return args
 
 
@@ -117,9 +130,13 @@ def main() -> int:
     parser.add_argument("--stack-dir", required=True)
     parser.add_argument("--jobs-dir", required=True)
     parser.add_argument("--services", nargs="+", required=True)
+    parser.add_argument("--host-project-dir", default="")
+    parser.add_argument("--compose-file", default="")
     args = parser.parse_args()
 
     stack_dir = os.path.realpath(args.stack_dir)
+    host_project_dir = os.path.realpath(args.host_project_dir) if args.host_project_dir else ""
+    compose_file = os.path.realpath(args.compose_file) if args.compose_file else ""
     services = list(args.services)
     write_status(
         args.jobs_dir,
@@ -135,7 +152,7 @@ def main() -> int:
         args.jobs_dir,
         args.job_id,
         stack_dir,
-        compose_args(stack_dir, "pull", *services),
+        compose_args(stack_dir, "pull", *services, host_project_dir=host_project_dir, compose_file=compose_file),
     )
     stage = "pull"
     pulled_images: list[dict] = []
@@ -144,7 +161,7 @@ def main() -> int:
         try:
             pulled_images = capture_pulled_images(
                 stack_dir,
-                compose_args(stack_dir, "config", "--format", "json"),
+                compose_args(stack_dir, "config", "--format", "json", host_project_dir=host_project_dir, compose_file=compose_file),
                 services,
             )
             pulled_images = [item for item in pulled_images if item.get("service") in services]
@@ -168,7 +185,17 @@ def main() -> int:
             args.jobs_dir,
             args.job_id,
             stack_dir,
-            compose_args(stack_dir, "up", "-d", "--no-deps", "--pull", "never", *services),
+            compose_args(
+                stack_dir,
+                "up",
+                "-d",
+                "--no-deps",
+                "--pull",
+                "never",
+                *services,
+                host_project_dir=host_project_dir,
+                compose_file=compose_file,
+            ),
         )
 
     if exit_code == 124:
