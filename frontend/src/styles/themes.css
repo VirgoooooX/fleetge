@@ -287,3 +287,40 @@
 [data-theme="light"] .metrics-item {
   background: var(--surface-panel) !important;
 }
+
+/* ── Liquid theme pour (View Transition reveal) ──────────── */
+html.is-theme-pouring,
+html.is-theme-pouring *,
+html.is-theme-pouring *::before,
+html.is-theme-pouring *::after {
+  transition: none !important;
+}
+
+html.is-theme-pouring::view-transition-old(root),
+html.is-theme-pouring::view-transition-new(root) {
+  animation: hd-pour-hold var(--hd-pour-ms, 1050ms) linear both;
+  mix-blend-mode: normal;
+}
+
+html.is-theme-pouring::view-transition-old(root) {
+  z-index: 1;
+}
+
+html.is-theme-pouring::view-transition-new(root) {
+  z-index: 2;
+  clip-path: url(#hd-liquid-clip);
+}
+
+@keyframes hd-pour-hold {
+  from { opacity: 1; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.is-theme-pouring::view-transition-old(root),
+  html.is-theme-pouring::view-transition-new(root) {
+    animation: none !important;
+    clip-path: none !important;
+  }
+}
+

@@ -160,6 +160,41 @@
               </div>
             </el-form>
           </details>
+          <div class="params-settings-form theme-pour-cluster">
+            <div class="form-cluster">
+              <div class="cluster-title">{{ t("themePour.title") }}</div>
+              <div class="settings-field-list">
+                <div class="settings-field-row theme-pour-setting-row">
+                  <div>
+                    <div class="settings-field-label">{{ t("themePour.label") }}</div>
+                    <div class="settings-field-help">{{ t("themePour.help") }}</div>
+                  </div>
+                  <div class="theme-pour-preset-bar" role="group" :aria-label="t('themePour.title')">
+                    <button
+                      v-for="p in pourPresetOptions"
+                      :key="p"
+                      type="button"
+                      class="theme-pour-preset-btn"
+                      :class="{ active: theme.activePreset.value === p }"
+                      @click="theme.applyPreset(p)"
+                    >
+                      {{ t(`themePour.preset.${p}`) }}
+                    </button>
+                    <span v-if="theme.activePreset.value === 'custom'" class="theme-pour-custom-pill">
+                      {{ t("themePour.preset.custom") }} · {{ theme.pourConfig.duration }}ms
+                    </span>
+                    <button
+                      type="button"
+                      class="theme-pour-preset-btn preview"
+                      @click="theme.toggle($event)"
+                    >
+                      {{ t("themePour.preview") }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
           <NotifyHubSettings />
         </section>
 
@@ -879,6 +914,7 @@ import { remainingInviteSeconds } from "@/utils/dateTime";
 import { HOST_LOGO_PRESETS, resolveHostLogo } from "@/utils/hostLogo";
 import UpdateBadge from "@/components/UpdateBadge.vue";
 import NotifyHubSettings from "@/components/NotifyHubSettings.vue";
+import { useTheme } from "@/composables/useTheme";
 
 type SettingsSectionId = "params" | "hosts" | "maintenance" | "audit" | "about";
 
@@ -901,6 +937,8 @@ const store = useSettingsStore();
 const dashboardStore = useDashboardStore();
 const { confirm, alert: confirmAlert } = useConfirm();
 const { isMobile } = useMobile();
+const theme = useTheme();
+const pourPresetOptions = ["off", "crisp", "standard", "lush"] as const;
 const appVersion = __APP_VERSION__;
 
 const enrollmentDialogVisible = ref(false);
@@ -2677,5 +2715,65 @@ onBeforeUnmount(() => {
   height: 18px;
   object-fit: contain;
   flex-shrink: 0;
+}
+
+.theme-pour-cluster {
+  margin-top: 12px;
+}
+
+.theme-pour-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.theme-pour-preset-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.theme-pour-preset-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--surface-panel-raised);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.theme-pour-preset-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.theme-pour-preset-btn.active {
+  border-color: var(--nav-active-border);
+  background: var(--nav-active-bg);
+  color: var(--accent-blue);
+}
+
+.theme-pour-preset-btn.preview {
+  border-color: color-mix(in srgb, var(--accent-blue) 38%, transparent);
+  color: var(--accent-blue);
+}
+
+.theme-pour-custom-pill {
+  height: 26px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
 }
 </style>
