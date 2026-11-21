@@ -92,7 +92,7 @@ class ImageUpdateCache(SQLModel, table=True):
     image: str = Field(sa_column=Column(Text, nullable=False))
     current_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     registry_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
-    registry: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    registry_name: Optional[str] = Field(default=None, sa_column=Column("registry", Text, nullable=True))
     platform: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     registry_index_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     registry_manifest_digest: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))

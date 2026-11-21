@@ -104,10 +104,19 @@ def test_authorized_header():
     assert response.json()["status"] == "ok"
 
 
-def test_authorized_query_param():
-    """Ensure token in query param fallback works."""
-    response = client.get("/api/agent/health?token=test-secret-token-0123456789abcdef")
-    assert response.status_code == 200
+def test_authorized_query_param(stack_base):
+    """Query param token is rejected on HTTP endpoints and accepted on WebSockets."""
+    http_res = client.get("/api/agent/health?token=test-secret-token-0123456789abcdef")
+    assert http_res.status_code == 401
+    stack_dir = stack_base / "ws-auth-stack"
+    stack_dir.mkdir()
+    (stack_dir / "compose.yaml").write_text("services:\n  app:\n    image: nginx\n")
+    with client.websocket_connect(
+        "/api/agent/stacks/ws-auth-stack/execute?token=test-secret-token-0123456789abcdef"
+    ) as ws:
+        ws.send_json({"action": "invalid-check"})
+        msg = ws.receive_json()
+        assert msg["type"] == "error"
 
 
 def test_health_check_requires_auth_by_default():
@@ -837,3 +846,49 @@ def test_secret_path_rewrites_and_hides_unprefixed_routes():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines() == ["404", "200"]
+
+
+def test_watcher_shutdown_preserves_detached_handoff_for_reconcile(stack_base, monkeypatch):
+    import asyncio
+
+    async def check():
+        waiting = asyncio.Event()
+
+        async def inspect(_name):
+            waiting.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(compose_runner, "_container_is_running", inspect)
+        job_id = await compose_runner._create_job("selfUpdate", "fleetge", ["agent"])
+        await compose_runner._write_job_status(job_id, status="handoff", phase="starting-updater")
+        await compose_runner.reconcile_jobs()
+        await asyncio.wait_for(waiting.wait(), timeout=2)
+        assert compose_runner._active_job_stacks["fleetge"] == job_id
+
+        await compose_runner.stop_job_watchers()
+
+        assert not compose_runner._job_watchers
+        assert "fleetge" not in compose_runner._active_job_stacks
+        assert compose_runner._read_job_status(job_id)["status"] == "handoff"
+
+    asyncio.run(check())
+
+
+def test_self_info_and_compose_share_success_and_failure_cache(stack_base, monkeypatch):
+    import asyncio
+    from unittest.mock import Mock
+
+    monotonic = 10.0
+    monkeypatch.setattr(compose_runner, "time", type("Clock", (), {"monotonic": staticmethod(lambda: monotonic)}))
+    monkeypatch.setattr(compose_runner, "_self_inspect_expires", 0.0)
+    monkeypatch.setattr(compose_runner, "_self_inspect_result", {})
+    inspect = Mock(side_effect=[{}, {"Id": "0123456789abcdef", "Config": {}}])
+    monkeypatch.setattr(compose_runner, "_load_container_inspect", inspect)
+
+    assert asyncio.run(compose_runner._get_agent_self_info())["container_id"] == ""
+    assert compose_runner._current_container_inspect_sync() == {}
+    assert inspect.call_count == 1
+    monotonic += 6
+    assert asyncio.run(compose_runner._get_agent_self_info())["container_id"] == "0123456789ab"
+    assert compose_runner._current_container_inspect_sync()["Id"] == "0123456789abcdef"
+    assert inspect.call_count == 2

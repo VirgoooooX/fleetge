@@ -1,16 +1,36 @@
 import os
 import re
 import shutil
+import logging
+import threading
+import time
 import asyncio
+from weakref import WeakValueDictionary
 import json
 import uuid
 import socket
 import subprocess
-from datetime import datetime, timezone
+from contextlib import ExitStack, suppress
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from compose_identity import capture_pulled_images
+from compose_common import (
+    COMPOSE_FILE_NAMES as _COMPOSE_FILE_NAMES,
+    SERVICE_NAME_RE,
+    atomic_write_text,
+    commit_stack_files,
+    compose_args as build_compose_args,
+    redact_sensitive_text as _redact_sensitive_text,
+    staged_text,
+)
+import ingress_probe
+from ingress_probe import INGRESS_PORTS, _container_socket_inodes, _listening_inodes, _running_host_containers
+import job_store
+from job_store import TERMINAL_JOB_STATES as _TERMINAL_JOB_STATES, utc_now as _utc_now_iso
+import pty_executor
+
+logger = logging.getLogger("fleetge-agent.compose")
 
 STACKS_BASE_DIR = os.environ.get("STACKS_BASE_DIR", "/opt/stacks")
 FLEETGE_STACK_NAME = os.environ.get("FLEETGE_STACK_NAME", "").strip()
@@ -36,27 +56,8 @@ AGENT_ENABLE_SELF_UPDATE = _env_bool("AGENT_ENABLE_SELF_UPDATE", True)
 router = APIRouter()
 
 # Dockge-compatible stack names. Keep this aligned with frontend/backend validation.
-STACK_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
-SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9_.-]+$")
-
-# Recognized docker-compose file names
-_COMPOSE_FILE_NAMES = [
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "compose.yml",
-    "compose.yaml",
-]
-
-_SENSITIVE_RE = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET|KEY|AUTH|CREDENTIAL)[A-Z0-9_]*\s*[=:]\s*)([^\s'\"`]+)"
-)
-_BEARER_RE = re.compile(r"(?i)(Authorization:\s*Bearer\s+)[A-Za-z0-9._~+/=-]+")
-
-
-def _redact_sensitive_text(text: str) -> str:
-    text = _SENSITIVE_RE.sub(r"\1[REDACTED]", text)
-    return _BEARER_RE.sub(r"\1[REDACTED]", text)
-
+STACK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+SERVICE_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
 def _client_host(request: Request | WebSocket | None) -> str:
     if request and request.client and request.client.host:
@@ -93,19 +94,39 @@ def _require_enabled(enabled: bool, feature: str) -> None:
         raise HTTPException(status_code=403, detail=f"{feature} is disabled by agent policy.")
 
 # Concurrent locks per stack name
-_locks: dict[str, asyncio.Lock] = {}
-_locks_lock = asyncio.Lock()
+_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 _active_job_stacks: dict[str, str] = {}
 _job_watchers: set[asyncio.Task] = set()
-_TERMINAL_JOB_STATES = {"success", "error", "uncertain", "skipped"}
 
 
 async def get_stack_lock(stack_name: str) -> asyncio.Lock:
-    """Get or create an asyncio.Lock for a specific stack name."""
-    async with _locks_lock:
-        if stack_name not in _locks:
-            _locks[stack_name] = asyncio.Lock()
-        return _locks[stack_name]
+    """Keep each lock alive while a task can still acquire or release it."""
+    lock = _locks.get(stack_name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[stack_name] = lock
+    return lock
+
+
+def _track_job(task: asyncio.Task, stack_name: str, job_id: str) -> None:
+    _job_watchers.add(task)
+
+    def finish(finished: asyncio.Task) -> None:
+        _job_watchers.discard(finished)
+        if _active_job_stacks.get(stack_name) == job_id:
+            _active_job_stacks.pop(stack_name, None)
+        if not finished.cancelled() and (error := finished.exception()) is not None:
+            logger.error("Job %s watcher failed", job_id, exc_info=error)
+
+    task.add_done_callback(finish)
+
+
+async def stop_job_watchers() -> None:
+    tasks = tuple(_job_watchers)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class StackSaveRequest(BaseModel):
@@ -135,7 +156,7 @@ def _validate_stack_name(name: str) -> None:
 
 def _validate_service_name(name: Optional[str]) -> str:
     service = name or ""
-    if not SERVICE_NAME_RE.match(service):
+    if ".." in service or not SERVICE_NAME_RE.match(service):
         raise HTTPException(
             status_code=400,
             detail="Invalid service name. Only letters, numbers, dots, hyphens, and underscores are allowed.",
@@ -149,124 +170,13 @@ def _validate_services(services: object) -> list[str]:
     return [_validate_service_name(str(service)) for service in services]
 
 
-# Ports whose listeners are the control plane's only route to this agent.
-INGRESS_PORTS = (80, 443)
-_PROC_NET_LISTEN = "0A"
-
-
-def _listening_inodes(proc_root: str, ports: tuple[int, ...]) -> dict[int, set[str]]:
-    """Map requested listening ports to socket inodes from a /proc tree."""
-    wanted = set(ports)
-    inodes: dict[int, set[str]] = {port: set() for port in ports}
-    for name in ("tcp", "tcp6"):
-        path = os.path.join(proc_root, "net", name)
-        try:
-            with open(path, "r", encoding="utf-8") as handle:
-                next(handle, None)
-                for line in handle:
-                    columns = line.split()
-                    if len(columns) < 10 or columns[3] != _PROC_NET_LISTEN:
-                        continue
-                    port = int(columns[1].rsplit(":", 1)[1], 16)
-                    if port in wanted:
-                        inodes[port].add(columns[9])
-        except OSError:
-            continue
-    return inodes
-
-
-def _container_socket_inodes(container_id: str) -> set[str]:
-    """Socket inodes held by a container's root process.
-
-    The target only needs a shell. Its /proc inode numbers match the host's
-    when the container uses the host network, which is the only mode checked.
-    """
-    if not re.fullmatch(r"[0-9a-fA-F]{12,64}", container_id):
-        return set()
-    try:
-        completed = subprocess.run(
-            [
-                "docker", "exec", container_id, "sh", "-c",
-                "for f in /proc/1/fd/*; do readlink \"$f\" 2>/dev/null; done",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return set()
-    if completed.returncode != 0:
-        return set()
-    return {
-        line[8:-1]
-        for line in completed.stdout.splitlines()
-        if line.startswith("socket:[") and line.endswith("]")
-    }
-
-
-def _running_host_containers() -> list[dict]:
-    """Running containers using the host network, via the Docker CLI."""
-    response = subprocess.run(
-        ["docker", "ps", "-q", "--filter", "network=host"],
-        capture_output=True,
-        text=True,
-        timeout=8,
-        check=True,
-    )
-    ids = [line.strip() for line in response.stdout.splitlines() if line.strip()]
-    if not ids:
-        return []
-    details = subprocess.run(
-        ["docker", "inspect", *ids],
-        capture_output=True,
-        text=True,
-        timeout=8,
-        check=True,
-    )
-    containers = []
-    for item in json.loads(details.stdout or "[]"):
-        container_id = str(item.get("Id") or "")
-        if not container_id:
-            continue
-        containers.append({
-            "Id": container_id,
-            "Names": [item["Name"]] if item.get("Name") else [],
-            "Labels": (item.get("Config") or {}).get("Labels") or {},
-        })
-    return containers
-
-
 def ingress_services(ports: tuple[int, ...] = INGRESS_PORTS) -> list[dict]:
-    """Compose services holding the host's ingress ports, seen through Docker.
-
-    The agent shares the host network namespace but not its PID namespace, so
-    each host-network container is asked which sockets its own root process holds.
-    """
-    inodes = _listening_inodes("/proc", ports)
-    if not set().union(*inodes.values()):
-        return []
-
-    owners = []
-    for container in _running_host_containers():
-        container_id = str(container.get("Id") or "")
-        owned = _container_socket_inodes(container_id)
-        matched = [port for port in ports if inodes[port] & owned]
-        if not matched:
-            continue
-        labels = container.get("Labels") or {}
-        names = container.get("Names") or []
-        owners.append({
-            "container_id": container_id[:12],
-            "container_name": names[0].lstrip("/") if names else "",
-            "stack_name": labels.get("com.docker.compose.project") or "",
-            "service_name": labels.get("com.docker.compose.service") or "",
-            "ports": matched,
-        })
-    return owners
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return ingress_probe.ingress_services(
+        ports,
+        listening_inodes=_listening_inodes,
+        running_host_containers=_running_host_containers,
+        container_socket_inodes=_container_socket_inodes,
+    )
 
 
 def _jobs_dir() -> str:
@@ -288,48 +198,32 @@ def _job_paths(job_id: str) -> tuple[str, str]:
 
 
 async def _write_job_status(status_job_id: str, **updates) -> None:
-    status_path, _ = _job_paths(status_job_id)
-
-    def write() -> None:
-        current = {}
-        if os.path.isfile(status_path):
-            try:
-                with open(status_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    current.update(loaded)
-            except Exception:
-                pass
-        current_status = current.get("status")
-        requested_status = updates.get("status")
-        if current_status in _TERMINAL_JOB_STATES and requested_status != current_status:
-            updates.pop("status", None)
-            updates.pop("phase", None)
-        elif current_status == "running" and requested_status == "handoff":
-            updates.pop("status", None)
-            updates.pop("phase", None)
-        current.update(updates)
-        current["updated_at"] = _utc_now_iso()
-        tmp_path = f"{status_path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(current, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, status_path)
-
-    await asyncio.to_thread(write)
+    await asyncio.to_thread(job_store.write_status, _jobs_dir(), _validate_job_id(status_job_id), **updates)
 
 
 async def _append_job_log(job_id: str, text: str) -> None:
     _, log_path = _job_paths(job_id)
-    await asyncio.to_thread(_append_job_log_sync, log_path, text)
+    await asyncio.to_thread(job_store.append_log, log_path, text)
 
 
-def _append_job_log_sync(log_path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    with open(log_path, "a", encoding="utf-8", errors="replace") as f:
-        f.write(_redact_sensitive_text(text))
+_pruned_jobs_dir = ""
+_pruned_jobs_at = float("-inf")
+
+
+async def _prune_finished_jobs(jobs_dir: str) -> None:
+    global _pruned_jobs_dir, _pruned_jobs_at
+    now = time.monotonic()
+    if jobs_dir == _pruned_jobs_dir and now - _pruned_jobs_at < 24 * 60 * 60:
+        return
+    _pruned_jobs_dir, _pruned_jobs_at = jobs_dir, now
+    try:
+        await asyncio.to_thread(job_store.prune_finished_jobs, jobs_dir, now=time.time())
+    except OSError:
+        logger.warning("Could not prune old agent jobs", exc_info=True)
 
 
 async def _create_job(action: str, stack_name: str, services: list[str]) -> str:
+    await _prune_finished_jobs(_jobs_dir())
     job_id = uuid.uuid4().hex[:12]
     await _write_job_status(
         job_id,
@@ -389,32 +283,12 @@ def _current_container_candidates() -> list[str]:
     return candidates
 
 
-async def _inspect_container(container_id: str) -> Optional[dict]:
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "docker", "container", "inspect", container_id,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10.0)
-    except Exception:
-        return None
-    if process.returncode != 0:
-        return None
-    try:
-        payload = json.loads(stdout.decode("utf-8", errors="replace"))
-    except Exception:
-        return None
-    if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-        return payload[0]
-    return None
-
-
 def _host_mount_for_path(inspect: dict, container_path: str) -> tuple[str, str]:
     """Return (host_source, container_destination) mount covering container_path."""
     path = os.path.realpath(container_path)
     mounts = inspect.get("Mounts", []) if isinstance(inspect, dict) else []
     best: tuple[str, str] | None = None
+    best_destination_length = 0
     for mount in mounts or []:
         dest = mount.get("Destination")
         source = mount.get("Source")
@@ -427,10 +301,11 @@ def _host_mount_for_path(inspect: dict, container_path: str) -> tuple[str, str]:
             continue
         if common != dest_real:
             continue
-        if best is None or len(dest_real) > len(best[1]):
+        if len(dest_real) > best_destination_length:
             rel = os.path.relpath(path, dest_real)
             host_source = source if rel == "." else os.path.join(source, rel)
             best = (host_source, path)
+            best_destination_length = len(dest_real)
     if best:
         return best
     return path, path
@@ -438,16 +313,9 @@ def _host_mount_for_path(inspect: dict, container_path: str) -> tuple[str, str]:
 
 async def _get_agent_self_info() -> dict:
     """Return the current agent's compose identity as observed through Docker."""
-    inspect: dict = {}
-    container_id = ""
-    for candidate in _current_container_candidates():
-        found = await _inspect_container(candidate)
-        if found:
-            inspect = found
-            container_id = str(found.get("Id") or candidate)
-            break
-
-    config = inspect.get("Config", {}) if inspect else {}
+    inspect = await asyncio.to_thread(_current_container_inspect_sync)
+    container_id = str(inspect.get("Id") or "")
+    config = inspect.get("Config") or {}
     labels = config.get("Labels", {}) if isinstance(config, dict) else {}
     labels = labels or {}
     image = str(config.get("Image") or inspect.get("Image") or "")
@@ -601,8 +469,7 @@ async def save_global_env(payload: GlobalEnvRequest, request: Request):
     env_path = os.path.join(os.path.realpath(STACKS_BASE_DIR), "global.env")
     try:
         if payload.content.strip():
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(payload.content)
+            atomic_write_text(env_path, payload.content)
         elif os.path.isfile(env_path):
             os.remove(env_path)
         await _write_audit("global_env.save", "success", client=_client_host(request))
@@ -659,6 +526,7 @@ async def save_stack(name: str, payload: StackSaveRequest, request: Request):
     if lock.locked() or name in _active_job_stacks:
         raise HTTPException(status_code=409, detail=f"Stack '{name}' is currently busy with an active command.")
     await lock.acquire()
+    created = False
     try:
         exists = os.path.isdir(stack_path)
         if payload.is_add and exists:
@@ -666,26 +534,25 @@ async def save_stack(name: str, payload: StackSaveRequest, request: Request):
         if not payload.is_add and not exists:
             raise HTTPException(status_code=404, detail=f"Stack '{name}' directory not found.")
 
-        os.makedirs(stack_path, exist_ok=True)
+        if not exists:
+            os.makedirs(stack_path)
+            created = True
 
-        # Write compose file
-        with open(compose_path, "w", encoding="utf-8") as f:
-            f.write(payload.compose_yaml)
-
-        # Remove any old compose file(s) with a different name so only one remains
-        for filename in _COMPOSE_FILE_NAMES:
-            if filename == compose_filename:
-                continue
-            old_path = os.path.join(stack_path, filename)
-            if os.path.isfile(old_path):
-                os.remove(old_path)
-
-        # Write or remove env file
-        if payload.compose_env and payload.compose_env.strip():
-            with open(env_path, "w", encoding="utf-8") as f:
-                f.write(payload.compose_env)
-        elif os.path.isfile(env_path):
-            os.remove(env_path)
+        # Stage both files before replacing either one, so a failed write leaves
+        # the previous Compose configuration and environment intact.
+        with ExitStack() as staged:
+            compose_write = staged.enter_context(staged_text(compose_path, payload.compose_yaml))
+            changes: list[tuple[str | None, str]] = [compose_write]
+            if payload.compose_env and payload.compose_env.strip():
+                changes.append(staged.enter_context(staged_text(env_path, payload.compose_env)))
+            elif os.path.isfile(env_path):
+                changes.append((None, env_path))
+            for filename in _COMPOSE_FILE_NAMES:
+                if filename != compose_filename:
+                    old_path = os.path.join(stack_path, filename)
+                    if os.path.isfile(old_path):
+                        changes.append((None, old_path))
+            commit_stack_files(changes)
 
         await _write_audit("stack.save", "success", stack=name, client=_client_host(request))
         return {"success": True, "message": f"Stack '{name}' saved successfully."}
@@ -693,6 +560,9 @@ async def save_stack(name: str, payload: StackSaveRequest, request: Request):
         await _write_audit("stack.save", "error", stack=name, client=_client_host(request), detail=str(exc.detail))
         raise
     except Exception as exc:
+        if created:
+            with suppress(OSError):
+                os.rmdir(stack_path)
         await _write_audit("stack.save", "error", stack=name, client=_client_host(request), detail=str(exc))
         raise HTTPException(status_code=500, detail=f"Failed to write stack files: {exc}")
     finally:
@@ -724,7 +594,7 @@ async def delete_stack(name: str, request: Request):
             raise HTTPException(status_code=409, detail=f"Stack '{name}' is currently busy with an active command.")
         try:
             exit_code, output = await _delete_stack_after_down(
-                stack_path, _compose_args(stack_path, "down", "--remove-orphans")
+                stack_path, await _compose_args_async(stack_path, "down", "--remove-orphans")
             )
             if exit_code != 0:
                 raise HTTPException(status_code=502, detail=output.strip() or "docker compose down failed")
@@ -793,7 +663,21 @@ def _compose_host_project_dir(stack_path: str) -> str | None:
     return host_base if relative == "." else os.path.join(host_base, relative)
 
 
+_self_inspect_lock = threading.Lock()
+_self_inspect_result: dict = {}
+_self_inspect_expires = 0.0
+
+
 def _current_container_inspect_sync() -> dict:
+    global _self_inspect_result, _self_inspect_expires
+    with _self_inspect_lock:
+        if time.monotonic() >= _self_inspect_expires:
+            _self_inspect_result = _load_container_inspect()
+            _self_inspect_expires = time.monotonic() + (60.0 if _self_inspect_result else 5.0)
+        return _self_inspect_result
+
+
+def _load_container_inspect() -> dict:
     for candidate in _current_container_candidates():
         try:
             result = subprocess.run(
@@ -814,38 +698,31 @@ def _current_container_inspect_sync() -> dict:
         except Exception:
             continue
         if isinstance(payload, list) and payload and isinstance(payload[0], dict):
-            return payload[0]
+            return {**payload[0], "Id": payload[0].get("Id") or candidate}
     return {}
 
 
 def _compose_args(stack_path: str, command: str, *extra_options: str) -> list[str]:
     """Build docker compose arguments using Dockge's env-file behavior."""
-    args = ["compose", command, *extra_options]
     host_project_dir = _compose_host_project_dir(stack_path)
-    if host_project_dir:
-        args[1:1] = ["--project-directory", host_project_dir]
-        compose_file = _find_compose_file(stack_path)
-        if compose_file:
-            args[3:3] = ["--file", os.path.join(stack_path, compose_file)]
-    base_real = os.path.realpath(STACKS_BASE_DIR)
-    global_env_path = os.path.join(base_real, "global.env")
-    local_env_path = os.path.join(stack_path, ".env")
+    compose_file = _find_compose_file(stack_path) if host_project_dir else None
+    return build_compose_args(
+        stack_path, command, *extra_options,
+        base_dir=STACKS_BASE_DIR,
+        host_project_dir=host_project_dir,
+        compose_file=os.path.join(stack_path, compose_file) if compose_file else None,
+    )
 
-    if os.path.isfile(global_env_path):
-        if os.path.isfile(local_env_path):
-            args[1:1] = ["--env-file", local_env_path if host_project_dir else "./.env"]
-        args[1:1] = ["--env-file", global_env_path if host_project_dir else "../global.env"]
-    elif host_project_dir and os.path.isfile(local_env_path):
-        args[1:1] = ["--env-file", local_env_path]
 
-    return args
+async def _compose_args_async(stack_path: str, command: str, *options: str) -> list[str]:
+    return await asyncio.to_thread(_compose_args, stack_path, command, *options)
 
 
 async def _capture_pulled_images(stack_path: str, services: list[str] | None = None) -> list[dict]:
     return await asyncio.to_thread(
         capture_pulled_images,
         stack_path,
-        _compose_args(stack_path, "config", "--format", "json"),
+        await _compose_args_async(stack_path, "config", "--format", "json"),
         services,
     )
 
@@ -861,59 +738,7 @@ def _compose_status_convert(status: str) -> str:
     return "unknown"
 
 
-async def _stream_with_subprocess(
-    websocket: WebSocket,
-    stack_path: str,
-    args: list[str],
-) -> int:
-    """Fallback streamer using asyncio subprocess when PTY is unavailable."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", *args,
-            cwd=stack_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-    except Exception as exc:
-        await websocket.send_json({
-            "type": "error",
-            "message": f"Failed to start docker command: {exc}",
-        })
-        return 1
-
-    stdout = proc.stdout
-    assert stdout is not None
-
-    try:
-        while True:
-            chunk = await stdout.read(4096)
-            if not chunk:
-                break
-            await websocket.send_json({
-                "type": "stdout",
-                "chunk": _redact_sensitive_text(chunk.decode("utf-8", errors="replace")),
-            })
-
-        await proc.wait()
-        return proc.returncode if proc.returncode is not None else 0
-    except WebSocketDisconnect:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        raise
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        raise
-    finally:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+_stream_with_subprocess = pty_executor.stream_with_subprocess
 
 
 async def _stream_docker_command(
@@ -923,113 +748,43 @@ async def _stream_docker_command(
     cols: int = 160,
     rows: int = 24,
 ) -> int:
-    """Spawn a docker command in a PTY and stream raw chunks to the WebSocket.
-
-    Falls back to a plain subprocess when PTY support is unavailable (e.g. Windows).
-    """
-    ptyprocess = None
     try:
-        import ptyprocess as _ptyprocess
-        ptyprocess = _ptyprocess
-    except Exception:
-        pass
-
-    if ptyprocess is None:
-        return await _stream_with_subprocess(websocket, stack_path, args)
-
-    try:
-        proc = ptyprocess.PtyProcessUnicode.spawn(
-            ["docker", *args],
-            cwd=stack_path,
-            dimensions=(rows, cols),
-        )
-    except Exception:
-        return await _stream_with_subprocess(websocket, stack_path, args)
-
-    try:
-        while True:
-            try:
-                chunk = await asyncio.to_thread(proc.read, 4096)
-            except EOFError:
-                break
-            if not chunk:
-                break
-            await websocket.send_json({"type": "stdout", "chunk": _redact_sensitive_text(chunk)})
-
-        if proc.isalive():
-            await asyncio.to_thread(proc.wait)
-
-        return proc.exitstatus if proc.exitstatus is not None else 0
-    except WebSocketDisconnect:
-        if proc.isalive():
-            try:
-                proc.terminate(force=True)
-            except Exception:
-                pass
-        raise
-    except Exception:
-        if proc.isalive():
-            try:
-                proc.terminate(force=True)
-            except Exception:
-                pass
-        raise
-    finally:
-        if proc.isalive():
-            try:
-                proc.terminate(force=True)
-            except Exception:
-                pass
+        async with asyncio.timeout(pty_executor.COMMAND_TIMEOUT):
+            return await pty_executor.stream_in_pty(websocket, stack_path, args, cols, rows, _stream_with_subprocess)
+    except TimeoutError:
+        await websocket.send_json({"type": "stdout", "chunk": "\nDocker command timed out.\n"})
+        return 124
 
 
 async def _run_docker_command_capture(stack_path: str, args: list[str]) -> tuple[int, str]:
-    """Run a docker command without a WebSocket and return exit code plus output."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", *args,
-            cwd=stack_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+        code, stdout, _ = await pty_executor.capture_docker(
+            args, cwd=stack_path, timeout=300.0, stderr=asyncio.subprocess.STDOUT,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300.0)
-        output = _redact_sensitive_text(stdout.decode("utf-8", errors="replace"))
-        return proc.returncode if proc.returncode is not None else 0, output
-    except Exception as exc:
+        return code, _redact_sensitive_text(stdout.decode("utf-8", errors="replace"))
+    except TimeoutError:
+        return 124, "Docker command timed out after 300 seconds."
+    except OSError as exc:
         return 1, f"Failed to run docker command: {exc}"
 
 
 async def _run_job_command(job_id: str, stack_path: str, args: list[str], timeout: float = 600.0) -> int:
     await _append_job_log(job_id, f"\n$ docker {' '.join(args)}\n")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", *args,
-            cwd=stack_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-    except Exception as exc:
+        proc = await pty_executor.spawn_docker(args, cwd=stack_path, stderr=asyncio.subprocess.STDOUT)
+    except OSError as exc:
         await _append_job_log(job_id, f"Failed to start docker command: {exc}\n")
         return 1
 
-    assert proc.stdout is not None
+    async def emit(chunk: str) -> None:
+        await _append_job_log(job_id, chunk)
+
     try:
         async with asyncio.timeout(timeout):
-            while True:
-                chunk = await proc.stdout.read(4096)
-                if not chunk:
-                    break
-                await _append_job_log(job_id, chunk.decode("utf-8", errors="replace"))
-            await proc.wait()
+            code = await pty_executor.stream_output(proc, emit)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
         await _append_job_log(job_id, f"\nDocker command timed out after {timeout:g} seconds.\n")
         return 124
-    except asyncio.CancelledError:
-        proc.kill()
-        await proc.wait()
-        raise
-    code = proc.returncode if proc.returncode is not None else 0
     await _append_job_log(job_id, f"\nCommand exited with code {code}\n")
     return code
 
@@ -1038,16 +793,15 @@ async def _run_update_services_job(job_id: str, stack_path: str, services: list[
     stage = "pull"
     try:
         await _write_job_status(job_id, status="running", phase=stage)
-        exit_code = await _run_job_command(job_id, stack_path, _compose_args(stack_path, "pull", *services))
+        exit_code = await _run_job_command(job_id, stack_path, await _compose_args_async(stack_path, "pull", *services))
         if exit_code == 0:
             stage = "target"
             await _write_job_status(job_id, status="running", phase=stage)
-            from compose_identity import capture_pulled_images
             try:
                 pulled_images = await asyncio.to_thread(
                     capture_pulled_images,
                     stack_path,
-                    _compose_args(stack_path, "config", "--format", "json"),
+                    await _compose_args_async(stack_path, "config", "--format", "json"),
                     services,
                 )
                 pulled_images = [item for item in pulled_images if item.get("service") in services]
@@ -1063,7 +817,7 @@ async def _run_update_services_job(job_id: str, stack_path: str, services: list[
             exit_code = await _run_job_command(
                 job_id,
                 stack_path,
-                _compose_args(stack_path, "up", "-d", "--no-deps", "--pull", "never", *services),
+                await _compose_args_async(stack_path, "up", "-d", "--no-deps", "--pull", "never", *services),
             )
 
         if exit_code == 124:
@@ -1087,90 +841,74 @@ async def _start_update_services_job(stack_name: str, stack_path: str, services:
     _active_job_stacks[stack_name] = job_id
 
     async def run() -> None:
-        try:
-            async with lock:
-                await _run_update_services_job(job_id, stack_path, services)
-        finally:
-            if _active_job_stacks.get(stack_name) == job_id:
-                _active_job_stacks.pop(stack_name, None)
+        async with lock:
+            await _run_update_services_job(job_id, stack_path, services)
 
-    task = asyncio.create_task(run())
-    _job_watchers.add(task)
-    task.add_done_callback(_job_watchers.discard)
+    _track_job(asyncio.create_task(run()), stack_name, job_id)
     return job_id
 
 
 def _read_job_status(job_id: str) -> dict:
     status_path, _ = _job_paths(job_id)
-    try:
-        with open(status_path, "r", encoding="utf-8") as f:
-            value = json.load(f)
-        return value if isinstance(value, dict) else {}
-    except Exception:
-        return {}
+    return job_store.read_status(status_path)
 
 
-async def _container_is_running(container_name: str) -> bool:
+async def _container_is_running(container_name: str) -> bool | None:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "docker", "inspect", "--format", "{{.State.Running}}", container_name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+        code, stdout, errors = await pty_executor.capture_docker(
+            ["inspect", "--format", "{{.State.Running}}", container_name], timeout=15.0,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
-        return proc.returncode == 0 and stdout.decode("utf-8", errors="replace").strip().lower() == "true"
-    except Exception:
+    except (OSError, TimeoutError):
+        return None
+    if code == 0:
+        return stdout.strip().lower() == b"true"
+    detail = (errors or b"").lower()
+    if b"no such object" in detail or b"no such container" in detail:
         return False
+    return None
+
+
+def _start_self_update_watcher(job_id: str, stack_name: str, container_name: str) -> None:
+    _active_job_stacks[stack_name] = job_id
+    task = asyncio.create_task(_watch_self_update_job(job_id, stack_name, container_name))
+    _track_job(task, stack_name, job_id)
 
 
 async def _watch_self_update_job(job_id: str, stack_name: str, container_name: str) -> None:
-    try:
-        while True:
-            status = _read_job_status(job_id)
-            if status.get("status") in _TERMINAL_JOB_STATES:
-                return
-            if not await _container_is_running(container_name):
-                await _write_job_status(
-                    job_id,
-                    status="uncertain",
-                    phase="uncertain",
-                    message="Updater container stopped before recording a final result.",
-                    finished_at=_utc_now_iso(),
-                )
-                return
-            await asyncio.sleep(2.0)
-    finally:
-        if _active_job_stacks.get(stack_name) == job_id:
-            _active_job_stacks.pop(stack_name, None)
+    while True:
+        status = await asyncio.to_thread(_read_job_status, job_id)
+        if status.get("status") in _TERMINAL_JOB_STATES:
+            return
+        if await _container_is_running(container_name) is False:
+            await _write_job_status(
+                job_id,
+                status="uncertain",
+                phase="uncertain",
+                message="Updater container stopped before recording a final result.",
+                finished_at=_utc_now_iso(),
+            )
+            return
+        await asyncio.sleep(2.0)
 
 
 async def reconcile_jobs() -> None:
     """Recover job state after Agent restart without replaying Docker commands."""
     jobs_dir = _jobs_dir()
-    for entry in os.scandir(jobs_dir):
-        if not entry.is_file() or not entry.name.endswith(".json"):
-            continue
-        job_id = entry.name[:-5]
-        status = _read_job_status(job_id)
+    await _prune_finished_jobs(jobs_dir)
+    with os.scandir(jobs_dir) as entries:
+        job_ids = [
+            entry.name[:-5] for entry in entries
+            if entry.is_file() and re.fullmatch(r"[a-zA-Z0-9_.-]+\.json", entry.name)
+        ]
+    for job_id in job_ids:
+        status = await asyncio.to_thread(_read_job_status, job_id)
         state = status.get("status")
         if state in _TERMINAL_JOB_STATES or not status.get("stack_name"):
             continue
         stack_name = status["stack_name"]
         if status.get("action") == "selfUpdate" and state in {"handoff", "running"}:
             container_name = status.get("updater_container") or f"fleetge-self-updater-{job_id}"
-            if await _container_is_running(container_name):
-                _active_job_stacks[stack_name] = job_id
-                task = asyncio.create_task(_watch_self_update_job(job_id, stack_name, container_name))
-                _job_watchers.add(task)
-                task.add_done_callback(_job_watchers.discard)
-                continue
-            await _write_job_status(
-                job_id,
-                status="uncertain",
-                phase="uncertain",
-                message="Updater container is not running and the job has no final result.",
-                finished_at=_utc_now_iso(),
-            )
+            _start_self_update_watcher(job_id, stack_name, container_name)
         elif state == "queued":
             await _write_job_status(
                 job_id,
@@ -1191,17 +929,55 @@ async def reconcile_jobs() -> None:
 
 async def _start_self_updater_container(stack_name: str, stack_path: str, services: list[str]) -> str:
     job_id = await _create_job("selfUpdate", stack_name, services)
+    container_name = f"fleetge-self-updater-{job_id}"
     _active_job_stacks[stack_name] = job_id
+    launch_attempted = False
+    handoff_finished = False
+    try:
+        cmd = await _self_updater_args(job_id, container_name, stack_path, services)
+        await _write_job_status(job_id, status="handoff", phase="starting-updater", updater_container=container_name)
+        await _append_job_log(job_id, f"Starting temporary updater container for services: {', '.join(services)}\n")
+        launch_attempted = True
+        exit_code, output = await _run_docker_command_capture("/", cmd)
+        if exit_code == 0 or exit_code == 124:
+            _start_self_update_watcher(job_id, stack_name, container_name)
+            handoff_finished = True
+            await _append_job_log(job_id, output)
+            if exit_code == 0:
+                await _append_job_log(job_id, f"Temporary updater started: {container_name}\n")
+            return job_id
+
+        launch_attempted = False
+        await _write_job_status(
+            job_id,
+            status="error",
+            phase="start-updater-failed",
+            exit_code=exit_code,
+            finished_at=_utc_now_iso(),
+        )
+        await _append_job_log(job_id, output)
+        raise HTTPException(status_code=502, detail=output.strip() or "Failed to start self-updater container")
+    except BaseException:
+        if launch_attempted and not handoff_finished:
+            _start_self_update_watcher(job_id, stack_name, container_name)
+        elif not handoff_finished:
+            try:
+                await _write_job_status(
+                    job_id, status="skipped", phase="skipped", message="Updater container was not started.",
+                    finished_at=_utc_now_iso(),
+                )
+            finally:
+                _active_job_stacks.pop(stack_name, None)
+        raise
+
+
+async def _self_updater_args(job_id: str, container_name: str, stack_path: str, services: list[str]) -> list[str]:
     self_info = await _get_agent_self_info()
     updater_image = FLEETGE_UPDATER_IMAGE or self_info.get("image") or "ghcr.io/virgooooox/fleetge-agent:latest"
     stacks_host_path = self_info.get("stacks_host_path") or os.path.realpath(STACKS_BASE_DIR)
     stacks_container_path = self_info.get("stacks_container_path") or os.path.realpath(STACKS_BASE_DIR)
     job_status_path, _ = _job_paths(job_id)
 
-    await _write_job_status(job_id, status="handoff", phase="starting-updater")
-    await _append_job_log(job_id, f"Starting temporary updater container for services: {', '.join(services)}\n")
-
-    container_name = f"fleetge-self-updater-{job_id}"
     mounts = [
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-v", f"{stacks_host_path}:{stacks_container_path}",
@@ -1222,7 +998,7 @@ async def _start_self_updater_container(stack_name: str, stack_path: str, servic
         "--jobs-dir", os.path.dirname(job_status_path),
         "--services", *services,
     ]
-    host_project_dir = _compose_host_project_dir(stack_path)
+    host_project_dir = await asyncio.to_thread(_compose_host_project_dir, stack_path)
     if host_project_dir:
         handoff_args = ["--host-project-dir", host_project_dir]
         compose_file = _find_compose_file(stack_path)
@@ -1231,27 +1007,7 @@ async def _start_self_updater_container(stack_name: str, stack_path: str, servic
         services_index = cmd.index("--services")
         cmd[services_index:services_index] = handoff_args
 
-    exit_code, output = await _run_docker_command_capture("/", cmd)
-    await _append_job_log(job_id, output)
-    if exit_code != 0:
-        await _write_job_status(
-            job_id,
-            status="error",
-            phase="start-updater-failed",
-            exit_code=exit_code,
-            finished_at=_utc_now_iso(),
-        )
-        raise HTTPException(status_code=502, detail=output.strip() or "Failed to start self-updater container")
-
-    await _write_job_status(
-        job_id,
-        updater_container=container_name,
-    )
-    await _append_job_log(job_id, f"Temporary updater started: {container_name}\n")
-    task = asyncio.create_task(_watch_self_update_job(job_id, stack_name, container_name))
-    _job_watchers.add(task)
-    task.add_done_callback(_job_watchers.discard)
-    return job_id
+    return cmd
 
 
 async def _delete_stack_after_down(stack_path: str, args: list[str]) -> tuple[int, str]:
@@ -1268,16 +1024,13 @@ async def _delete_stack_after_down(stack_path: str, args: list[str]) -> tuple[in
 async def _get_compose_project_status(stack_name: str) -> str:
     """Return stack status from docker compose ls, matching Dockge update logic."""
     try:
-        process = await asyncio.create_subprocess_exec(
-            "docker", "compose", "ls", "--all", "--format", "json",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        code, stdout, _ = await pty_executor.capture_docker(
+            ["compose", "ls", "--all", "--format", "json"], timeout=30.0,
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
     except Exception:
         return "unknown"
 
-    if process.returncode != 0:
+    if code != 0:
         return "unknown"
 
     text = stdout.decode("utf-8", errors="replace").strip()
@@ -1313,19 +1066,14 @@ async def _get_compose_project_status(stack_name: str) -> str:
 async def _get_compose_services(stack_path: str) -> list[dict]:
     """Return docker compose ps rows for a stack."""
     try:
-        process = await asyncio.create_subprocess_exec(
-            "docker", *_compose_args(stack_path, "ps", "--format", "json"),
-            cwd=stack_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+        args = await _compose_args_async(stack_path, "ps", "--format", "json")
+        code, stdout, stderr = await pty_executor.capture_docker(args, cwd=stack_path, timeout=30.0)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to inspect compose services: {exc}")
 
-    if process.returncode != 0:
-        detail = stderr.decode("utf-8", errors="replace").strip() or "docker compose ps failed"
-        raise HTTPException(status_code=502, detail=detail)
+    if code != 0:
+        detail = (stderr or b"").decode("utf-8", errors="replace").strip() or "docker compose ps failed"
+        raise HTTPException(status_code=502, detail=_redact_sensitive_text(detail))
 
     text = stdout.decode("utf-8", errors="replace").strip()
     if not text:
@@ -1446,7 +1194,7 @@ async def stream_stack_compose_logs(websocket: WebSocket, name: str, tail: int =
         exit_code = await _stream_with_subprocess(
             websocket,
             stack_path,
-            _compose_args(stack_path, "logs", "--no-color", "-f", "--tail", str(tail)),
+            await _compose_args_async(stack_path, "logs", "--no-color", "-f", "--tail", str(tail)),
         )
         await websocket.send_json({"type": "exit", "code": exit_code})
     except WebSocketDisconnect:
@@ -1543,7 +1291,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
 
             if action == "update":
                 exit_code = await _stream_docker_command(
-                    websocket, stack_path, _compose_args(stack_path, "pull"), cols=cols, rows=rows
+                    websocket, stack_path, await _compose_args_async(stack_path, "pull"), cols=cols, rows=rows
                 )
                 stage = "pull"
                 up_executed = False
@@ -1557,7 +1305,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                     stage = "up"
                     up_executed = True
                     exit_code = await _stream_docker_command(
-                        websocket, stack_path, _compose_args(stack_path, "up", "-d", "--remove-orphans"), cols=cols, rows=rows
+                        websocket, stack_path, await _compose_args_async(stack_path, "up", "-d", "--remove-orphans"), cols=cols, rows=rows
                     )
                 exit_payload = {
                     "type": "exit",
@@ -1571,7 +1319,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                 await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"stage={stage} exit_code={exit_code}")
             elif action == "delete":
                 exit_code = await _stream_docker_command(
-                    websocket, stack_path, _compose_args(stack_path, "down", "--remove-orphans"), cols=cols, rows=rows
+                    websocket, stack_path, await _compose_args_async(stack_path, "down", "--remove-orphans"), cols=cols, rows=rows
                 )
                 if exit_code == 0:
                     try:
@@ -1587,11 +1335,11 @@ async def execute_stack_command(websocket: WebSocket, name: str):
             elif action in service_actions:
                 service_name = _validate_service_name(service)
                 if action == "startService":
-                    args = _compose_args(stack_path, "up", "-d", service_name)
+                    args = await _compose_args_async(stack_path, "up", "-d", service_name)
                 elif action == "stopService":
-                    args = _compose_args(stack_path, "stop", service_name)
+                    args = await _compose_args_async(stack_path, "stop", service_name)
                 else:
-                    args = _compose_args(stack_path, "restart", service_name)
+                    args = await _compose_args_async(stack_path, "restart", service_name)
                 exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
                 await websocket.send_json({"type": "exit", "code": exit_code})
                 await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"service={service_name} exit_code={exit_code}")
@@ -1616,7 +1364,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                     exit_code = await _stream_docker_command(
                         websocket,
                         stack_path,
-                        _compose_args(stack_path, "pull", *service_names),
+                        await _compose_args_async(stack_path, "pull", *service_names),
                         cols=cols,
                         rows=rows,
                     )
@@ -1631,7 +1379,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                             exit_code = await _stream_docker_command(
                                 websocket,
                                 stack_path,
-                                _compose_args(stack_path, "up", "-d", "--no-deps", "--pull", "never", *service_names),
+                                await _compose_args_async(stack_path, "up", "-d", "--no-deps", "--pull", "never", *service_names),
                                 cols=cols,
                                 rows=rows,
                             )
@@ -1659,7 +1407,7 @@ async def execute_stack_command(websocket: WebSocket, name: str):
                     await websocket.send_json({"type": "exit", "code": 0})
                     await _write_audit(f"stack.{action}", "success", stack=name, client=client, detail=f"services={','.join(service_names)} job_id={job_id}")
             else:
-                args = _compose_args(stack_path, *ACTION_ARGS[action])
+                args = await _compose_args_async(stack_path, *ACTION_ARGS[action])
                 exit_code = await _stream_docker_command(websocket, stack_path, args, cols=cols, rows=rows)
                 await websocket.send_json({"type": "exit", "code": exit_code})
                 await _write_audit(f"stack.{action}", "success" if exit_code == 0 else "error", stack=name, client=client, detail=f"exit_code={exit_code}")
@@ -1669,8 +1417,6 @@ async def execute_stack_command(websocket: WebSocket, name: str):
         # by _stream_docker_command before the exception propagated.
         pass
     except Exception as exc:
-        if action == "selfUpdate" and _active_job_stacks.get(name):
-            _active_job_stacks.pop(name, None)
         import traceback
         traceback.print_exc()
         await _write_audit(f"stack.{action or 'execute'}", "error", stack=name, client=client, detail=str(exc))

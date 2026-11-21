@@ -18,9 +18,9 @@ class SharedMetricsBroadcasterTests(unittest.IsolatedAsyncioTestCase):
         settings = SimpleNamespace(METRICS_STREAM_INTERVAL=0.05, DOCKER_POLL_INTERVAL=10)
         with patch("app.services.snapshot.get_settings", return_value=settings):
             first = manager.add_metrics_subscriber()
-            task = manager._metrics_broadcast_task
+            task = manager._metrics_broadcaster.task
             second = manager.add_metrics_subscriber()
-            self.assertIs(task, manager._metrics_broadcast_task)
+            self.assertIs(task, manager._metrics_broadcaster.task)
             await asyncio.wait_for(first.get(), timeout=1.0)
             await asyncio.wait_for(second.get(), timeout=1.0)
             await asyncio.sleep(0.12)
@@ -30,8 +30,8 @@ class SharedMetricsBroadcasterTests(unittest.IsolatedAsyncioTestCase):
             calls_at_disconnect = manager.refresh_metrics_now.await_count
             await asyncio.sleep(0.1)
             self.assertEqual(manager.refresh_metrics_now.await_count, calls_at_disconnect)
-            manager._metrics_idle_deadline = 0
-            manager._metrics_wake_event.set()
+            manager._metrics_broadcaster._idle_deadline = 0
+            manager._metrics_broadcaster._wake_event.set()
             await asyncio.wait_for(task, timeout=1.0)
 
     def test_structure_lease_uses_fastest_route_and_idles_to_background(self):

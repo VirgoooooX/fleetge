@@ -1,5 +1,5 @@
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, onScopeDispose } from "vue";
 import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
 import { createRequestId } from "@/utils/requestId";
@@ -59,6 +59,7 @@ export interface HostSummary {
 
 export interface HostSubscriptionSummary {
   configured: boolean;
+  alerts_enabled?: boolean;
   provider?: string | null;
   plan_name?: string | null;
   payment_amount?: number | null;
@@ -289,6 +290,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const observedUpdateRunIds = ref<Record<string, number>>({});
   const trafficRequests = new Map<string, Promise<HostTrafficSummary | null>>();
   const updateRunRequests = new Map<string, Promise<void>>();
+  const updateRunRevisions = new Map<string, number>();
   const pendingUpdateSubmissions = new Map<string, string>();
 
   const updateCountsByHost = computed(() => {
@@ -301,6 +303,7 @@ export const useDashboardStore = defineStore("dashboard", () => {
     return counts;
   });
 
+  const hostsById = computed(() => new Map(hosts.value.map((host) => [host.host_id, host])));
   const onlineCount = computed(() => hosts.value.filter((h) => h.status === "online").length);
   const runningContainers = computed(() =>
     hosts.value.reduce((s, h) => s + h.container_running, 0)
@@ -308,7 +311,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
   const totalContainers = computed(() =>
     hosts.value.reduce((s, h) => s + h.container_total, 0)
   );
-  const totalStacks = computed(() => 0); // Will be populated via detail
   const updateCount = computed(() =>
     hosts.value.reduce((s, h) => s + getHostUpdateCount(h.host_id), 0)
   );
@@ -316,8 +318,12 @@ export const useDashboardStore = defineStore("dashboard", () => {
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
   let updateChecksPollTimer: ReturnType<typeof setInterval> | null = null;
   let updateRunPollTimer: ReturnType<typeof setInterval> | null = null;
-  let metricsStreamController: AbortController | null = null;
-  let activityStreamController: AbortController | null = null;
+  let updateCheckRevision = 0;
+  let updateRunPollingEnabled = true;
+  let disposed = false;
+  let dashboardStreamController: AbortController | null = null;
+  let dashboardReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let dashboardReconnectAttempt = 0;
   let visibilityHandler: (() => void) | null = null;
   let pollingOptions: { metrics: boolean; structureInterval?: number } = { metrics: true, structureInterval: 30 };
 
@@ -327,6 +333,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   function upsertUpdateRunBatch(batch: UpdateRunBatch) {
+    if (disposed) return;
+    updateRunRevisions.set(batch.host_id, (updateRunRevisions.get(batch.host_id) || 0) + 1);
     batch.items.filter((item) => item.status === "queued" || item.status === "running")
       .forEach((item) => { observedUpdateRunIds.value[`${item.host_id}/${item.stack_name}`] = item.id; });
     const existing = updateRunsByHost.value[batch.host_id] || { active: [], recent: [] };
@@ -346,9 +354,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
   function updateRunForStack(hostId: string, stackName: string): UpdateRunItem | null {
     const state = updateRunsByHost.value[hostId];
     if (!state) return null;
-    return state.active.find((item) => item.stack_name === stackName)
-      || state.recent.filter((item) => item.stack_name === stackName).sort((a, b) => b.id - a.id)[0]
-      || null;
+    const active = state.active.find((item) => item.stack_name === stackName);
+    if (active) return active;
+    let latest: UpdateRunItem | null = null;
+    for (const run of state.recent) {
+      if (run.stack_name === stackName && (!latest || run.id > latest.id)) latest = run;
+    }
+    return latest;
   }
 
   function updateRunBatchForRequest(hostId: string, requestId: string): UpdateRunBatch | null {
@@ -361,35 +373,38 @@ export const useDashboardStore = defineStore("dashboard", () => {
     return { host_id: hostId, request_id: requestId, mode: items[0].source, items, finished: counts.queued === 0 && counts.running === 0, counts };
   }
 
+  function stopUpdateRunPolling() {
+    if (updateRunPollTimer !== null) clearInterval(updateRunPollTimer);
+    updateRunPollTimer = null;
+  }
+
   function syncUpdateRunPolling() {
-    const activeHosts = Object.entries(updateRunsByHost.value)
-      .filter(([, state]) => state.active.length > 0)
-      .map(([hostId]) => hostId);
-    if (activeHosts.length === 0) {
-      if (updateRunPollTimer) clearInterval(updateRunPollTimer);
-      updateRunPollTimer = null;
+    if (!updateRunPollingEnabled || !Object.values(updateRunsByHost.value).some((state) => state.active.length)) {
+      stopUpdateRunPolling();
       return;
     }
-    if (updateRunPollTimer) return;
+    if (updateRunPollTimer !== null) return;
     updateRunPollTimer = setInterval(() => {
       if (document.hidden) return;
-      Object.entries(updateRunsByHost.value)
-        .filter(([, state]) => state.active.length > 0)
-        .forEach(([hostId]) => { void fetchUpdateRuns(hostId).catch(() => undefined); });
+      for (const [hostId, state] of Object.entries(updateRunsByHost.value)) {
+        if (state.active.length) void fetchUpdateRuns(hostId).catch(() => undefined);
+      }
     }, 2000);
   }
 
   async function fetchUpdateRuns(hostId: string) {
     const existing = updateRunRequests.get(hostId);
     if (existing) return existing;
-    const request = apiClient.get(`/api/hosts/${encodeURIComponent(hostId)}/update-runs`)
-      .then((response) => {
-        (response.data as HostUpdateRuns).active.forEach((item) => {
+    const revision = updateRunRevisions.get(hostId);
+    const request = apiClient.get<HostUpdateRuns>(`/api/hosts/${encodeURIComponent(hostId)}/update-runs`)
+      .then(({ data }) => {
+        if (disposed || revision !== updateRunRevisions.get(hostId)) return;
+        data.active.forEach((item) => {
           observedUpdateRunIds.value[`${item.host_id}/${item.stack_name}`] = item.id;
         });
         updateRunsByHost.value = {
           ...updateRunsByHost.value,
-          [hostId]: response.data as HostUpdateRuns,
+          [hostId]: data,
         };
         syncUpdateRunPolling();
       })
@@ -400,8 +415,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
 
   async function fetchUpdateRunBatch(hostId: string, requestId: string): Promise<UpdateRunBatch | null> {
     try {
-      const response = await apiClient.get(`/api/hosts/${encodeURIComponent(hostId)}/update-runs/${encodeURIComponent(requestId)}`);
-      const batch = response.data as UpdateRunBatch;
+      const response = await apiClient.get<UpdateRunBatch>(`/api/hosts/${encodeURIComponent(hostId)}/update-runs/${encodeURIComponent(requestId)}`);
+      const batch = response.data;
       upsertUpdateRunBatch(batch);
       return batch;
     } catch (error: any) {
@@ -419,8 +434,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
     try {
       let batch: UpdateRunBatch;
       try {
-        const response = await apiClient.post(url, { request_id: requestId, mode, stack_names: normalizedNames });
-        batch = response.data as UpdateRunBatch;
+        const response = await apiClient.post<UpdateRunBatch>(url, { request_id: requestId, mode, stack_names: normalizedNames });
+        batch = response.data;
       } catch (error) {
         const recovered = await fetchUpdateRunBatch(hostId, requestId).catch(() => null);
         if (!recovered) throw error;
@@ -435,8 +450,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
   }
 
   async function stopPendingUpdateRuns(hostId: string, requestId: string): Promise<UpdateRunBatch> {
-    const response = await apiClient.post(`/api/hosts/${encodeURIComponent(hostId)}/update-runs/${encodeURIComponent(requestId)}/stop-pending`);
-    const batch = response.data as UpdateRunBatch;
+    const response = await apiClient.post<UpdateRunBatch>(`/api/hosts/${encodeURIComponent(hostId)}/update-runs/${encodeURIComponent(requestId)}/stop-pending`);
+    const batch = response.data;
     upsertUpdateRunBatch(batch);
     return batch;
   }
@@ -445,12 +460,11 @@ export const useDashboardStore = defineStore("dashboard", () => {
     if (updateChecksLoaded.value) {
       return updateCountsByHost.value[hostId] || 0;
     }
-    const host = hosts.value.find((h) => h.host_id === hostId);
-    return host?.update_count || 0;
+    return hostsById.value.get(hostId)?.update_count || 0;
   }
 
   function applyHosts(nextHosts: HostSummary[]) {
-    const previous = new Map(hosts.value.map((host) => [host.host_id, host]));
+    const previous = hostsById.value;
     hosts.value = (nextHosts || []).map((host) => {
       const old = previous.get(host.host_id);
       const nextKey = host.metrics
@@ -596,98 +610,90 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
-  function startMetricsStream() {
-    if (metricsStreamController || document.hidden) return;
-
+  function startDashboardStream() {
+    if (dashboardStreamController || dashboardReconnectTimer !== null || document.hidden) return;
+    const { metrics, structureInterval } = pollingOptions;
+    if (!metrics && !structureInterval) return;
     const controller = new AbortController();
-    metricsStreamController = controller;
+    dashboardStreamController = controller;
+    const kind = metrics ? "metrics" : "activity";
+    const query = structureInterval ? `?structure_interval=${structureInterval}` : "";
 
     void streamSse({
-      url: `/api/hosts/metrics/stream${pollingOptions.structureInterval ? `?structure_interval=${pollingOptions.structureInterval}` : ""}`,
+      url: `/api/hosts/${kind}/stream${query}`,
       signal: controller.signal,
-      onEvent: (ev) => {
-        if (ev.event !== "hosts") return;
-        const nextHosts = ev.data?.hosts;
-        if (Array.isArray(nextHosts)) {
-          applyHosts(nextHosts);
+      onEvent: (event) => {
+        if (dashboardStreamController !== controller) return;
+        dashboardReconnectAttempt = 0;
+        if (metrics && event.event === "hosts" && Array.isArray(event.data?.hosts)) {
+          applyHosts(event.data.hosts);
           error.value = "";
         }
       },
-    })
-      .catch((e: any) => {
-        if (controller.signal.aborted) return;
-        console.warn("Metrics stream failed:", e);
-        fetchHosts();
-      })
-      .finally(() => {
-        if (metricsStreamController === controller) {
-          metricsStreamController = null;
-        }
-      });
-  }
-
-  function stopMetricsStream() {
-    if (metricsStreamController) {
-      metricsStreamController.abort();
-      metricsStreamController = null;
-    }
-  }
-
-  function startActivityStream() {
-    if (activityStreamController || document.hidden || !pollingOptions.structureInterval) return;
-    const controller = new AbortController();
-    activityStreamController = controller;
-    void streamSse({
-      url: `/api/hosts/activity/stream?structure_interval=${pollingOptions.structureInterval}`,
-      signal: controller.signal,
-      onEvent: () => undefined,
-    }).catch((e: any) => {
-      if (!controller.signal.aborted) console.warn("Activity stream failed:", e);
+    }).catch((reason) => {
+      if (dashboardStreamController !== controller) return;
+      console.warn(`${kind} stream failed:`, reason);
+      if (metrics) void fetchHosts();
     }).finally(() => {
-      if (activityStreamController === controller) activityStreamController = null;
+      if (dashboardStreamController !== controller) return;
+      dashboardStreamController = null;
+      if (document.hidden) return;
+      const delay = Math.min(30000, 1000 * 2 ** dashboardReconnectAttempt);
+      dashboardReconnectAttempt = Math.min(5, dashboardReconnectAttempt + 1);
+      dashboardReconnectTimer = setTimeout(() => {
+        dashboardReconnectTimer = null;
+        startDashboardStream();
+      }, delay);
     });
   }
 
-  function stopActivityStream() {
-    activityStreamController?.abort();
-    activityStreamController = null;
+  function stopDashboardStream() {
+    dashboardStreamController?.abort();
+    dashboardStreamController = null;
+    if (dashboardReconnectTimer !== null) clearTimeout(dashboardReconnectTimer);
+    dashboardReconnectTimer = null;
+    dashboardReconnectAttempt = 0;
   }
 
   async function fetchUpdateChecks(includeFailures = false) {
     if (updateLoading.value) return updateResults.value;
+    const revision = ++updateCheckRevision;
     updateLoading.value = true;
     try {
-      const res = await apiClient.get("/api/update-checks", {
+      const res = await apiClient.get<UpdateResult[]>("/api/update-checks", {
         params: includeFailures ? { include_failures: true } : undefined,
       });
-      applyUpdateResults(res.data || []);
-      updateCheckRunning.value = res.headers["x-update-check-running"] === "1";
+      if (revision === updateCheckRevision && !disposed) {
+        applyUpdateResults(res.data || []);
+        updateCheckRunning.value = res.headers["x-update-check-running"] === "1";
+      }
       return updateResults.value;
     } catch {
       return updateResults.value;
     } finally {
-      updateLoading.value = false;
+      if (revision === updateCheckRevision) updateLoading.value = false;
     }
   }
 
   async function runUpdateCheck(includeFailures = false): Promise<UpdateCheckRunState> {
+    const revision = ++updateCheckRevision;
     updateLoading.value = true;
     try {
-      const res = await apiClient.post(
+      const res = await apiClient.post<{ started: boolean; results: UpdateResult[] | null }>(
         "/api/update-checks/run",
         undefined,
         {
           params: includeFailures ? { include_failures: true } : undefined,
         },
       );
-      applyUpdateResults(res.data.results || []);
-      updateCheckRunning.value = !res.data.started;
-      return {
-        started: Boolean(res.data.started),
-        results: updateResults.value,
-      };
+      const results = res.data.results || [];
+      if (revision === updateCheckRevision && !disposed) {
+        applyUpdateResults(results);
+        updateCheckRunning.value = !res.data.started;
+      }
+      return { started: Boolean(res.data.started), results };
     } finally {
-      updateLoading.value = false;
+      if (revision === updateCheckRevision) updateLoading.value = false;
     }
   }
 
@@ -702,6 +708,8 @@ export const useDashboardStore = defineStore("dashboard", () => {
 
   function startPolling(options: { metrics?: boolean; structureInterval?: number } = {}) {
     stopPolling();
+    updateRunPollingEnabled = true;
+    syncUpdateRunPolling();
     pollingOptions = {
       metrics: options.metrics !== false,
       structureInterval: options.structureInterval,
@@ -722,12 +730,10 @@ export const useDashboardStore = defineStore("dashboard", () => {
 
     visibilityHandler = () => {
       if (document.hidden) {
-        stopMetricsStream();
-        stopActivityStream();
+        stopDashboardStream();
       } else {
         fetchHosts();
-        if (pollingOptions.metrics) startMetricsStream();
-        else startActivityStream();
+        startDashboardStream();
       }
     };
     document.addEventListener("visibilitychange", visibilityHandler);
@@ -736,13 +742,13 @@ export const useDashboardStore = defineStore("dashboard", () => {
     // The SSE connection triggers the backend to switch from 1h → 10s structure polling.
     fetchHosts();
     fetchUpdateChecks();
-    if (pollingOptions.metrics) startMetricsStream();
-    else startActivityStream();
+    startDashboardStream();
   }
 
   function stopPolling() {
-    stopMetricsStream();
-    stopActivityStream();
+    updateRunPollingEnabled = false;
+    stopUpdateRunPolling();
+    stopDashboardStream();
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
@@ -757,8 +763,14 @@ export const useDashboardStore = defineStore("dashboard", () => {
     }
   }
 
+  onScopeDispose(() => {
+    disposed = true;
+    stopPolling();
+  });
+
   return {
     hosts,
+    hostsById,
     updateResults,
     updateChecksLoaded,
     loading,
@@ -769,7 +781,6 @@ export const useDashboardStore = defineStore("dashboard", () => {
     onlineCount,
     runningContainers,
     totalContainers,
-    totalStacks,
     updateCount,
     updateCountsByHost,
     applyUpdateResults,

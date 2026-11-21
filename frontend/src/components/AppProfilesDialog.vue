@@ -13,8 +13,8 @@
         </el-table-column>
         <el-table-column :label="t('settings.appProfiles.col.icon')" width="80" align="center">
           <template #default="{ row }">
-            <el-image v-if="profileIcon(row)" :src="iconUrl(profileIcon(row))" class="profile-icon" fit="contain">
-              <template #error><el-icon><Picture /></el-icon></template>
+            <el-image v-if="profileIcon(row as AppProfileEntry)" :src="iconUrl(profileIcon(row as AppProfileEntry))" class="profile-icon" fit="contain">
+              <template #error><el-icon><ImageIcon /></el-icon></template>
             </el-image>
             <span v-else>-</span>
           </template>
@@ -22,8 +22,8 @@
         <el-table-column :label="t('settings.appProfiles.col.actions')" width="98" align="center">
           <template #default="{ row, $index }">
             <div class="row-actions">
-              <el-button size="small" type="info" plain :icon="Edit" @click="editProfile(row, $index)" />
-              <el-button size="small" type="danger" plain :icon="Delete" @click="removeProfile($index)" />
+              <el-button size="small" type="info" plain :icon="Pencil" :aria-label="t('settings.appProfiles.editProfile', { pattern: row.stack_pattern })" @click="editProfile(row as AppProfileEntry, $index)" />
+              <el-button size="small" type="danger" plain :icon="Trash2" :aria-label="t('settings.appProfiles.removeProfile', { pattern: row.stack_pattern })" @click="removeProfile($index)" />
             </div>
           </template>
         </el-table-column>
@@ -33,7 +33,7 @@
         <div class="profile-grid">
           <el-form-item :label="t('settings.appProfiles.form.pattern')" prop="stack_pattern">
             <el-input v-model="form.stack_pattern" :placeholder="t('settings.appProfiles.form.patternPlaceholder')" />
-            <div class="form-help" v-html="t('settings.icons.form.patternHelp')"></div>
+            <div class="form-help">{{ t('settings.icons.form.patternHelp') }}</div>
           </el-form-item>
           <el-form-item :label="t('settings.appProfiles.form.title')" prop="title">
             <el-input v-model="form.title" :placeholder="t('settings.appProfiles.form.titlePlaceholder')" />
@@ -46,9 +46,9 @@
           </el-form-item>
           <el-form-item :label="t('settings.appProfiles.form.source')">
             <el-radio-group v-model="form.sourceType" size="small">
-              <el-radio-button label="none">{{ t('apps.chip.all') }} (None)</el-radio-button>
-              <el-radio-button label="url">{{ t('settings.appProfiles.form.remoteUrl') }}</el-radio-button>
-              <el-radio-button label="local">{{ t('settings.appProfiles.form.localFile') }}</el-radio-button>
+              <el-radio-button value="none">{{ t('settings.appProfiles.form.noIcon') }}</el-radio-button>
+              <el-radio-button value="url">{{ t('settings.appProfiles.form.remoteUrl') }}</el-radio-button>
+              <el-radio-button value="local">{{ t('settings.appProfiles.form.localFile') }}</el-radio-button>
             </el-radio-group>
           </el-form-item>
           <el-form-item v-if="form.sourceType === 'url'" :label="t('settings.appProfiles.form.remoteUrl')" prop="icon_url">
@@ -75,18 +75,19 @@
     </div>
     <template #footer>
       <div class="dialog-actions-row">
-        <el-button @click="visible = false">{{ t('compose.cancel') }}</el-button>
-        <el-button type="primary" :loading="store.saving" :disabled="loading" @click="saveProfiles">{{ t('settings.appProfiles.form.saveBtn') }}</el-button>
+        <el-button class="ui-button ui-button--muted" @click="visible = false">{{ t('compose.cancel') }}</el-button>
+        <el-button type="primary" class="ui-button ui-button--primary" :loading="store.savingAppProfiles.has(props.hostId)" :disabled="loading" @click="saveProfiles">{{ t('settings.appProfiles.form.saveBtn') }}</el-button>
       </div>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage, type FormInstance, type FormRules, type UploadFile } from "element-plus";
-import { Delete, Edit, Picture, Upload } from "@element-plus/icons-vue";
+import { Image as ImageIcon, Pencil, Trash2, Upload } from "@lucide/vue";
+import { apiErrorMessage } from "@/api/errors";
 import { useSettingsStore, type AppProfileEntry } from "@/stores/settings";
 
 const props = defineProps<{ hostId: string; hostName: string; stackIcons?: Record<string, string> }>();
@@ -101,15 +102,21 @@ const formRef = ref<FormInstance>();
 const editingIndex = ref<number | null>(null);
 const emptyForm = () => ({ stack_pattern: "", title: "", app_url: "", group: "", sourceType: "none" as "none" | "url" | "local", icon_url: "", icon_file: "" });
 const form = reactive(emptyForm());
-const rules: FormRules = {
+const appUrlPattern = /^https?:\/\/\S+$/i;
+const iconUrlPattern = /^(https?:\/\/\S+|\/(?!\/)\S*)$/i;
+const rules = computed<FormRules>(() => ({
   stack_pattern: [{ required: true, whitespace: true, message: t("settings.icons.required.pattern"), trigger: "blur" }],
-  app_url: [{ validator: (_rule, value, callback) => {
-    callback(value && !/^https?:\/\//.test(value.trim()) ? new Error(t("settings.hosts.form.invalid.url")) : undefined);
-  }, trigger: "blur" }],
-  icon_url: [{ validator: (_rule, value, callback) => {
-    callback(value && !/^(https?:\/\/|\/)/.test(value.trim()) ? new Error(t("settings.hosts.form.invalid.url")) : undefined);
-  }, trigger: "blur" }],
-};
+  app_url: [{
+    validator: (_rule, value) => !value || appUrlPattern.test(value.trim()),
+    message: t("settings.hosts.form.invalid.url"),
+    trigger: "blur",
+  }],
+  icon_url: [{
+    validator: (_rule, value) => !value || iconUrlPattern.test(value.trim()),
+    message: t("settings.hosts.form.invalid.url"),
+    trigger: "blur",
+  }],
+}));
 
 onMounted(async () => {
   loading.value = true;
@@ -120,8 +127,8 @@ onMounted(async () => {
       return { ...row, icon_value: row.icon_value || legacy.icon_url || legacy.icon_file || legacy.icon || null };
     });
     availableFiles.value = res.available_files || [];
-  } catch (error: any) {
-    ElMessage.error(error || t("settings.appProfiles.fetchError"));
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, t("settings.appProfiles.fetchError")));
   } finally {
     loading.value = false;
   }
@@ -183,8 +190,8 @@ async function uploadIcon(uploadFile: UploadFile) {
     }
     form.icon_file = filename;
     ElMessage.success(t("settings.icons.upload.success", { name: filename }));
-  } catch (error: any) {
-    ElMessage.error(error || t("settings.icons.upload.error"));
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, t("settings.icons.upload.error")));
   } finally {
     message.close();
   }
@@ -192,9 +199,15 @@ async function uploadIcon(uploadFile: UploadFile) {
 
 async function addProfile() {
   if (!await formRef.value?.validate().catch(() => false)) return;
+  const appUrl = form.app_url.trim();
+  const iconUrl = form.sourceType === "url" ? form.icon_url.trim() : "";
+  if ((appUrl && !appUrlPattern.test(appUrl)) || (iconUrl && !iconUrlPattern.test(iconUrl))) {
+    ElMessage.error(t("settings.hosts.form.invalid.url"));
+    return;
+  }
   let icon: string | null = null;
   if (form.sourceType === "url") {
-    icon = form.icon_url.trim();
+    icon = iconUrl;
     if (!icon) { ElMessage.error(t("settings.icons.required.url")); return; }
   } else if (form.sourceType === "local") {
     icon = form.icon_file;
@@ -202,7 +215,7 @@ async function addProfile() {
   }
   const entry: AppProfileEntry = {
     stack_pattern: form.stack_pattern.trim(), title: form.title.trim() || null,
-    app_url: form.app_url.trim() || null, group: form.group.trim() || null, icon_value: icon,
+    app_url: appUrl || null, group: form.group.trim() || null, icon_value: icon,
   };
   const duplicate = profiles.value.findIndex((item) => item.stack_pattern === entry.stack_pattern);
   const index = editingIndex.value;
@@ -220,8 +233,8 @@ async function saveProfiles() {
     ElMessage.success(t("settings.appProfiles.saveSuccess", { name: props.hostName }));
     visible.value = false;
     emit("saved");
-  } catch (error: any) {
-    ElMessage.error(error || t("settings.appProfiles.saveError"));
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, t("settings.appProfiles.saveError")));
   }
 }
 </script>

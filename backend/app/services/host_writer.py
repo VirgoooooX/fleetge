@@ -1,8 +1,13 @@
+import asyncio
 import json
-import os
 import logging
-import yaml
+import os
+import shutil
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import Lock
+
+import yaml
 from sqlmodel import Session, select
 
 from app.config import get_settings
@@ -10,6 +15,7 @@ from app.database import engine
 from app.models import HostConfig
 
 logger = logging.getLogger(__name__)
+_write_lock = Lock()
 
 
 def write_hosts_to_yaml() -> None:
@@ -18,11 +24,17 @@ def write_hosts_to_yaml() -> None:
     Encrypted secrets are written as [ENCRYPTED] placeholders.
     A .bak backup is kept before overwriting.
     """
-    settings = get_settings()
-    config_path = Path(settings.HOST_CONFIG_PATH)
+    with _write_lock:
+        _write_hosts(Path(get_settings().HOST_CONFIG_PATH))
 
+
+async def sync_hosts_to_yaml() -> None:
+    await asyncio.to_thread(write_hosts_to_yaml)
+
+
+def _write_hosts(config_path: Path) -> None:
     with Session(engine) as session:
-        hosts = session.exec(select(HostConfig)).all()
+        hosts = session.exec(select(HostConfig).order_by(HostConfig.sort_order, HostConfig.host_id)).all()
 
     hosts_data = []
     for h in hosts:
@@ -78,30 +90,25 @@ def write_hosts_to_yaml() -> None:
 
     output = {"hosts": hosts_data}
 
-    # Backup existing file before overwrite
-    if config_path.exists():
-        bak_path = config_path.with_suffix(".yaml.bak")
-        try:
-            import shutil
-            shutil.copy2(config_path, bak_path)
-        except Exception as exc:
-            logger.warning("Failed to create hosts.yaml backup: %s", exc)
-
-    # Atomic file replacement
-    temp_file = config_path.with_suffix(".tmp")
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
     try:
-        with open(temp_file, "w", encoding="utf-8") as f:
-            yaml.safe_dump(output, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(temp_file, config_path)
-        logger.info("hosts.yaml synced with %d hosts", len(hosts_data))
-    except Exception as exc:
-        logger.error("Failed to write to config path %s: %s", config_path, exc)
-        if os.path.exists(temp_file):
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=config_path.parent,
+            prefix=f".{config_path.name}.", suffix=".tmp", delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            yaml.safe_dump(output, temp_file, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        if config_path.exists():
             try:
-                os.remove(temp_file)
-            except Exception:
-                pass
-        raise
+                shutil.copy2(config_path, config_path.with_suffix(".yaml.bak"))
+            except OSError as exc:
+                logger.warning("Failed to create hosts.yaml backup: %s", exc)
+        os.replace(temp_path, config_path)
+        logger.info("hosts.yaml synced with %d hosts", len(hosts_data))
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)

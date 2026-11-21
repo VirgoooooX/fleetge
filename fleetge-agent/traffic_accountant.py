@@ -104,6 +104,7 @@ class TrafficAccountant:
         self.db_path = self.state_dir / "traffic.sqlite"
         self.interface_spec = (interface_spec or os.environ.get("TRAFFIC_INTERFACES", "auto")).strip()
         self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
         self._initialized = False
         self._persistence_available = True
         self._boot_id = _boot_id()
@@ -126,11 +127,19 @@ class TrafficAccountant:
         self._open_buckets: dict[tuple[int, str], dict[str, Any]] = {}
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=5.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        # Traffic operations serialize access with _lock across the sampler and
+        # request threads. The connection lives until the collector shuts down.
+        if self._connection is None:
+            conn = sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False)
+            try:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+            except Exception:
+                conn.close()
+                raise
+            self._connection = conn
+        return self._connection
 
     def _initialize(self) -> None:
         if self._initialized:
@@ -187,6 +196,9 @@ class TrafficAccountant:
                     }
             self._last_checkpoint = time.monotonic()
         except Exception as exc:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
             self._persistence_available = False
             logger.warning("Traffic persistence unavailable; using memory only: %s", exc)
         self._initialized = True
@@ -285,12 +297,12 @@ class TrafficAccountant:
                     )
                     if completed:
                         completed_keys.append((bucket_start, epoch))
-                for key in completed_keys:
-                    self._open_buckets.pop(key, None)
                 conn.execute(
                     "DELETE FROM traffic_bucket WHERE completed=1 AND bucket_start < ?",
                     (int(now_wall) - RETENTION_SECONDS,),
                 )
+            for key in completed_keys:
+                self._open_buckets.pop(key, None)
             self._last_checkpoint = time.monotonic()
         except Exception as exc:
             logger.warning("Traffic checkpoint failed: %s", exc)
@@ -442,9 +454,14 @@ class TrafficAccountant:
 
     def close(self) -> None:
         with self._lock:
-            if not self._initialized:
+            conn = self._connection
+            if conn is None:
                 return
-            self._persist(time.time(), close_completed=True)
+            try:
+                self._persist(time.time(), close_completed=True)
+            finally:
+                self._connection = None
+                conn.close()
 
 
 def is_public_ip(value: str) -> bool:

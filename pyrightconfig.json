@@ -7,7 +7,6 @@
     "backend",
     "fleetge-agent"
   ],
-  "pythonPath": "C:\\Users\\lonel\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
   "executionEnvironments": [
     {
       "root": "backend",

@@ -1,87 +1,111 @@
-import component from "./AppProfilesDialog.vue?raw";
-import ts from "typescript";
-import { describe, expect, it, vi } from "vitest";
+// @vitest-environment happy-dom
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
+import AppProfilesDialog from "./AppProfilesDialog.vue";
 
-// Run the SFC's real edit handlers with the same lightweight approach as SettingsView.test.ts.
-const script = component.split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
-const parsed = ts.createSourceFile("AppProfilesDialog.ts", script, ts.ScriptTarget.Latest, true);
-const names = new Set(["resetForm", "editProfile", "removeProfile", "addProfile", "saveProfiles"]);
-const selected = parsed.statements.filter((node) =>
-  ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text),
-).map((node) => node.getText(parsed)).join("\n");
-const code = ts.transpile(selected, { target: ts.ScriptTarget.ES2022 });
+const store = vi.hoisted(() => ({
+  fetchAppProfiles: vi.fn(),
+  saveAppProfiles: vi.fn(),
+  savingAppProfiles: new Set<string>(),
+}));
+vi.mock("@/stores/settings", () => ({ useSettingsStore: () => store }));
+
 const entry = (pattern: string, icon: string | null = null) => ({
   stack_pattern: pattern, title: null, app_url: null, group: null, icon_value: icon,
 });
 
-function fixture(initial = [entry("old")]) {
-  const emptyForm = () => ({ stack_pattern: "", title: "", app_url: "", group: "", sourceType: "none", icon_url: "", icon_file: "" });
-  const ctx = {
-    profiles: { value: initial }, editingIndex: { value: null as number | null },
-    form: emptyForm(), emptyForm,
-    formRef: { value: { validate: vi.fn().mockResolvedValue(true), clearValidate: vi.fn() } },
-    props: { hostId: "host-a", hostName: "Host A" }, visible: { value: true },
-    store: { saveAppProfiles: vi.fn().mockResolvedValue(undefined) }, emit: vi.fn(),
-    ElMessage: { error: vi.fn(), success: vi.fn() }, t: (key: string) => key,
-  };
-  const handlers = new Function("ctx", `with (ctx) { ${code}; return { editProfile, removeProfile, addProfile, saveProfiles }; }`)(ctx);
-  return { ctx, handlers };
+let wrapper: VueWrapper;
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  i18n.global.locale.value = "en-US";
+  store.saveAppProfiles.mockResolvedValue(undefined);
+});
+afterEach(() => wrapper?.unmount());
+
+async function render(profiles = [entry("old")]) {
+  store.fetchAppProfiles.mockResolvedValue({ profiles, available_files: [] });
+  wrapper = mount(AppProfilesDialog, {
+    props: { hostId: "host-a", hostName: "Host A", modelValue: true },
+    attachTo: document.body,
+    global: {
+      plugins: [i18n],
+      stubs: { teleport: true },
+    },
+  });
+  await flushPromises();
 }
 
-describe("Shared app profile editor", () => {
+const patternInput = () => wrapper.get('input[placeholder="e.g. rsshub or app* or *db"]');
+const apply = async () => {
+  await wrapper.get(".form-actions button:last-child").trigger("click");
+  await flushPromises();
+};
+const save = async () => {
+  await wrapper.get(".dialog-actions-row button:last-child").trigger("click");
+  await flushPromises();
+};
+const edit = (pattern: string) => wrapper.get(`button[aria-label="Edit ${pattern}"]`).trigger("click");
+
+async function expectSaved(profiles: ReturnType<typeof entry>[]) {
+  await save();
+  expect(store.saveAppProfiles).toHaveBeenLastCalledWith("host-a", profiles);
+}
+
+describe("App profiles editor", () => {
   it("replaces the original entry when its pattern changes", async () => {
-    const { ctx, handlers } = fixture();
-    handlers.editProfile(ctx.profiles.value[0], 0);
-    ctx.form.stack_pattern = "new";
-    await handlers.addProfile();
-    expect(ctx.profiles.value).toEqual([entry("new")]);
-    expect(ctx.editingIndex.value).toBeNull();
+    await render();
+    await edit("old");
+    await patternInput().setValue("new");
+    await apply();
+    expect(patternInput().element).toHaveProperty("value", "");
+    await expectSaved([entry("new")]);
   });
 
-  it.each([0, 1])("merges a renamed entry into an existing pattern (editing index %i)", async (index) => {
-    const { ctx, handlers } = fixture([entry("first"), entry("second")]);
-    handlers.editProfile(ctx.profiles.value[index], index);
-    const target = index === 0 ? "second" : "first";
-    ctx.form.stack_pattern = target;
-    ctx.form.title = "updated";
-    await handlers.addProfile();
-    expect(ctx.profiles.value).toEqual([{ ...entry(target), title: "updated" }]);
+  it.each([["first", "second"], ["second", "first"]])("merges %s into the existing %s entry", async (source, target) => {
+    await render([entry("first"), entry("second")]);
+    await edit(source);
+    await patternInput().setValue(target);
+    await wrapper.get('input[placeholder="e.g. RSSHub"]').setValue("updated");
+    await apply();
+    await save();
+    expect(store.saveAppProfiles).toHaveBeenLastCalledWith("host-a", [{ ...entry(target), title: "updated" }]);
   });
 
-  it("keeps an absolute icon path when editing and saving an entry", async () => {
-    const { ctx, handlers } = fixture([entry("app", "/api/static/icons/app.svg")]);
-    handlers.editProfile(ctx.profiles.value[0], 0);
-    expect(ctx.form.sourceType).toBe("url");
-    await handlers.addProfile();
-    expect(ctx.profiles.value[0]!.icon_value).toBe("/api/static/icons/app.svg");
+  it("preserves an absolute icon path on edit", async () => {
+    const profile = entry("app", "/api/static/icons/app.svg");
+    await render([profile]);
+    await edit("app");
+    await apply();
+    await expectSaved([profile]);
   });
 
-  it("adjusts the edit index when an earlier entry is removed", async () => {
-    const { ctx, handlers } = fixture([entry("first"), entry("second")]);
-    handlers.editProfile(ctx.profiles.value[1], 1);
-    handlers.removeProfile(0);
-    ctx.form.stack_pattern = "renamed";
-    await handlers.addProfile();
-    expect(ctx.profiles.value).toEqual([entry("renamed")]);
+  it("continues editing the selected entry after an earlier row is removed", async () => {
+    await render([entry("first"), entry("second")]);
+    await edit("second");
+    await wrapper.get('button[aria-label="Remove first"]').trigger("click");
+    await patternInput().setValue("renamed");
+    await apply();
+    await expectSaved([entry("renamed")]);
   });
 
   it("leaves entries unchanged when form validation fails", async () => {
-    const { ctx, handlers } = fixture();
-    ctx.formRef.value.validate.mockRejectedValue(new Error("invalid URL"));
-    ctx.form.stack_pattern = "new";
-    await handlers.addProfile();
-    expect(ctx.profiles.value).toEqual([entry("old")]);
+    await render();
+    await patternInput().setValue("new");
+    await wrapper.get('input[placeholder="e.g. http://192.168.1.100:1200"]').setValue("invalid-url");
+    await apply();
+    await expectSaved([entry("old")]);
   });
 
-  it("saves for the selected host and emits the refresh only after success", async () => {
-    const { ctx, handlers } = fixture();
-    ctx.store.saveAppProfiles.mockRejectedValueOnce("save failed");
-    await handlers.saveProfiles();
-    expect(ctx.visible.value).toBe(true);
-    expect(ctx.emit).not.toHaveBeenCalled();
-    await handlers.saveProfiles();
-    expect(ctx.store.saveAppProfiles).toHaveBeenLastCalledWith("host-a", ctx.profiles.value);
-    expect(ctx.visible.value).toBe(false);
-    expect(ctx.emit).toHaveBeenCalledWith("saved");
+  it("emits close and refresh only after persistence succeeds", async () => {
+    await render();
+    store.saveAppProfiles.mockRejectedValueOnce(new Error("save failed"));
+    await save();
+    expect(wrapper.emitted("update:modelValue")).toBeUndefined();
+    expect(wrapper.emitted("saved")).toBeUndefined();
+    await expectSaved([entry("old")]);
+    expect(wrapper.emitted("update:modelValue")).toEqual([[false]]);
+    expect(wrapper.emitted("saved")).toEqual([[]]);
   });
 });

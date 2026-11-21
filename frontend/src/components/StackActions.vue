@@ -6,63 +6,18 @@
     </template>
     <!-- Action Controls Subgroup -->
     <div class="capsule-subgroup">
-      <el-tooltip :content="t('stack.action.start')" placement="top">
+      <el-tooltip v-for="control in lifecycleControls" :key="control.action" :content="t(`stack.action.${control.action}`)" placement="top">
         <button
-          class="rect-btn color-online"
-          :disabled="loading !== null || deleting"
-          :aria-label="t('stack.action.startStack')"
-          @click="confirmAndRun('start', t('stack.action.start'))"
+          type="button"
+          class="rect-btn"
+          :class="control.tone"
+          :disabled="busy || (control.action === 'update' && persistedUpdateActive)"
+          :aria-label="t(`stack.action.${control.action}Stack`)"
+          @click="confirmAndRun(control.action)"
         >
-          <el-icon v-if="loading === 'start'" class="is-loading"><Loading /></el-icon>
-          <el-icon v-else><VideoPlay /></el-icon>
-        </button>
-      </el-tooltip>
-
-      <el-tooltip :content="t('stack.action.stop')" placement="top">
-        <button
-          class="rect-btn color-danger"
-          :disabled="loading !== null || deleting"
-          :aria-label="t('stack.action.stopStack')"
-          @click="confirmAndRun('stop', t('stack.action.stop'))"
-        >
-          <el-icon v-if="loading === 'stop'" class="is-loading"><Loading /></el-icon>
-          <el-icon v-else><VideoPause /></el-icon>
-        </button>
-      </el-tooltip>
-
-      <el-tooltip :content="t('stack.action.down')" placement="top">
-        <button
-          class="rect-btn color-danger"
-          :disabled="loading !== null || deleting"
-          :aria-label="t('stack.action.downStack')"
-          @click="confirmAndRun('down', t('stack.action.down'))"
-        >
-          <el-icon v-if="loading === 'down'" class="is-loading"><Loading /></el-icon>
-          <el-icon v-else><SwitchButton /></el-icon>
-        </button>
-      </el-tooltip>
-
-      <el-tooltip :content="t('stack.action.restart')" placement="top">
-        <button
-          class="rect-btn color-primary"
-          :disabled="loading !== null || deleting"
-          :aria-label="t('stack.action.restartStack')"
-          @click="confirmAndRun('restart', t('stack.action.restart'))"
-        >
-          <el-icon v-if="loading === 'restart'" class="is-loading"><Loading /></el-icon>
-          <el-icon v-else><Refresh /></el-icon>
-        </button>
-      </el-tooltip>
-
-      <el-tooltip :content="t('stack.action.update')" placement="top">
-        <button
-          class="rect-btn color-warning"
-          :disabled="loading !== null || deleting || persistedUpdateActive"
-          :aria-label="t('stack.action.updateStack')"
-          @click="confirmAndRun('update', t('stack.action.update'))"
-        >
-          <el-icon v-if="loading === 'update'" class="is-loading"><Loading /></el-icon>
-          <el-icon v-else><Top /></el-icon>
+          <el-icon :class="{ 'is-loading': loading === control.action }">
+            <component :is="loading === control.action ? LoaderCircle : control.icon" />
+          </el-icon>
         </button>
       </el-tooltip>
     </div>
@@ -72,13 +27,14 @@
     <!-- Delete Control -->
     <el-tooltip v-if="!managementMenu" :content="t('stack.action.delete')" placement="top">
       <button
+        type="button"
         class="rect-btn danger-trash"
-        :disabled="loading !== null || deleting"
+        :disabled="busy"
         :aria-label="t('stack.action.deleteStack')"
         @click="confirmAndDelete"
       >
-        <el-icon v-if="deleting" class="is-loading"><Loading /></el-icon>
-        <el-icon v-else><Delete /></el-icon>
+        <el-icon v-if="deleting" class="is-loading"><LoaderCircle /></el-icon>
+        <el-icon v-else><Trash2 /></el-icon>
       </button>
     </el-tooltip>
 
@@ -89,42 +45,49 @@
       <div class="capsule-subgroup">
         <el-tooltip v-if="appUrl" :content="t('stackGroup.openApp')" placement="top">
           <button
+            type="button"
             class="rect-btn"
-            :disabled="loading !== null || deleting"
+            :disabled="busy"
+            :aria-label="t('stackGroup.openApp')"
             @click="openApp"
           >
-            <el-icon><Link /></el-icon>
+            <el-icon><Link2 /></el-icon>
           </button>
         </el-tooltip>
 
         <el-tooltip v-if="showCompose && !managementMenu" :content="t('stackGroup.editCompose')" placement="top">
           <button
+            type="button"
             class="rect-text-btn"
-            :disabled="loading !== null || deleting || !canEditCompose"
+            :disabled="busy || !canEditCompose"
             @click="emit('compose')"
           >
-            <el-icon><EditPen /></el-icon>
+            <el-icon><Pencil /></el-icon>
             <span>Compose</span>
           </button>
         </el-tooltip>
 
         <el-tooltip v-if="showLogs" :content="t('stackGroup.viewLogs')" placement="top">
           <button
+            type="button"
             class="rect-btn"
-            :disabled="loading !== null || deleting"
+            :disabled="busy"
+            :aria-label="t('stackGroup.viewLogs')"
             @click="emit('logs')"
           >
-            <el-icon><Document /></el-icon>
+            <el-icon><FileText /></el-icon>
           </button>
         </el-tooltip>
 
         <el-tooltip v-if="showDetail" :content="t('workspace.viewDetail')" placement="top">
           <button
+            type="button"
             class="rect-btn"
-            :disabled="loading !== null || deleting"
+            :disabled="busy"
+            :aria-label="t('workspace.viewDetail')"
             @click="emit('detail')"
           >
-            <el-icon><Document /></el-icon>
+            <el-icon><FileText /></el-icon>
           </button>
         </el-tooltip>
 
@@ -133,16 +96,17 @@
           trigger="click"
           placement="bottom-end"
           popper-class="stack-management-menu"
-          :disabled="loading !== null || deleting"
+          :disabled="busy"
           @command="handleManagementCommand"
         >
           <button
+            type="button"
             class="rect-btn"
-            :disabled="loading !== null || deleting"
+            :disabled="busy"
             :aria-label="t('stackGroup.moreActions')"
             :title="t('stackGroup.moreActions')"
           >
-            <el-icon><MoreFilled /></el-icon>
+            <el-icon><MoreHorizontal /></el-icon>
           </button>
           <template #dropdown>
             <el-dropdown-menu>
@@ -151,11 +115,11 @@
                 command="compose"
                 :disabled="!canEditCompose"
               >
-                <el-icon><EditPen /></el-icon>
+                <el-icon><Pencil /></el-icon>
                 {{ t('stackGroup.editCompose') }}
               </el-dropdown-item>
               <el-dropdown-item class="management-delete-item" command="delete" divided>
-                <el-icon><Delete /></el-icon>
+                <el-icon><Trash2 /></el-icon>
                 {{ t('stack.action.delete') }}
               </el-dropdown-item>
             </el-dropdown-menu>
@@ -171,19 +135,20 @@ import { computed, ref, onBeforeUnmount, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
 import {
-  VideoPlay,
-  VideoPause,
-  Refresh,
-  Top,
-  Delete,
-  SwitchButton,
-  EditPen,
-  Document,
-  Loading,
-  Link,
-  MoreFilled
-} from "@element-plus/icons-vue";
+  ArrowUp,
+  FileText,
+  Link2,
+  LoaderCircle,
+  MoreHorizontal,
+  Pause,
+  Pencil,
+  Play,
+  Power,
+  RefreshCw,
+  Trash2,
+} from "@lucide/vue";
 import { streamSse } from "@/api/sse";
+import { useSseOperation } from "@/composables/useSseOperation";
 import { useConfirm, STACK_TONE_MAP } from "@/composables/useConfirm";
 import { useDashboardStore, type UpdateRunItem } from "@/stores/dashboard";
 
@@ -239,7 +204,17 @@ const emit = defineEmits<{
 }>();
 
 const loading = ref<string | null>(null);
-const deleting = ref(false);
+const deleting = computed(() => loading.value === "delete");
+const confirming = ref(false);
+const busy = computed(() => loading.value !== null || confirming.value);
+const lifecycleControls = [
+  { action: "start", tone: "color-online", icon: Play },
+  { action: "stop", tone: "color-danger", icon: Pause },
+  { action: "down", tone: "color-danger", icon: Power },
+  { action: "restart", tone: "color-primary", icon: RefreshCw },
+  { action: "update", tone: "color-warning", icon: ArrowUp },
+] as const;
+type LifecycleAction = (typeof lifecycleControls)[number]["action"];
 const { t } = useI18n();
 const { confirm } = useConfirm();
 const dashboardStore = useDashboardStore();
@@ -264,196 +239,101 @@ function handleManagementCommand(command: string) {
   }
 }
 
-let sseAbortController: AbortController | null = null;
+const operation = useSseOperation();
+let mounted = true;
+let targetRevision = 0;
+let activeCommand: { hostId: string; stackName: string; action: Exclude<LifecycleAction, "update"> | "delete" } | null = null;
+
+function discardCommand() {
+  operation.discard();
+  if (!activeCommand) return;
+  const { hostId, stackName, action } = activeCommand;
+  activeCommand = null;
+  emit("operation-complete", stackName, {
+    hostId, action, status: "error", message: t("stack.confirm.cancelled"), updatedAt: Date.now(),
+  });
+}
 
 onBeforeUnmount(() => {
-  if (sseAbortController) {
-    sseAbortController.abort();
-    sseAbortController = null;
-  }
+  mounted = false;
+  discardCommand();
+});
+watch(() => [props.hostId, props.stackName], () => {
+  targetRevision++;
+  discardCommand();
+  loading.value = null;
 });
 
-const riskKeys: Record<string, string> = {
-  start: "stack.risk.start",
-  stop: "stack.risk.stop",
-  down: "stack.risk.down",
-  restart: "stack.risk.restart",
-  update: "stack.risk.update",
-};
-
-const actionTimeouts: Record<string, number> = {
-  start: 120000,
-  stop: 120000,
-  down: 120000,
-  restart: 120000,
-  update: 600000,
-};
-
-async function confirmAndRun(action: string, label: string) {
+async function confirmAndRun(action: LifecycleAction | "delete") {
+  if (busy.value || (action === "update" && persistedUpdateActive.value)) return;
+  const stackName = props.stackName;
+  const hostId = props.hostId;
+  const label = t(`stack.action.${action}`);
+  const isDelete = action === "delete";
+  const revision = targetRevision;
+  const stillCurrent = () => mounted && targetRevision === revision && props.hostId === hostId && props.stackName === stackName;
+  confirming.value = true;
   try {
     await confirm(
-      t("stack.confirm.message", {
-        action: label,
-        name: props.stackName,
-        risk: t(riskKeys[action]),
-      }),
-      t("stack.confirm.title", { action: label }),
+      isDelete
+        ? t("stack.delete.message", { name: stackName })
+        : t("stack.confirm.message", { action: label, name: stackName, risk: t(`stack.risk.${action}`) }),
+      isDelete ? t("stack.delete.title") : t("stack.confirm.title", { action: label }),
       {
-        tone: STACK_TONE_MAP[action] || "info",
-        confirmButtonText: t("stack.confirm.ok"),
+        tone: isDelete ? "danger" : STACK_TONE_MAP[action] || "info",
+        confirmButtonText: t(isDelete ? "stack.delete.ok" : "stack.confirm.ok"),
         cancelButtonText: t("stack.confirm.cancel"),
         confirmButtonClass: "pg-confirm-btn",
       }
     );
   } catch {
     return;
+  } finally {
+    confirming.value = false;
   }
-
-  const currentStackName = props.stackName;
-  const currentHostId = props.hostId;
+  if (!stillCurrent() || (action === "update" && persistedUpdateActive.value)) return;
   if (action === "update") {
-    void submitManualUpdate(currentStackName, label);
+    void submitManualUpdate(stackName, label);
     return;
   }
-  const startedAt = Date.now();
-  const controller = new AbortController();
-  sseAbortController = controller;
 
-  const runningState: OperationState = {
-    hostId: currentHostId,
-    action,
-    status: "running",
-    message: t("stack.confirm.running", { action: label }),
-    updatedAt: startedAt,
-    abort: () => {
-      controller.abort();
-    }
-  };
-  emit("operation-start", currentStackName, runningState);
   loading.value = action;
+  activeCommand = { hostId, stackName, action };
+  const result = await operation.run({
+    hostId, stackName, action,
+    cols: props.showDetail ? 55 : 110,
+    rows: props.showDetail ? 15 : 24,
+    timeoutMs: isDelete ? 180000 : 120000,
+    onStart: abort => emit("operation-start", stackName, {
+      hostId, action, status: "running", message: t("stack.confirm.running", { action: label }), updatedAt: Date.now(), abort,
+    }),
+    onChunk: chunk => {
+      if (stillCurrent()) emit("terminal-chunk", stackName, { hostId, action, chunk });
+    },
+  });
+  if (!stillCurrent() || !result) return;
+  activeCommand = null;
+  loading.value = null;
 
-  let completed = false;
-  const timeoutMs = actionTimeouts[action] || 120000;
+  const success = result.kind === "complete" && result.success;
+  const failure = isDelete ? t("stack.delete.failure", { name: stackName }) : t("stack.confirm.failure", { action: label });
+  let message = failure;
+  if (result.kind === "complete") {
+    if (success) message = isDelete ? result.message || t("stack.delete.success", { name: stackName }) : t("stack.confirm.success", { action: label });
+    else message = result.message || failure;
+  } else if (result.kind === "timeout") message = t("stack.confirm.timeout");
+  else if (result.kind === "cancelled") message = t("stack.confirm.cancelled");
+  else if (result.kind === "no-result") message = t("stack.confirm.noResult");
+  else if (result.kind === "request-error" || isDelete) message = `${failure}: ${result.message || t("stack.confirm.unknownError")}`;
+  else message = result.message || failure;
 
-  try {
-    const cols = props.showDetail ? 55 : 110;
-    const rows = props.showDetail ? 15 : 24;
-    const url = `/api/hosts/${currentHostId}/stacks/${encodeURIComponent(currentStackName)}/${action}?cols=${cols}&rows=${rows}`;
-
-    await streamSse({
-      url,
-      method: "POST",
-      timeoutMs,
-      signal: controller.signal,
-      onTimeout: () => {
-        if (completed) return;
-        completed = true;
-        const timeoutState: OperationState = {
-          action,
-          status: "timeout",
-          message: t("stack.confirm.timeout"),
-          updatedAt: Date.now(),
-        };
-        emit("operation-complete", currentStackName, timeoutState);
-        ElMessage.warning(timeoutState.message);
-      },
-      onEvent: (ev) => {
-        if (props.hostId !== currentHostId || props.stackName !== currentStackName) return;
-        if (ev.event === "chunk") {
-          emit("terminal-chunk", currentStackName, { hostId: currentHostId, action, chunk: ev.data?.raw ?? ev.rawData });
-        } else if (ev.event === "line") {
-          emit("terminal-chunk", currentStackName, { hostId: currentHostId, action, chunk: ev.data?.text ?? ev.rawData });
-        } else if (ev.event === "complete") {
-          completed = true;
-
-          const data = ev.data || {};
-          const finalStatus = data.status === "success" ? "success" : "error";
-          const completeState: OperationState = {
-            hostId: currentHostId,
-            action,
-            status: finalStatus,
-            message: finalStatus === "success"
-              ? t("stack.confirm.success", { action: label })
-              : data.message || t("stack.confirm.failure", { action: label }),
-            updatedAt: Date.now(),
-          };
-          emit("operation-complete", currentStackName, completeState);
-          if (finalStatus === "success") {
-            ElMessage.success(completeState.message);
-            emit("refresh");
-          } else {
-            ElMessage.error(completeState.message);
-          }
-        } else if (ev.event === "error") {
-          completed = true;
-
-          const data = ev.data || {};
-          const errorState: OperationState = {
-            action,
-            status: "error",
-            message: data.message || t("stack.confirm.failure", { action: label }),
-            updatedAt: Date.now(),
-          };
-          emit("operation-complete", currentStackName, errorState);
-          ElMessage.error(errorState.message);
-        }
-      },
-    });
-
-    if (!completed) {
-      completed = true;
-      if (controller.signal.aborted) {
-        const cancelState: OperationState = {
-          action,
-          status: "error",
-          message: t("stack.confirm.cancelled"),
-          updatedAt: Date.now(),
-        };
-        emit("operation-complete", currentStackName, cancelState);
-        return;
-      }
-      const errorState: OperationState = {
-        hostId: currentHostId,
-        action,
-        status: "error",
-        message: t("stack.confirm.noResult"),
-        updatedAt: Date.now(),
-      };
-      emit("operation-complete", currentStackName, errorState);
-      ElMessage.warning(errorState.message);
-    }
-  } catch (e: any) {
-    if (completed) return;
-    completed = true;
-
-    if (controller.signal.aborted) {
-      const cancelState: OperationState = {
-        action,
-        status: "error",
-        message: t("stack.confirm.cancelled"),
-        updatedAt: Date.now(),
-      };
-      emit("operation-complete", currentStackName, cancelState);
-      return;
-    }
-
-    const errorDetail = e.message || t("stack.confirm.unknownError");
-    const errorState: OperationState = {
-      action,
-      status: "error",
-      message: t("stack.confirm.failure", { action: label }) + ": " + errorDetail,
-      updatedAt: Date.now(),
-    };
-    emit("operation-complete", currentStackName, errorState);
-    ElMessage.error(errorState.message);
-  } finally {
-    if (loading.value === action) {
-      loading.value = null;
-    }
-    if (sseAbortController === controller) {
-      sseAbortController = null;
-    }
-  }
+  const status = success ? "success" : result.kind === "timeout" ? "timeout" : "error";
+  emit("operation-complete", stackName, { hostId, action, status, message, updatedAt: Date.now() });
+  if (success) {
+    ElMessage.success(message);
+    emit("refresh");
+  } else if (result.kind === "timeout" || result.kind === "no-result") ElMessage.warning(message);
+  else if (result.kind !== "cancelled") ElMessage.error(message);
 }
 
 let updateViewId: number | null = null;
@@ -486,7 +366,7 @@ async function viewUpdateRun(run: UpdateRunItem) {
   updateViewController = controller;
   const hostId = run.host_id;
   const stackName = run.stack_name;
-  const isCurrent = () => !controller.signal.aborted && props.hostId === hostId && props.stackName === stackName;
+  const isCurrent = () => updateViewController === controller && !controller.signal.aborted && props.hostId === hostId && props.stackName === stackName;
   let cursor = 0;
   let completed = false;
   let reportedDisconnect = false;
@@ -496,50 +376,64 @@ async function viewUpdateRun(run: UpdateRunItem) {
     updatedAt: Date.now(),
     abort: () => controller.abort(),
   });
-  while (isCurrent() && !completed) {
-    try {
-      await streamSse({
-        url: `/api/hosts/${encodeURIComponent(hostId)}/stacks/${encodeURIComponent(stackName)}/update-runs/${encodeURIComponent(run.request_id)}/stream?after=${cursor}`,
-        signal: controller.signal,
-        onEvent: (event) => {
-          if (!isCurrent()) return;
-          if (event.event === "chunk") {
-            emit("terminal-chunk", stackName, { hostId, action: "update", chunk: event.data?.raw || "" });
-            cursor = event.data?.cursor ?? cursor;
-          } else if (event.event === "complete") {
-            completed = true;
-            const outcome = event.data?.outcome;
-            const status: OperationState["status"] = outcome === "success" ? "success"
-              : outcome === "partial" ? "partial" : outcome === "uncertain" ? "uncertain" : outcome === "skipped" ? "skipped" : "error";
-            const message = t(outcome === "success" ? "stack.confirm.updateVerified"
-              : outcome === "partial" ? "workspace.updateRunStatus.partial"
-              : outcome === "uncertain" ? "stack.confirm.updateUncertain"
-                : outcome === "skipped" ? "workspace.updateRunStatus.skipped" : "stack.confirm.failure", { action: t("stack.action.update") });
-            if (outcome !== "success" && event.data?.message) {
-              emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${event.data.message}\r\n` });
+  try {
+    while (isCurrent() && !completed) {
+      try {
+        await streamSse({
+          url: `/api/hosts/${encodeURIComponent(hostId)}/stacks/${encodeURIComponent(stackName)}/update-runs/${encodeURIComponent(run.request_id)}/stream?after=${cursor}`,
+          signal: controller.signal,
+          onEvent: (event) => {
+            if (!isCurrent()) return;
+            if (event.event === "chunk") {
+              emit("terminal-chunk", stackName, { hostId, action: "update", chunk: event.data?.raw || "" });
+              cursor = event.data?.cursor ?? cursor;
+            } else if (event.event === "complete") {
+              completed = true;
+              const outcome = event.data?.outcome;
+              const status: OperationState["status"] = outcome === "success" ? "success"
+                : outcome === "partial" ? "partial" : outcome === "uncertain" ? "uncertain" : outcome === "skipped" ? "skipped" : "error";
+              const message = t(outcome === "success" ? "stack.confirm.updateVerified"
+                : outcome === "partial" ? "workspace.updateRunStatus.partial"
+                : outcome === "uncertain" ? "stack.confirm.updateUncertain"
+                  : outcome === "skipped" ? "workspace.updateRunStatus.skipped" : "stack.confirm.failure", { action: t("stack.action.update") });
+              if (outcome !== "success" && event.data?.message) {
+                emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${event.data.message}\r\n` });
+              }
+              emit("operation-complete", stackName, { hostId, action: "update", status, message, updatedAt: Date.now() });
+              if (status === "success" || status === "partial") emit("refresh");
+              if (status === "success") ElMessage.success(message);
+              else if (status === "error") ElMessage.error(message);
+              else ElMessage.warning(message);
+              void dashboardStore.fetchUpdateRuns(hostId).catch(() => undefined);
             }
-            emit("operation-complete", stackName, { hostId, action: "update", status, message, updatedAt: Date.now() });
-            if (status === "success" || status === "partial") emit("refresh");
-            if (status === "success") ElMessage.success(message);
-            else if (status === "error") ElMessage.error(message);
-            else ElMessage.warning(message);
-            void dashboardStore.fetchUpdateRuns(hostId).catch(() => undefined);
-          }
-        },
+          },
+        });
+      } catch { /* A lost viewer does not change the backend run result. */ }
+      if (!isCurrent() || completed) break;
+      if (!reportedDisconnect) {
+        emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${t("stack.confirm.reconnectingUpdate")}\r\n` });
+        reportedDisconnect = true;
+      }
+      await new Promise<void>(resolve => {
+        const retry = setTimeout(finish, 2000);
+        function finish() {
+          clearTimeout(retry);
+          controller.signal.removeEventListener("abort", finish);
+          resolve();
+        }
+        controller.signal.addEventListener("abort", finish, { once: true });
       });
-    } catch { /* A lost viewer does not change the backend run result. */ }
-    if (!isCurrent() || completed) break;
-    if (!reportedDisconnect) {
-      emit("terminal-chunk", stackName, { hostId, action: "update", chunk: `\r\n${t("stack.confirm.reconnectingUpdate")}\r\n` });
-      reportedDisconnect = true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+  } finally {
+    if (updateViewController === controller) updateViewController = null;
   }
 }
 
 async function submitManualUpdate(stackName: string, label: string) {
   loading.value = "update";
   const hostId = props.hostId;
+  const revision = targetRevision;
+  const stillCurrent = () => mounted && targetRevision === revision && props.hostId === hostId && props.stackName === stackName;
   emit("operation-start", stackName, {
     hostId, action: "update", status: "running", message: t("workspace.updateSubmitting"), updatedAt: Date.now(),
   });
@@ -547,140 +441,20 @@ async function submitManualUpdate(stackName: string, label: string) {
     const batch = await dashboardStore.submitUpdateRuns(hostId, "manual", [stackName]);
     const run = batch.items.find((item) => item.stack_name === stackName);
     if (!run) throw new Error(t("workspace.updateRunMissing"));
-    if (props.hostId === hostId && props.stackName === stackName) void viewUpdateRun(run);
+    if (stillCurrent()) void viewUpdateRun(run);
   } catch (error: any) {
-    if (props.hostId !== hostId || props.stackName !== stackName) return;
+    if (!stillCurrent()) return;
     const detail = error?.response?.data?.detail;
     const message = (typeof detail === "string" ? detail : detail?.message) || error?.message || t("stack.confirm.failure", { action: label });
     emit("operation-complete", stackName, { hostId, action: "update", status: "error", message, updatedAt: Date.now() });
     ElMessage.error(message);
   } finally {
-    loading.value = null;
+    if (stillCurrent()) loading.value = null;
   }
 }
 
-async function confirmAndDelete() {
-  try {
-    await confirm(
-      t("stack.delete.message", { name: props.stackName }),
-      t("stack.delete.title"),
-      {
-        tone: "danger",
-        confirmButtonText: t("stack.delete.ok"),
-        cancelButtonText: t("stack.confirm.cancel"),
-        confirmButtonClass: "pg-confirm-btn",
-      }
-    );
-  } catch {
-    return;
-  }
-
-  deleting.value = true;
-  const currentStackName = props.stackName;
-  const action = "delete";
-  const label = t("stack.action.delete");
-  const controller = new AbortController();
-  sseAbortController = controller;
-  let completed = false;
-
-  const runningState: OperationState = {
-    action,
-    status: "running",
-    message: t("stack.confirm.running", { action: label }),
-    updatedAt: Date.now(),
-    abort: () => controller.abort(),
-  };
-  emit("operation-start", currentStackName, runningState);
-
-  try {
-    const cols = props.showDetail ? 55 : 110;
-    const rows = props.showDetail ? 15 : 24;
-    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(currentStackName)}/delete?cols=${cols}&rows=${rows}`;
-
-    await streamSse({
-      url,
-      method: "POST",
-      timeoutMs: 180000,
-      signal: controller.signal,
-      onTimeout: () => {
-        if (completed) return;
-        completed = true;
-        const timeoutState: OperationState = {
-          action,
-          status: "timeout",
-          message: t("stack.confirm.timeout"),
-          updatedAt: Date.now(),
-        };
-        emit("operation-complete", currentStackName, timeoutState);
-        ElMessage.warning(timeoutState.message);
-      },
-      onEvent: (ev) => {
-        if (ev.event === "chunk") {
-          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.raw ?? ev.rawData });
-        } else if (ev.event === "line") {
-          emit("terminal-chunk", currentStackName, { action, chunk: ev.data?.text ?? ev.rawData });
-        } else if (ev.event === "complete") {
-          completed = true;
-          const data = ev.data || {};
-          const finalStatus = data.status === "success" ? "success" : "error";
-          const completeState: OperationState = {
-            action,
-            status: finalStatus,
-            message: data.message || (finalStatus === "success"
-              ? t("stack.delete.success", { name: currentStackName })
-              : t("stack.delete.failure", { name: currentStackName })),
-            updatedAt: Date.now(),
-          };
-          emit("operation-complete", currentStackName, completeState);
-          if (finalStatus === "success") {
-            ElMessage.success(completeState.message);
-            emit("refresh");
-          } else {
-            ElMessage.error(completeState.message);
-          }
-        } else if (ev.event === "error") {
-          completed = true;
-          const data = ev.data || {};
-          const errorState: OperationState = {
-            action,
-            status: "error",
-            message: t("stack.delete.failure", { name: currentStackName }) + ": " + (data.message || t("stack.confirm.unknownError")),
-            updatedAt: Date.now(),
-          };
-          emit("operation-complete", currentStackName, errorState);
-          ElMessage.error(errorState.message);
-        }
-      },
-    });
-
-    if (!completed && !controller.signal.aborted) {
-      const successState: OperationState = {
-        action,
-        status: "success",
-        message: t("stack.delete.success", { name: currentStackName }),
-        updatedAt: Date.now(),
-      };
-      emit("operation-complete", currentStackName, successState);
-      ElMessage.success(successState.message);
-      emit("refresh");
-    }
-  } catch (e: any) {
-    if (completed) return;
-    const detail = e.response?.data?.detail || e.message || t("stack.confirm.unknownError");
-    const errorState: OperationState = {
-      action,
-      status: "error",
-      message: t("stack.delete.failure", { name: currentStackName }) + ": " + detail,
-      updatedAt: Date.now(),
-    };
-    emit("operation-complete", currentStackName, errorState);
-    ElMessage.error(errorState.message);
-  } finally {
-    deleting.value = false;
-    if (sseAbortController === controller) {
-      sseAbortController = null;
-    }
-  }
+function confirmAndDelete() {
+  void confirmAndRun("delete");
 }
 </script>
 
@@ -726,9 +500,12 @@ async function confirmAndDelete() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: all 180ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    color var(--duration-normal, 180ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+    background-color var(--duration-normal, 180ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+    box-shadow var(--duration-normal, 180ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1)),
+    transform var(--duration-normal, 180ms) var(--ease-standard, cubic-bezier(0.4, 0, 0.2, 1));
   color: var(--text-secondary);
-  outline: none;
   position: relative;
 }
 
@@ -854,5 +631,16 @@ async function confirmAndDelete() {
 
 :global(.stack-management-menu .management-delete-item) {
   color: var(--danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rect-dock,
+  .rect-btn,
+  .rect-text-btn {
+    transition: none;
+  }
+
+  .is-loading {
+    animation: none;
+  }
 }
 </style>

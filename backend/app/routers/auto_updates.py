@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from app.auth.handler import get_current_user
+from app.auth.handler import get_current_user, require_admin
 from app.database import engine
 from app.models import AuditLog, AutoUpdateRun
 from app.schemas import UpdateRunBatch, UpdateRunList, UpdateRunSubmitRequest
@@ -152,13 +152,13 @@ async def stop_pending_update_runs(host_id: str, request_id: str):
 
 
 @router.get("/admin/notifyhub")
-async def get_notifyhub():
+async def get_notifyhub(username: str = Depends(require_admin)):
     config = notify_settings()
     return {"url": config.get("NOTIFYHUB_URL", ""), "recipient": config.get("NOTIFYHUB_RECIPIENT", ""), "key_configured": bool(config.get("NOTIFYHUB_KEY"))}
 
 
 @router.put("/admin/notifyhub")
-async def update_notifyhub(payload: NotifyHubRequest, username: str = Depends(get_current_user)):
+async def update_notifyhub(payload: NotifyHubRequest, username: str = Depends(require_admin)):
     try:
         save_notify_settings(payload.url, payload.recipient, payload.api_key)
     except ValueError as exc:

@@ -17,6 +17,7 @@ from typing import Optional
 import httpx
 
 from app.schemas import UpdateCheckResult
+from app.services.network_utils import validate_outbound_http_url
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +224,7 @@ async def _get_bearer_token_from_challenge(
 
     realm, params = challenge
     try:
+        realm = validate_outbound_http_url(realm, allow_private=True, require_https=False)
         tr = await client.get(realm, params=params, timeout=10)
         error = _error_from_response(registry, tr)
         if error is not None:

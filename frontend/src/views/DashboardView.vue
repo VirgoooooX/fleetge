@@ -11,7 +11,7 @@
           <span class="health-readout-icon"><Monitor :size="17" /></span>
           <span>{{ t('dashboard.onlineHosts') }}</span>
         </div>
-        <div class="health-readout-value">
+        <div class="health-readout-value u-mono u-tabular">
           <strong>{{ store.onlineCount }}</strong>
           <span>/ {{ store.hosts.length }}</span>
         </div>
@@ -24,13 +24,13 @@
         <div class="runtime-readout">
           <span class="runtime-icon"><CheckCircle :size="18" /></span>
           <span class="runtime-label">{{ t('dashboard.runningContainers') }}</span>
-          <strong>{{ store.runningContainers }}</strong>
+          <strong class="u-mono u-tabular">{{ store.runningContainers }}</strong>
           <small>{{ t('dashboard.running') }}</small>
         </div>
         <div class="runtime-readout">
           <span class="runtime-icon"><XCircle :size="18" /></span>
           <span class="runtime-label">{{ t('dashboard.stoppedContainers') }}</span>
-          <strong>{{ stoppedContainers }}</strong>
+          <strong class="u-mono u-tabular">{{ stoppedContainers }}</strong>
           <small>{{ t('dashboard.stopped') }}</small>
         </div>
         <button
@@ -40,7 +40,7 @@
         >
           <span class="runtime-icon"><Download :size="18" /></span>
           <span class="runtime-label">{{ t('dashboard.updatableImages') }}</span>
-          <strong>{{ store.updateCount }}</strong>
+          <strong class="u-mono u-tabular">{{ store.updateCount }}</strong>
           <small>{{ t('dashboard.updates') }}</small>
         </button>
       </div>
@@ -74,7 +74,13 @@
       :subscription="activeBillData"
       :traffic="activeQuotaData"
       @edit="editHostSubscription(activeBillHost?.host_id)"
-      @renew="handleRenewSuccess"
+      @renew="openHostRenewal"
+    />
+
+    <HostRenewalDialog
+      v-model="renewalDialogVisible"
+      :host-id="activeBillHost?.host_id || ''"
+      @saved="handleRenewSuccess"
     />
 
     <el-empty
@@ -88,10 +94,10 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { useDashboardStore } from "@/stores/dashboard";
-import { apiClient } from "@/api/client";
+import { useDashboardStore, type HostSummary } from "@/stores/dashboard";
 import HostCard from "@/components/HostCard.vue";
 import SubscriptionBillDialog from "@/components/SubscriptionBillDialog.vue";
+import HostRenewalDialog from "@/components/settings/HostRenewalDialog.vue";
 import { Monitor, CheckCircle, XCircle, Download } from "@lucide/vue";
 
 const router = useRouter();
@@ -137,18 +143,20 @@ onUnmounted(() => {
 });
 
 function goToHost(hostId: string) {
-  router.push(`/hosts/${hostId}`);
+  router.push(`/hosts/${encodeURIComponent(hostId)}`);
 }
 
 const billDialogVisible = ref(false);
-const activeBillHost = ref<any>(null);
-const activeBillData = ref<any>(null);
-const activeQuotaData = ref<any>(null);
+const renewalDialogVisible = ref(false);
+const activeBillHostId = ref<string>();
+const activeBillHost = computed(() => store.hosts.find(({ host_id }) => host_id === activeBillHostId.value));
+const activeBillData = computed(() => activeBillHost.value?.subscription);
+const activeQuotaData = computed(() => activeBillHostId.value
+  ? store.getHostTrafficState(activeBillHostId.value)?.summary?.quota
+  : undefined);
 
-function openHostBill(host: any) {
-  activeBillHost.value = host;
-  activeBillData.value = host.subscription || null;
-  activeQuotaData.value = store.getHostTrafficState(host.host_id)?.summary?.quota || null;
+function openHostBill(host: HostSummary) {
+  activeBillHostId.value = host.host_id;
   billDialogVisible.value = true;
 }
 
@@ -156,6 +164,12 @@ function editHostSubscription(hostId?: string) {
   if (!hostId) return;
   billDialogVisible.value = false;
   router.push({ name: "settings", query: { section: "hosts", action: "edit-host", host: hostId } });
+}
+
+function openHostRenewal() {
+  if (!activeBillHost.value?.host_id) return;
+  billDialogVisible.value = false;
+  renewalDialogVisible.value = true;
 }
 
 function handleRenewSuccess() {

@@ -64,16 +64,27 @@ class MetricsCoordinator:
                 return
             self._stop.clear()
             psutil.cpu_percent(interval=None)
-            self._thread = threading.Thread(target=self._run, daemon=True, name="agent-metrics")
+            self._thread = threading.Thread(target=self._run_collector, daemon=True, name="agent-metrics")
             self._thread.start()
+
+    def _run_collector(self) -> None:
+        try:
+            self._run()
+        finally:
+            self.traffic.close()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        with self._condition:
+            self._condition.notify_all()
         thread = self._thread
-        if thread and thread.is_alive():
-            thread.join(timeout=5.0)
-        self.traffic.close()
+        if thread is None:
+            self.traffic.close()
+            return
+        thread.join(timeout=5.0)
+        if thread.is_alive():
+            logger.warning("Metrics collector is still stopping. It will close traffic storage when it exits.")
 
     def mark_demand(self) -> float:
         requested_at = time.monotonic()

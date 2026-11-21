@@ -1,8 +1,8 @@
 <template>
   <el-dialog
     v-model="visible"
-    title="套餐与账单"
-    width="560px"
+    :title="t('billing.title')"
+    width="min(560px, calc(100vw - 24px))"
     class="ui-dialog subscription-bill-dialog"
     destroy-on-close
     append-to-body
@@ -11,44 +11,44 @@
       <!-- Section 1: 基础资费与到期 -->
       <div class="bill-info-list">
         <div class="bill-row">
-          <span class="bill-label">服务商</span>
-          <span class="bill-value font-medium">{{ subscription.provider || '未填写' }}</span>
+          <span class="bill-label">{{ t('settings.hosts.subscription.provider') }}</span>
+          <span class="bill-value u-medium">{{ subscription.provider || t('billing.unset') }}</span>
         </div>
         <div class="bill-row">
-          <span class="bill-label">套餐</span>
-          <span class="bill-value font-medium">{{ subscription.plan_name || '自定义配置' }}</span>
+          <span class="bill-label">{{ t('settings.hosts.subscription.planName') }}</span>
+          <span class="bill-value u-medium">{{ subscription.plan_name || t('billing.customPlan') }}</span>
         </div>
         <div class="bill-row">
-          <span class="bill-label">付款金额</span>
-          <span class="bill-value price-text font-bold">
-            {{ formatPrice(subscription.payment_amount, subscription.currency, subscription.payment_cycle) }}
+          <span class="bill-label">{{ t('settings.hosts.subscription.amount') }}</span>
+          <span class="bill-value price-text u-bold u-tabular">
+            {{ formatSubscriptionPrice(subscription.payment_amount, subscription.currency, subscription.payment_cycle, { fixedDecimals: true }) || t('billing.unset') }}
           </span>
         </div>
         <div class="bill-row">
-          <span class="bill-label">服务到期</span>
+          <span class="bill-label">{{ t('settings.hosts.subscription.expiryDate') }}</span>
           <div class="bill-value-group">
-            <span class="bill-value font-mono">{{ subscription.service_expiry_date || '-' }}</span>
+            <span class="bill-value u-mono u-tabular">{{ subscription.service_expiry_date || '-' }}</span>
             <span v-if="subscription.service_days_remaining != null" class="expiry-pill" :class="getExpiryTone(subscription.service_days_remaining)">
-              {{ subscription.service_days_remaining > 0 ? `${subscription.service_days_remaining} 天后到期` : '已到期' }}
+              {{ formatExpiry(subscription.service_days_remaining) }}
             </span>
           </div>
         </div>
         <div class="bill-row">
-          <span class="bill-label">自动续费</span>
+          <span class="bill-label">{{ t('billing.autoRenew') }}</span>
           <span class="bill-tag" :class="subscription.auto_renew ? 'is-enabled' : 'is-disabled'">
-            {{ subscription.auto_renew ? '开启' : '关闭' }}
+            {{ t(subscription.auto_renew ? 'billing.enabled' : 'billing.disabled') }}
           </span>
         </div>
       </div>
 
       <!-- Section 2: 流量套餐与配额 -->
       <div v-if="traffic" class="bill-quota-section">
-        <h4 class="quota-title">流量套餐</h4>
+        <h4 class="quota-title">{{ t('billing.quota') }}</h4>
         <div class="quota-head">
-          <span class="quota-numbers font-mono">
+          <span class="quota-numbers u-mono u-tabular">
             <strong>{{ formatBytes(traffic.usedBytes) }}</strong> / {{ formatBytes(traffic.quotaBytes) }}
           </span>
-          <span class="quota-pct font-mono font-bold">{{ traffic.usagePercent }}%</span>
+          <span class="quota-pct u-mono u-bold u-tabular">{{ traffic.usagePercent }}%</span>
         </div>
         <div class="quota-track">
           <div
@@ -61,59 +61,47 @@
         </div>
         <div class="quota-foot">
           <span class="quota-meta">{{ getDirectionText(subscription.traffic_direction) }}</span>
-          <span class="quota-meta font-mono">{{ traffic.nextResetText || '每月 1 日重置' }}</span>
+          <span class="quota-meta u-mono u-tabular">{{ formatBillingReset(traffic.nextResetAt, traffic.billingDay, traffic.billingTimezone) }}</span>
         </div>
       </div>
 
       <!-- Section 3: 告警状态 -->
       <div class="bill-alert-row">
         <div class="alert-left">
-          <svg class="alert-bell-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
-            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
-          </svg>
-          <span>到期与流量告警</span>
+          <Bell :size="16" class="alert-bell-icon" aria-hidden="true" />
+          <span>{{ t('billing.alerts') }}</span>
         </div>
-        <span class="bill-tag is-enabled">已启用</span>
+        <span class="bill-tag" :class="alertsActive ? 'is-enabled' : 'is-disabled'">
+          {{ t(alertsActive ? 'billing.enabled' : 'billing.disabled') }}
+        </span>
       </div>
     </div>
 
     <template #footer>
       <div class="bill-modal-footer">
-        <el-button @click="handleEdit" class="ui-button">编辑套餐</el-button>
-        <el-button type="primary" @click="handleRenew" class="ui-button ui-button--primary">标记已续费</el-button>
+        <el-button @click="handleEdit" class="ui-button">{{ t('billing.edit') }}</el-button>
+        <el-button type="primary" @click="handleRenew" class="ui-button ui-button--primary">{{ t('billing.renew') }}</el-button>
       </div>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
-import { ElMessage } from "element-plus";
-
+import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { formatBillingReset, formatExpiry, formatSubscriptionPrice } from "@/utils/format";
+import { Bell } from "@lucide/vue";
+import { notifyHubApi } from "@/api/notifyHub";
+import type { HostSubscriptionSummary, TrafficQuotaSummary } from "@/stores/dashboard";
 import { formatBytes } from "@/utils/formatBytes";
+
+const { t } = useI18n();
 
 const props = defineProps<{
   modelValue: boolean;
   hostName: string;
-  subscription?: {
-    provider?: string;
-    plan_name?: string;
-    payment_amount?: number;
-    currency?: string;
-    payment_cycle?: string;
-    service_expiry_date?: string;
-    service_days_remaining?: number;
-    auto_renew?: boolean;
-    quota_enabled?: boolean;
-    traffic_direction?: string;
-  };
-  traffic?: {
-    usedBytes?: number;
-    quotaBytes?: number;
-    usagePercent?: number;
-    nextResetText?: string;
-  };
+  subscription?: HostSubscriptionSummary | null;
+  traffic?: TrafficQuotaSummary | null;
 }>();
 
 const emit = defineEmits<{
@@ -127,21 +115,28 @@ const visible = computed({
   set: (val) => emit("update:modelValue", val),
 });
 
-function formatPrice(amount?: number, currency = "CNY", cycle = "annual"): string {
-  if (amount == null) return "未设置";
-  const sym = currency === "USD" ? "$" : currency === "EUR" ? "€" : "¥";
-  const cycleMap: Record<string, string> = {
-    monthly: "月",
-    quarterly: "季",
-    semiannual: "半年",
-    annual: "年",
-    once: "一次性",
-  };
-  const cycleText = cycleMap[cycle] || "年";
-  return `${sym}${amount.toFixed(2)} / ${cycleText}`;
-}
+const globalAlertsEnabled = ref(true);
+const alertsActive = computed(
+  () => globalAlertsEnabled.value && props.subscription?.alerts_enabled !== false,
+);
 
-function getExpiryTone(days?: number): string {
+watch(
+  () => props.modelValue,
+  async (open, _previous, onCleanup) => {
+    if (!open) return;
+    const controller = new AbortController();
+    onCleanup(() => controller.abort());
+    try {
+      const enabled = await notifyHubApi.getBillingAlerts(controller.signal);
+      if (!controller.signal.aborted) globalAlertsEnabled.value = enabled;
+    } catch {
+      if (!controller.signal.aborted) globalAlertsEnabled.value = true;
+    }
+  },
+  { immediate: true },
+);
+
+function getExpiryTone(days?: number | null): string {
   if (days == null) return "normal";
   if (days <= 0) return "danger";
   if (days <= 7) return "warning";
@@ -155,13 +150,13 @@ function getQuotaColor(pct: number): string {
 }
 
 function getDirectionText(direction?: string): string {
-  const map: Record<string, string> = {
-    both: "双向累计计费",
-    upload: "仅上行计费",
-    download: "仅下行计费",
-    max: "单向峰值计费",
-  };
-  return map[direction || "both"] || "双向累计计费";
+  const labels = {
+    both: "settings.hosts.subscription.direction.both",
+    upload: "settings.hosts.subscription.direction.upload",
+    download: "settings.hosts.subscription.direction.download",
+    max: "settings.hosts.subscription.direction.max",
+  } as const;
+  return t(labels[direction as keyof typeof labels] ?? labels.both);
 }
 
 function handleEdit() {

@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, select
 
-from app.auth.handler import get_current_user
+from app.auth.handler import get_current_user, require_admin
 from app.database import engine
 from app.models import AuditLog, HostConfig, HostSubscription
 from app.schemas import (
@@ -139,7 +139,7 @@ async def confirm_renewal(
 
 
 @router.get("/admin/billing-alerts")
-async def get_billing_alert_settings():
+async def get_billing_alert_settings(username: str = Depends(require_admin)):
     return {"enabled": billing_alerts_enabled()}
 
 
@@ -147,7 +147,7 @@ async def get_billing_alert_settings():
 async def update_billing_alert_settings(
     payload: BillingAlertsUpdateRequest,
     request: Request,
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     set_billing_alerts_enabled(payload.enabled)
     with Session(engine) as session:

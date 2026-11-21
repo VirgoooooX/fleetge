@@ -8,55 +8,28 @@ that is executing the update.
 from __future__ import annotations
 
 import argparse
-import json
 import os
+import signal
 import subprocess
 import threading
-from datetime import datetime, timezone
+from contextlib import suppress
 
 from compose_identity import capture_pulled_images
 
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def job_paths(jobs_dir: str, job_id: str) -> tuple[str, str]:
-    os.makedirs(jobs_dir, exist_ok=True)
-    base = os.path.join(jobs_dir, job_id)
-    return f"{base}.json", f"{base}.log"
+from compose_common import SERVICE_NAME_RE as _SERVICE_NAME_RE, compose_args as build_compose_args
+from job_store import append_log as append_job_log, job_paths, utc_now, write_status
 
 
-def write_status(jobs_dir: str, job_id: str, **updates) -> None:
-    status_path, _ = job_paths(jobs_dir, job_id)
-    current = {}
-    if os.path.isfile(status_path):
-        try:
-            with open(status_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                current.update(loaded)
-        except Exception:
-            pass
-    requested_status = updates.get("status")
-    if current.get("status") in {"success", "error", "uncertain", "skipped"} and requested_status != current.get("status"):
-        updates.pop("status", None)
-        updates.pop("phase", None)
-    elif current.get("status") == "running" and requested_status == "handoff":
-        updates.pop("status", None)
-        updates.pop("phase", None)
-    current.update(updates)
-    current["updated_at"] = utc_now()
-    tmp_path = f"{status_path}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(current, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, status_path)
+def _validate_services(services: list[str]) -> list[str]:
+    for svc in services:
+        if ".." in svc or not _SERVICE_NAME_RE.match(svc):
+            raise ValueError(f"Invalid service name: {svc!r}")
+    return services
 
 
 def append_log(jobs_dir: str, job_id: str, text: str) -> None:
     _, log_path = job_paths(jobs_dir, job_id)
-    with open(log_path, "a", encoding="utf-8", errors="replace") as f:
-        f.write(text)
+    append_job_log(log_path, text)
 
 
 def compose_args(
@@ -66,21 +39,12 @@ def compose_args(
     host_project_dir: str = "",
     compose_file: str = "",
 ) -> list[str]:
-    args = ["compose", command, *extra]
-    if host_project_dir:
-        args[1:1] = ["--project-directory", host_project_dir]
-        if compose_file:
-            args[3:3] = ["--file", compose_file]
-    base_dir = os.path.realpath(os.path.dirname(stack_dir))
-    global_env_path = os.path.join(base_dir, "global.env")
-    local_env_path = os.path.join(stack_dir, ".env")
-    if os.path.isfile(global_env_path):
-        if os.path.isfile(local_env_path):
-            args[1:1] = ["--env-file", local_env_path if host_project_dir else "./.env"]
-        args[1:1] = ["--env-file", global_env_path if host_project_dir else "../global.env"]
-    elif host_project_dir and os.path.isfile(local_env_path):
-        args[1:1] = ["--env-file", local_env_path]
-    return args
+    return build_compose_args(
+        stack_dir, command, *extra,
+        base_dir=os.path.dirname(stack_dir),
+        host_project_dir=host_project_dir,
+        compose_file=compose_file,
+    )
 
 
 def run_command(jobs_dir: str, job_id: str, stack_dir: str, args: list[str]) -> int:
@@ -94,6 +58,7 @@ def run_command(jobs_dir: str, job_id: str, stack_dir: str, args: list[str]) -> 
             text=True,
             encoding="utf-8",
             errors="replace",
+            start_new_session=os.name == "posix",
         )
     except Exception as exc:
         append_log(jobs_dir, job_id, f"Failed to start docker command: {exc}\n")
@@ -102,21 +67,31 @@ def run_command(jobs_dir: str, job_id: str, stack_dir: str, args: list[str]) -> 
     assert proc.stdout is not None
     timed_out = threading.Event()
 
+    def kill() -> None:
+        with suppress(ProcessLookupError):
+            if os.name == "posix":
+                os.killpg(proc.pid, signal.SIGKILL)
+            elif proc.poll() is None:
+                proc.kill()
+
     def kill_on_timeout() -> None:
         timed_out.set()
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        kill()
 
     timer = threading.Timer(600.0, kill_on_timeout)
     timer.start()
     try:
-        for line in proc.stdout:
-            append_log(jobs_dir, job_id, line)
+        with proc.stdout as output:
+            for line in output:
+                append_log(jobs_dir, job_id, line)
         code = proc.wait()
+    except BaseException:
+        kill()
+        proc.wait()
+        raise
     finally:
         timer.cancel()
+        timer.join()
     if timed_out.is_set():
         append_log(jobs_dir, job_id, "\nDocker command timed out after 600 seconds.\n")
         return 124
@@ -137,7 +112,7 @@ def main() -> int:
     stack_dir = os.path.realpath(args.stack_dir)
     host_project_dir = os.path.realpath(args.host_project_dir) if args.host_project_dir else ""
     compose_file = os.path.realpath(args.compose_file) if args.compose_file else ""
-    services = list(args.services)
+    services = _validate_services(list(args.services))
     write_status(
         args.jobs_dir,
         args.job_id,

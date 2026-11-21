@@ -18,10 +18,17 @@ _ROOT_DATA_DIR = str(_ROOT / "data")
 
 
 class Settings:
+    ENV: str = os.environ.get("FLEETGE_ENV", "development").strip().lower()
+
     # ── Auth ──────────────────────────────────────────────────────────
-    JWT_SECRET: str = os.environ.get(
-        "JWT_SECRET", "dev_jwt_secret_69a74d6598edc99803d0fc648d68c383acb94c9c1e68d"
-    )
+    _DEFAULT_DEV_JWT_SECRET = "dev_jwt_secret_69a74d6598edc99803d0fc648d68c383acb94c9c1e68d"
+    _DEFAULT_DEV_CREDENTIALS_KEY = "zijhcV4hiZFML8CgiQGo7VjuFPutHcrch5QhYLCqX7s="
+    _KNOWN_INSECURE_JWT_SECRETS = frozenset({
+        _DEFAULT_DEV_JWT_SECRET,
+        "69a74d6598edc99803d0fc648d68c383acb94c9c1e68d3e2f9e2def6ae54b58a",
+    })
+
+    JWT_SECRET: str = os.environ.get("JWT_SECRET", _DEFAULT_DEV_JWT_SECRET)
     JWT_ALGORITHM: str = "HS256"
 
     @property
@@ -39,9 +46,7 @@ class Settings:
 
     # ── Credential encryption ─────────────────────────────────────────
     # 32-byte URL-safe base64 Fernet key, separate from JWT_SECRET.
-    CREDENTIALS_KEY: str = os.environ.get(
-        "CREDENTIALS_KEY", "zijhcV4hiZFML8CgiQGo7VjuFPutHcrch5QhYLCqX7s="
-    )
+    CREDENTIALS_KEY: str = os.environ.get("CREDENTIALS_KEY", _DEFAULT_DEV_CREDENTIALS_KEY)
 
     # ── Database ──────────────────────────────────────────────────────
     DATABASE_URL: str = os.environ.get(
@@ -129,6 +134,27 @@ class Settings:
                 )
         if not self.ADMIN_PASSWORD:
             errors.append("ADMIN_PASSWORD is required")
+
+        insecure: list[str] = []
+        if self.JWT_SECRET in self._KNOWN_INSECURE_JWT_SECRETS:
+            insecure.append("JWT_SECRET")
+        if self.CREDENTIALS_KEY == self._DEFAULT_DEV_CREDENTIALS_KEY:
+            insecure.append("CREDENTIALS_KEY")
+        if self.ADMIN_PASSWORD == "admin":
+            insecure.append("ADMIN_PASSWORD")
+
+        if insecure:
+            msg = (
+                "Insecure default secret(s) active for: "
+                + ", ".join(insecure)
+                + ". Set unique values in environment / .env before production deployment."
+            )
+            if self.ENV == "production":
+                errors.append(msg)
+            else:
+                import logging
+                logging.getLogger(__name__).warning(msg)
+
         if errors:
             raise ValueError("Configuration errors:\n  - " + "\n  - ".join(errors))
 

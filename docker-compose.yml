@@ -16,14 +16,15 @@ services:
     restart: unless-stopped
     environment:
       # ═══════════════════════════════════════════════════════════
-      # 必填 — 部署前修改
+      # 必填 — 部署前在 .env 中设置唯一密钥（参见 .env.example）
       # ═══════════════════════════════════════════════════════════
+      FLEETGE_ENV: ${FLEETGE_ENV:-production}
       # JWT 签名密钥: python -c "import secrets; print(secrets.token_hex(32))"
-      JWT_SECRET: 69a74d6598edc99803d0fc648d68c383acb94c9c1e68d3e2f9e2def6ae54b58a
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       # 凭证加密密钥: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-      CREDENTIALS_KEY: zijhcV4hiZFML8CgiQGo7VjuFPutHcrch5QhYLCqX7s=
-      # 管理员密码 (明文)
-      ADMIN_PASSWORD: admin
+      CREDENTIALS_KEY: ${CREDENTIALS_KEY:?Set CREDENTIALS_KEY in .env}
+      # 管理员密码 (支持明文或 pbkdf2_sha256$... 哈希)
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
 
       # ═══════════════════════════════════════════════════════════
       # 路径配置（通常不需修改）
@@ -33,7 +34,7 @@ services:
       # ═══════════════════════════════════════════════════════════
       # 轮询间隔（秒），有默认值，可按需调整
       # ═══════════════════════════════════════════════════════════
-      # SSE 指标推送到前端的间隔，默认 1 秒
+      # SSE 指标推送到前端的间隔，默认 2 秒
       METRICS_STREAM_INTERVAL: 2
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       # 有前端连接时 Docker 容器/Stack 结构刷新间隔，默认 10 秒

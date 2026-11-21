@@ -1,79 +1,74 @@
 /* ============================================================
- *  统一确认弹窗样式（多方案重构）
- *  - 基类：.el-message-box.pg-confirm
- *  - 方案 A：优雅悬浮图标 (.pg-confirm-a)
- *  - 方案 B：当前侧栏警示 (.pg-confirm-b - 默认，向后兼容)
- *  - 方案 C：赛博微光玻璃 (.pg-confirm-c)
- *  - 方案 D：简约顶边饰条 (.pg-confirm-d)
+ *  统一确认弹窗样式（左侧风险色侧栏 .pg-confirm）
  *  - 自动附加的色调类：.tone-{info|warning|danger|success|error}
  * ============================================================ */
 
-/* ── 容器基础样式（所有方案共享） ───────────────────────── */
 .el-message-box.pg-confirm {
   position: relative;
   overflow: hidden;
-  border: 1px solid var(--border-strong) !important;
-  background: var(--surface-panel) !important;
-  box-shadow: 0 18px 48px rgba(2, 6, 23, 0.45) !important;
-  padding: 0 !important;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-lg);
+  padding: 0;
 }
 
 /* 隐藏 Element Plus 默认状态图标，避免双图标冲突 */
 .el-message-box.pg-confirm .el-message-box__status {
-  display: none !important;
+  display: none;
+}
+
+.el-message-box.pg-confirm .el-message-box__header {
+  padding: 14px 16px 6px 56px;
+}
+
+.el-message-box.pg-confirm .el-message-box__content {
+  padding: 0 16px 14px 56px;
 }
 
 .el-message-box.pg-confirm .el-message-box__btns {
-  padding: 0 16px 16px !important;
+  padding: 0 16px 16px 56px;
 }
+
 .el-message-box.pg-confirm .el-message-box__btns .el-button {
-  margin-left: 8px !important;
+  margin-left: 8px;
 }
 
 .el-message-box.pg-confirm .el-message-box__title {
-  color: var(--text-primary) !important;
-  font-size: 15px !important;
-  font-weight: 700 !important;
-  padding-left: 0 !important;
+  color: var(--text-primary);
+  font-size: var(--text-lg);
+  font-weight: 700;
+  padding-left: 0;
 }
+
 .el-message-box.pg-confirm .el-message-box__headerbtn {
-  top: 12px !important;
-  right: 12px !important;
+  top: 12px;
+  right: 12px;
 }
+
 .el-message-box.pg-confirm .el-message-box__message {
-  color: var(--text-secondary) !important;
-  font-size: 13px !important;
-  line-height: 1.65 !important;
-  padding: 0 !important;
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+  line-height: 1.65;
+  padding: 0;
   white-space: pre-line;
 }
+
 .el-message-box.pg-confirm .el-message-box__message p {
-  margin: 0 !important;
+  margin: 0;
 }
 
-
-/* ── 方案 B：Legacy - 左侧风险色侧栏（38px） ────────────────── */
-.el-message-box.pg-confirm-b .el-message-box__header {
-  padding: 14px 16px 6px 56px !important;
-}
-.el-message-box.pg-confirm-b .el-message-box__content {
-  padding: 0 16px 14px 56px !important;
-}
-.el-message-box.pg-confirm-b .el-message-box__btns {
-  padding: 0 16px 16px 56px !important; /* 对齐左侧内容 */
-}
-
-.el-message-box.pg-confirm-b::before {
+.el-message-box.pg-confirm::before {
   content: "";
   position: absolute;
   left: 0;
   top: 0;
   bottom: 0;
   width: 38px;
-  background: rgba(96, 165, 250, 0.14);
+  background: var(--accent-blue-soft);
   pointer-events: none;
 }
-.el-message-box.pg-confirm-b::after {
+
+.el-message-box.pg-confirm::after {
   content: "i";
   position: absolute;
   left: 0;
@@ -87,339 +82,90 @@
   pointer-events: none;
 }
 
-.el-message-box.pg-confirm-b.tone-warning {
-  border-color: rgba(251, 191, 36, 0.4) !important;
+.el-message-box.pg-confirm.tone-warning {
+  border-color: var(--warning-border);
 }
-.el-message-box.pg-confirm-b.tone-warning::before {
-  background: rgba(251, 191, 36, 0.16);
+.el-message-box.pg-confirm.tone-warning::before {
+  background: var(--warning-soft);
 }
-.el-message-box.pg-confirm-b.tone-warning::after {
+.el-message-box.pg-confirm.tone-warning::after {
   content: "!";
   color: var(--warning);
 }
 
-.el-message-box.pg-confirm-b.tone-danger {
-  border-color: rgba(248, 113, 113, 0.45) !important;
+.el-message-box.pg-confirm.tone-danger,
+.el-message-box.pg-confirm.tone-error {
+  border-color: var(--danger-border);
 }
-.el-message-box.pg-confirm-b.tone-danger::before {
-  background: rgba(248, 113, 113, 0.18);
+.el-message-box.pg-confirm.tone-danger::before,
+.el-message-box.pg-confirm.tone-error::before {
+  background: var(--danger-soft);
 }
-.el-message-box.pg-confirm-b.tone-danger::after {
+.el-message-box.pg-confirm.tone-danger::after,
+.el-message-box.pg-confirm.tone-error::after {
   content: "×";
   color: var(--danger);
   font-size: 22px;
   line-height: 1;
 }
 
-.el-message-box.pg-confirm-b.tone-success {
-  border-color: rgba(52, 211, 153, 0.4) !important;
+.el-message-box.pg-confirm.tone-success {
+  border-color: var(--success-border);
 }
-.el-message-box.pg-confirm-b.tone-success::before {
-  background: rgba(52, 211, 153, 0.16);
+.el-message-box.pg-confirm.tone-success::before {
+  background: var(--success-soft);
 }
-.el-message-box.pg-confirm-b.tone-success::after {
+.el-message-box.pg-confirm.tone-success::after {
   content: "✓";
   color: var(--success);
   font-size: 20px;
   line-height: 1;
 }
 
-.el-message-box.pg-confirm-b.tone-error {
-  border-color: rgba(248, 113, 113, 0.45) !important;
-}
-.el-message-box.pg-confirm-b.tone-error::before {
-  background: rgba(248, 113, 113, 0.18);
-}
-.el-message-box.pg-confirm-b.tone-error::after {
-  content: "×";
-  color: var(--danger);
-  font-size: 22px;
-  line-height: 1;
-}
-
-
-/* ── 方案 A：优雅悬浮图标（Modern Floating Icon） ───────────── */
-.el-message-box.pg-confirm-a {
-  border: 1px solid var(--border-subtle) !important;
-}
-.el-message-box.pg-confirm-a .el-message-box__header {
-  padding: 22px 24px 8px 24px !important;
-}
-.el-message-box.pg-confirm-a .el-message-box__title {
-  padding-left: 36px !important;
-  font-size: 16px !important;
-  font-weight: 700 !important;
-}
-.el-message-box.pg-confirm-a .el-message-box__content {
-  padding: 0 24px 18px 24px !important;
-}
-.el-message-box.pg-confirm-a .el-message-box__btns {
-  padding: 0 24px 20px 24px !important;
-}
-
-/* 悬浮图标容器 */
-.el-message-box.pg-confirm-a::before {
-  content: "";
-  position: absolute;
-  left: 24px;
-  top: 19px;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  pointer-events: none;
-}
-/* 悬浮图标文字/符号 */
-.el-message-box.pg-confirm-a::after {
-  content: "";
-  position: absolute;
-  left: 24px;
-  top: 19px;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-  font-family: var(--font-body);
-  pointer-events: none;
-}
-
-/* 方案 A 不同色调设置 */
-.el-message-box.pg-confirm-a.tone-info::before {
-  background: rgba(96, 165, 250, 0.15);
-}
-.el-message-box.pg-confirm-a.tone-info::after {
-  content: "i";
-  color: var(--accent-blue);
-  font-family: "Georgia", serif;
-  font-style: italic;
-  font-size: 15px;
-}
-
-.el-message-box.pg-confirm-a.tone-warning::before {
-  background: rgba(251, 191, 36, 0.15);
-}
-.el-message-box.pg-confirm-a.tone-warning::after {
-  content: "!";
-  color: var(--warning);
-}
-
-.el-message-box.pg-confirm-a.tone-danger::before {
-  background: rgba(248, 113, 113, 0.15);
-}
-.el-message-box.pg-confirm-a.tone-danger::after {
-  content: "!";
-  color: var(--danger);
-}
-
-.el-message-box.pg-confirm-a.tone-success::before {
-  background: rgba(52, 211, 153, 0.15);
-}
-.el-message-box.pg-confirm-a.tone-success::after {
-  content: "✓";
-  color: var(--success);
-  font-size: 15px;
-}
-
-.el-message-box.pg-confirm-a.tone-error::before {
-  background: rgba(248, 113, 113, 0.15);
-}
-.el-message-box.pg-confirm-a.tone-error::after {
-  content: "×";
-  color: var(--danger);
-  font-size: 18px;
-}
-
-
-/* ── 方案 C：赛博微光玻璃（Tech Glow Glassmorphism） ───────── */
-.el-message-box.pg-confirm-c {
-  backdrop-filter: blur(18px) !important;
-  background: rgba(11, 18, 32, 0.82) !important;
-  border-radius: 12px !important;
-  border: 1px solid var(--border-strong) !important;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-}
-
-[data-theme="light"] .el-message-box.pg-confirm-c {
-  background: rgba(255, 255, 255, 0.85) !important;
-}
-
-.el-message-box.pg-confirm-c .el-message-box__header {
-  padding: 24px 24px 10px 24px !important;
-}
-.el-message-box.pg-confirm-c .el-message-box__title {
-  padding-left: 20px !important;
-  font-size: 15px !important;
-  font-weight: 700 !important;
-  letter-spacing: 0.5px;
-}
-.el-message-box.pg-confirm-c .el-message-box__content {
-  padding: 0 24px 20px 24px !important;
-}
-.el-message-box.pg-confirm-c .el-message-box__btns {
-  padding: 0 24px 22px 24px !important;
-}
-
-/* 呼吸式闪烁状态点 */
-.el-message-box.pg-confirm-c::before {
-  content: "";
-  position: absolute;
-  left: 24px;
-  top: 29px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  animation: pg-pulse-neon 2s infinite ease-in-out;
-}
-.el-message-box.pg-confirm-c::after {
-  display: none !important; /* 方案 C 不需要额外的符号 */
-}
-
-/* 方案 C 呼吸动画 */
-@keyframes pg-pulse-neon {
-  0% {
-    transform: scale(0.85);
-    opacity: 0.5;
-    box-shadow: 0 0 0 0 currentColor;
-  }
-  50% {
-    transform: scale(1.15);
-    opacity: 1;
-    box-shadow: 0 0 8px 3px currentColor;
-  }
-  100% {
-    transform: scale(0.85);
-    opacity: 0.5;
-    box-shadow: 0 0 0 0 currentColor;
-  }
-}
-
-/* 方案 C 不同色调的呼吸灯和微发光边缘 */
-.el-message-box.pg-confirm-c.tone-info {
-  border-color: rgba(96, 165, 250, 0.45) !important;
-  box-shadow: 0 0 25px rgba(96, 165, 250, 0.2), 0 20px 48px rgba(2, 6, 23, 0.55) !important;
-}
-.el-message-box.pg-confirm-c.tone-info::before {
-  background: var(--accent-blue);
-  color: var(--accent-blue);
-}
-
-.el-message-box.pg-confirm-c.tone-warning {
-  border-color: rgba(251, 191, 36, 0.45) !important;
-  box-shadow: 0 0 25px rgba(251, 191, 36, 0.2), 0 20px 48px rgba(2, 6, 23, 0.55) !important;
-}
-.el-message-box.pg-confirm-c.tone-warning::before {
-  background: var(--warning);
-  color: var(--warning);
-}
-
-.el-message-box.pg-confirm-c.tone-danger {
-  border-color: rgba(248, 113, 113, 0.45) !important;
-  box-shadow: 0 0 25px rgba(248, 113, 113, 0.2), 0 20px 48px rgba(2, 6, 23, 0.55) !important;
-}
-.el-message-box.pg-confirm-c.tone-danger::before {
-  background: var(--danger);
-  color: var(--danger);
-}
-
-.el-message-box.pg-confirm-c.tone-success {
-  border-color: rgba(52, 211, 153, 0.45) !important;
-  box-shadow: 0 0 25px rgba(52, 211, 153, 0.2), 0 20px 48px rgba(2, 6, 23, 0.55) !important;
-}
-.el-message-box.pg-confirm-c.tone-success::before {
-  background: var(--success);
-  color: var(--success);
-}
-
-.el-message-box.pg-confirm-c.tone-error {
-  border-color: rgba(248, 113, 113, 0.45) !important;
-  box-shadow: 0 0 25px rgba(248, 113, 113, 0.2), 0 20px 48px rgba(2, 6, 23, 0.55) !important;
-}
-.el-message-box.pg-confirm-c.tone-error::before {
-  background: var(--danger);
-  color: var(--danger);
-}
-
-
-/* ── 方案 D：简约顶边饰条（Soft Top Accent） ─────────────────── */
-.el-message-box.pg-confirm-d {
-  border-top-width: 4px !important;
-  border-top-style: solid !important;
-  border-radius: 8px !important;
-}
-.el-message-box.pg-confirm-d .el-message-box__header {
-  padding: 22px 24px 8px 24px !important;
-}
-.el-message-box.pg-confirm-d .el-message-box__title {
-  font-size: 15px !important;
-  font-weight: 700 !important;
-}
-.el-message-box.pg-confirm-d .el-message-box__content {
-  padding: 0 24px 18px 24px !important;
-}
-.el-message-box.pg-confirm-d .el-message-box__btns {
-  padding: 0 24px 20px 24px !important;
-}
-.el-message-box.pg-confirm-d::before,
-.el-message-box.pg-confirm-d::after {
-  display: none !important; /* 方案 D 不需要额外的伪元素图形 */
-}
-
-/* 方案 D 顶饰条色调 */
-.el-message-box.pg-confirm-d.tone-info {
-  border-top-color: var(--accent-blue) !important;
-}
-.el-message-box.pg-confirm-d.tone-warning {
-  border-top-color: var(--warning) !important;
-}
-.el-message-box.pg-confirm-d.tone-danger {
-  border-top-color: var(--danger) !important;
-}
-.el-message-box.pg-confirm-d.tone-success {
-  border-top-color: var(--success) !important;
-}
-.el-message-box.pg-confirm-d.tone-error {
-  border-top-color: var(--danger) !important;
-}
-
-
-/* ── 确认按钮配色随 tone 变化（所有方案通用） ───────────────── */
+/* ── 确认按钮配色随 tone 变化 ───────────────────────────────── */
 .el-message-box.pg-confirm.tone-info .el-button--primary,
 .el-message-box.pg-confirm.tone-info .pg-confirm-btn.el-button--primary {
-  background: var(--accent-blue) !important;
-  border-color: var(--accent-blue) !important;
-  color: #0b1220 !important;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #0b1220;
 }
+
 .el-message-box.pg-confirm.tone-warning .el-button--primary,
 .el-message-box.pg-confirm.tone-warning .pg-confirm-btn.el-button--primary {
-  background: var(--warning) !important;
-  border-color: var(--warning) !important;
-  color: #1a1a1a !important;
+  background: var(--warning);
+  border-color: var(--warning);
+  color: #1a1a1a;
 }
+
 .el-message-box.pg-confirm.tone-danger .el-button--primary,
-.el-message-box.pg-confirm.tone-danger .pg-confirm-btn.el-button--primary {
-  background: var(--danger) !important;
-  border-color: var(--danger) !important;
-  color: #1a1a1a !important;
-}
-.el-message-box.pg-confirm.tone-success .el-button--primary,
-.el-message-box.pg-confirm.tone-success .pg-confirm-btn.el-button--primary {
-  background: var(--success) !important;
-  border-color: var(--success) !important;
-  color: #0b1220 !important;
-}
+.el-message-box.pg-confirm.tone-danger .pg-confirm-btn.el-button--primary,
 .el-message-box.pg-confirm.tone-error .el-button--primary,
 .el-message-box.pg-confirm.tone-error .pg-confirm-btn.el-button--primary {
-  background: var(--danger) !important;
-  border-color: var(--danger) !important;
-  color: #1a1a1a !important;
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #1a1a1a;
+}
+
+.el-message-box.pg-confirm.tone-success .el-button--primary,
+.el-message-box.pg-confirm.tone-success .pg-confirm-btn.el-button--primary {
+  background: var(--success);
+  border-color: var(--success);
+  color: #0b1220;
 }
 
 /* 浅色主题下的主按钮文字颜色修正 */
 [data-theme="light"] .el-message-box.pg-confirm.tone-info .el-button--primary,
 [data-theme="light"] .el-message-box.pg-confirm.tone-info .pg-confirm-btn.el-button--primary,
 [data-theme="light"] .el-message-box.pg-confirm.tone-success .el-button--primary,
-[data-theme="light"] .el-message-box.pg-confirm.tone-success .pg-confirm-btn.el-button--primary {
-  color: #ffffff !important;
+[data-theme="light"] .el-message-box.pg-confirm.tone-success .pg-confirm-btn.el-button--primary,
+[data-theme="light"] .el-message-box.pg-confirm.tone-danger .el-button--primary,
+[data-theme="light"] .el-message-box.pg-confirm.tone-danger .pg-confirm-btn.el-button--primary,
+[data-theme="light"] .el-message-box.pg-confirm.tone-error .el-button--primary,
+[data-theme="light"] .el-message-box.pg-confirm.tone-error .pg-confirm-btn.el-button--primary {
+  color: #ffffff;
+}
+
+[data-theme="light"] .el-message-box.pg-confirm.tone-warning .el-button--primary,
+[data-theme="light"] .el-message-box.pg-confirm.tone-warning .pg-confirm-btn.el-button--primary {
+  color: #0f172a;
 }

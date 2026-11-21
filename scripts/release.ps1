@@ -27,20 +27,23 @@ function Assert-CommandSuccess([string] $Description) {
     }
 }
 
+$NpmCmd = if ($env:OS -eq "Windows_NT") { "npm.cmd" } else { "npm" }
+
 node scripts/set-version.mjs $Version
 Assert-CommandSuccess "node scripts/set-version.mjs"
 
-npm --prefix frontend test
+& $NpmCmd --prefix frontend test
 Assert-CommandSuccess "frontend tests"
 
-npm --prefix frontend run build
+& $NpmCmd --prefix frontend run build
 Assert-CommandSuccess "frontend build"
 
-$PythonCmd = if (Get-Command py -ErrorAction SilentlyContinue) { "py" } elseif (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
+$VenvPython = Join-Path (Split-Path -Parent $PSScriptRoot) ".venv\Scripts\python.exe"
+$PythonCmd = if (Test-Path $VenvPython) { $VenvPython } elseif (Get-Command py -ErrorAction SilentlyContinue) { "py" } elseif (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
 
 Push-Location backend
 try {
-    & $PythonCmd -m pytest tests
+    & $PythonCmd -m pytest tests -p no:cacheprovider
     Assert-CommandSuccess "backend tests"
 }
 finally {
@@ -50,7 +53,7 @@ finally {
 if ($WithAgent) {
     Push-Location fleetge-agent
     try {
-        & $PythonCmd -m pytest test_agent.py test_update_stage.py
+        & $PythonCmd -m pytest . -p no:cacheprovider
         Assert-CommandSuccess "agent tests"
     }
     finally {

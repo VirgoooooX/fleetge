@@ -2,9 +2,9 @@ import { ref, onMounted, onUnmounted } from "vue";
 
 /**
  * Reactive media-query composable for mobile detection.
- * @param breakpoint — max-width in px (default 899 — below 900px is "mobile")
+ * @param breakpoint — max-width in px (default 900 — matches @media (max-width: 900px))
  */
-export function useMobile(breakpoint = 899) {
+export function useMobile(breakpoint = 900) {
   const isMobile = ref(false);
 
   let mql: MediaQueryList | null = null;

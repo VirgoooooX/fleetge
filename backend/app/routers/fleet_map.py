@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlmodel import Session, select
 
-from app.auth.handler import get_current_user
+from app.auth.handler import get_current_user, require_admin
 from app.config import get_settings
 from app.database import engine, get_session
 from app.models import AuditLog, HostConfig, Setting
@@ -23,11 +23,11 @@ from app.services.network_identity_service import (
     get_stored_network_identity,
     refresh_host_network_identity,
 )
-from app.services.host_writer import write_hosts_to_yaml
+from app.services.host_writer import sync_hosts_to_yaml
 from app.services.snapshot import snapshot_manager
 
 router = APIRouter(prefix="/api", tags=["fleet-map"], dependencies=[Depends(get_current_user)])
-admin_router = APIRouter(prefix="/api/admin", tags=["fleet-map"], dependencies=[Depends(get_current_user)])
+admin_router = APIRouter(prefix="/api/admin", tags=["fleet-map"], dependencies=[Depends(require_admin)])
 
 
 def _require_admin(username: str) -> None:
@@ -212,7 +212,7 @@ async def update_host_location(
     host.location_confidence = "manual" if host.location_confirmed else None
     session.add(AuditLog(user=username, action="host.location.update", host_id=host_id, result="success", detail=f"source={host.location_source}", ip_address=request.client.host if request.client else None))
     session.commit()
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     return {"host_id": host_id, "location": location_for_host(host)}
 
 
@@ -236,7 +236,7 @@ async def suggest_host_location(
         raise HTTPException(status_code=409, detail="公网 IP 证据未形成共识或地理数据库冲突；请检查探测依据或手动填写")
     session.add(AuditLog(user=username, action="host.location.suggest", host_id=host_id, result="success", detail=f"source={suggestion.get('source') or 'ip-geolocation'}", ip_address=request.client.host if request.client else None))
     session.commit()
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     return {"host_id": host_id, "location": suggestion}
 
 
@@ -282,7 +282,7 @@ async def refresh_network_identity(
             ip_address=request.client.host if request.client else None,
         ))
         session.commit()
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     return evidence
 
 
@@ -320,5 +320,5 @@ async def update_network_identity_override(
         ))
         session.commit()
     evidence = await refresh_host_network_identity(host_id, force=True)
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     return evidence

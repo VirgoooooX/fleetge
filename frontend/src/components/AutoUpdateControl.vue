@@ -16,16 +16,10 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
-import { apiClient } from '@/api/client';
-
-interface AutoUpdateState {
-  enabled: boolean;
-  reason: string;
-  unavailable_reason: string;
-}
+import { fetchStackAutoUpdate, saveStackAutoUpdate, stackRequestError, type AutoUpdateState } from '@/api/stacks';
 
 const props = defineProps<{ hostId: string; stackName: string }>();
 const emit = defineEmits<{ refresh: [] }>();
@@ -35,53 +29,75 @@ const error = ref('');
 const saving = ref(false);
 let timer: ReturnType<typeof setInterval> | undefined;
 let revision = 0;
-let disposed = false;
-let fetching = false;
-const path = computed(() => `/api/hosts/${encodeURIComponent(props.hostId)}/stacks/${encodeURIComponent(props.stackName)}/auto-update`);
+let request: AbortController | null = null;
 const tooltip = computed(() => error.value || state.value?.reason || state.value?.unavailable_reason || t('autoUpdate.label'));
 
+function cancelLoad() {
+  request?.abort();
+  request = null;
+}
+
 async function load() {
-  if (saving.value || fetching) return;
-  fetching = true;
+  if (saving.value || request) return;
   const current = revision;
+  const controller = new AbortController();
+  request = controller;
   try {
-    const { data } = await apiClient.get<AutoUpdateState>(path.value);
-    if (disposed || current !== revision) return;
+    const { data } = await fetchStackAutoUpdate(props.hostId, props.stackName, controller.signal);
+    if (current !== revision || request !== controller) return;
     if (state.value && state.value.enabled !== data.enabled) emit('refresh');
     state.value = data;
     error.value = '';
-  } catch (err: any) {
-    if (!disposed && current === revision) error.value = err.response?.data?.detail || t('autoUpdate.loadError');
+  } catch (err) {
+    if (current === revision && request === controller) {
+      error.value = stackRequestError(err).detail || t('autoUpdate.loadError');
+    }
   } finally {
-    fetching = false;
+    if (request === controller) request = null;
   }
 }
 
 async function setEnabled(enabled: boolean) {
+  if (saving.value || !state.value) return;
+  cancelLoad();
   saving.value = true;
-  revision++;
+  const current = ++revision;
   try {
-    const { data } = await apiClient.put(path.value, { enabled });
-    if (state.value) Object.assign(state.value, data);
+    const { data } = await saveStackAutoUpdate(props.hostId, props.stackName, enabled);
+    if (current !== revision) return;
+    state.value = { ...state.value, ...data };
     error.value = '';
     emit('refresh');
-  } catch (err: any) {
-    error.value = err.response?.data?.detail || t('autoUpdate.saveError');
+  } catch (err) {
+    if (current !== revision) return;
+    error.value = stackRequestError(err).detail || t('autoUpdate.saveError');
     ElMessage.error(error.value);
   } finally {
-    saving.value = false;
-    void load();
+    if (current === revision) {
+      saving.value = false;
+      void load();
+    }
   }
 }
 
-onMounted(() => {
+watch([() => props.hostId, () => props.stackName], () => {
+  revision++;
+  cancelLoad();
+  state.value = null;
+  error.value = '';
+  saving.value = false;
   void load();
-  timer = setInterval(() => { void load(); }, 15000);
+}, { immediate: true });
+
+onMounted(() => {
+  timer = setInterval(() => {
+    if (!document.hidden) void load();
+  }, 15000);
 });
 onUnmounted(() => {
-  disposed = true;
   revision++;
-  if (timer) clearInterval(timer);
+  cancelLoad();
+  if (timer !== undefined) clearInterval(timer);
 });
 </script>
 

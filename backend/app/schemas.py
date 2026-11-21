@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import re
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # ── Auth ────────────────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ class HostSubscriptionSummary(BaseModel):
     service_expiry_date: Optional[str] = None
     service_days_remaining: Optional[int] = None
     auto_renew: bool = False
+    alerts_enabled: bool = True
     quota_enabled: bool = False
     traffic_direction: str = "both"
     traffic_quota_value: Optional[float] = None
@@ -202,8 +203,7 @@ class StackSummary(BaseModel):
     app_url: Optional[str] = None
     group: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class StackComposeDetail(BaseModel):

@@ -1,29 +1,28 @@
 <template>
   <el-dialog
-    v-model="visible"
+    :model-value="needRefresh"
     :title="t('pwa.updateTitle')"
-    width="400px"
+    width="min(400px, calc(100vw - 24px))"
+    class="ui-dialog"
     :close-on-click-modal="false"
     :show-close="false"
     append-to-body
+    @update:model-value="(val: boolean) => { if (!val) dismiss(); }"
   >
     <p>{{ t('pwa.updateMessage') }}</p>
     <template #footer>
-      <el-button @click="dismiss">{{ t('pwa.updateDismiss') }}</el-button>
-      <el-button type="primary" @click="apply">{{ t('pwa.updateApply') }}</el-button>
+      <el-button class="ui-button" @click="dismiss">{{ t('pwa.updateDismiss') }}</el-button>
+      <el-button class="ui-button ui-button--primary" type="primary" @click="apply">{{ t('pwa.updateApply') }}</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { usePwaUpdate } from "@/composables/usePwaUpdate";
 
 const { t } = useI18n();
 const { needRefresh, applyUpdate, dismissUpdate } = usePwaUpdate();
-
-const visible = computed(() => needRefresh.value);
 
 function apply() { applyUpdate(); }
 function dismiss() { dismissUpdate(); }

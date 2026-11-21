@@ -6,7 +6,7 @@
         <p class="ui-dashboard-description">{{ t('apps.description') }}</p>
       </div>
 
-      <div class="apps-operation-deck" role="toolbar" :aria-label="t('apps.title')">
+      <div class="apps-operation-deck" role="group" :aria-label="t('apps.title')">
         <div class="apps-primary-actions">
           <div class="operation-cluster operation-cluster--search">
             <span class="operation-group-icon" aria-hidden="true">
@@ -15,14 +15,15 @@
             <el-input
               v-model="searchQuery"
               :placeholder="t('apps.searchPlaceholder')"
+              :aria-label="t('apps.searchPlaceholder')"
               class="search-input"
               clearable
             />
           </div>
 
-          <el-select v-model="filterHost" class="filter-select" :placeholder="t('apps.filter.allHosts')">
+          <el-select v-model="filterHost" class="filter-select" :aria-label="t('apps.filter.allHosts')" :placeholder="t('apps.filter.allHosts')">
             <template #prefix>
-              <el-icon><Link /></el-icon>
+              <el-icon><Link2 /></el-icon>
             </template>
             <el-option :label="t('apps.filter.allHosts')" value="" />
             <el-option v-for="h in uniqueHosts" :key="h.id" :label="h.name" :value="h.id" />
@@ -30,7 +31,7 @@
 
           <div class="operation-cluster operation-cluster--view">
             <span class="operation-group-icon" aria-hidden="true">
-              <el-icon><Operation /></el-icon>
+              <el-icon><SlidersHorizontal /></el-icon>
             </span>
             <div class="view-options-track">
               <button
@@ -40,7 +41,7 @@
                 :aria-pressed="viewMode === 'group'"
                 @click="viewMode = 'group'"
               >
-                <el-icon><Collection /></el-icon>
+                <el-icon><Layers /></el-icon>
                 <span>{{ t('apps.view.byGroup') }}</span>
               </button>
 
@@ -51,7 +52,7 @@
                 :aria-pressed="viewMode === 'host'"
                 @click="viewMode = 'host'"
               >
-                <el-icon><Link /></el-icon>
+                <el-icon><Link2 /></el-icon>
                 <span>{{ t('apps.view.byHost') }}</span>
               </button>
 
@@ -62,7 +63,7 @@
                 :aria-pressed="viewMode === 'all'"
                 @click="viewMode = 'all'"
               >
-                <el-icon><Grid /></el-icon>
+                <el-icon><LayoutGrid /></el-icon>
                 <span>{{ t('apps.view.all') }}</span>
               </button>
             </div>
@@ -73,19 +74,20 @@
           <span class="operation-group-icon" aria-hidden="true">
             <el-icon><Filter /></el-icon>
           </span>
-          <nav class="apps-status-tabs" :aria-label="t('apps.title')">
+          <div role="group" class="apps-status-tabs" :aria-label="t('apps.title')">
             <button
               v-for="chip in statusChips"
               :key="chip.value"
               type="button"
               class="app-status-tab"
               :class="{ active: filterStatus === chip.value }"
+              :aria-pressed="filterStatus === chip.value"
               @click="filterStatus = chip.value"
             >
               <span>{{ chip.label }}</span>
               <span v-if="chip.count > 0" class="app-status-count">{{ chip.count }}</span>
             </button>
-          </nav>
+          </div>
 
           <div class="checkbox-filters">
             <el-checkbox v-model="filterNoUrl" :label="t('apps.filter.noUrl')" />
@@ -107,7 +109,7 @@
     />
 
     <!-- Categorized Grid Views -->
-    <main class="apps-container">
+    <div class="apps-container">
       <!-- Empty state -->
       <el-empty v-if="filteredApps.length === 0" :description="t('apps.empty')" />
 
@@ -115,42 +117,19 @@
       <template v-else-if="viewMode === 'group'">
         <section v-for="g in appsByGroup" :key="g.name" class="apps-section">
           <h3 class="section-title">
-            <el-icon class="mr-2"><Collection /></el-icon>
+            <el-icon class="mr-2"><Layers /></el-icon>
             {{ g.name }}
             <span class="section-count">{{ g.apps.length }}</span>
           </h3>
           <div class="apps-grid">
-            <div
+            <AppTile
               v-for="app in g.apps"
               :key="`${app.host_id}-${app.stack_name}`"
-              class="app-tile"
-              @click="handleAppClick(app)"
-              @contextmenu="handleContextMenu($event, app)"
-            >
-              <div class="app-icon-wrap">
-                <el-image v-if="app.icon_url" :src="getIconUrl(app.icon_url)" class="app-icon-img" fit="contain">
-                  <template #error>
-                    <el-icon class="app-icon-fallback"><Picture /></el-icon>
-                  </template>
-                </el-image>
-                <el-icon v-else class="app-icon-fallback"><FolderOpened /></el-icon>
-                <span class="app-icon-update-dot" v-if="app.update_status === 'updatable'" :title="t('update.status.updatable')" />
-              </div>
-              <div class="app-info">
-                <span class="app-title">{{ app.title || app.stack_name }}</span>
-                <span class="app-meta">
-                  <span class="meta-pair meta-pair--host">
-                    <span class="host-connection-dot" :class="`host-${hostStatusType(app.host_status)}`" :title="app.host_status" />
-                    <span class="host-text">{{ app.host_name }}</span>
-                  </span>
-                  <span class="meta-spacer" aria-hidden="true" />
-                  <span class="meta-pair">
-                    <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
-                    <span class="count-text">{{ app.running_count }}/{{ app.service_count }}</span>
-                  </span>
-                </span>
-              </div>
-            </div>
+              :app="app"
+              :menu-open="!!menuAnchor && menuApp?.host_id === app.host_id && menuApp?.stack_name === app.stack_name"
+              @launch="handleAppClick(app)"
+              @menu="openAppMenu(app, $event)"
+            />
           </div>
         </section>
       </template>
@@ -167,125 +146,56 @@
               fit="contain"
               aria-hidden="true"
             >
-              <template #error><el-icon><Link /></el-icon></template>
+              <template #error><el-icon><Link2 /></el-icon></template>
             </el-image>
-            <el-icon v-else class="host-section-logo"><Link /></el-icon>
+            <el-icon v-else class="host-section-logo"><Link2 /></el-icon>
             <span class="host-section-name">{{ h.name }}</span>
             <span class="section-count">{{ h.apps.length }}</span>
           </h3>
           <div class="apps-grid">
-            <div
+            <AppTile
               v-for="app in h.apps"
               :key="`${app.host_id}-${app.stack_name}`"
-              class="app-tile"
-              @click="handleAppClick(app)"
-              @contextmenu="handleContextMenu($event, app)"
-            >
-              <div class="app-icon-wrap">
-                <el-image v-if="app.icon_url" :src="getIconUrl(app.icon_url)" class="app-icon-img" fit="contain">
-                  <template #error>
-                    <el-icon class="app-icon-fallback"><Picture /></el-icon>
-                  </template>
-                </el-image>
-                <el-icon v-else class="app-icon-fallback"><FolderOpened /></el-icon>
-                <span class="app-icon-update-dot" v-if="app.update_status === 'updatable'" :title="t('update.status.updatable')" />
-              </div>
-              <div class="app-info">
-                <span class="app-title">{{ app.title || app.stack_name }}</span>
-                <span class="app-meta">
-                  <span class="meta-pair meta-pair--host">
-                    <span class="host-connection-dot" :class="`host-${hostStatusType(app.host_status)}`" :title="app.host_status" />
-                    <span class="host-text">{{ app.host_name }}</span>
-                  </span>
-                  <span class="meta-spacer" aria-hidden="true" />
-                  <span class="meta-pair">
-                    <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
-                    <span class="count-text">{{ app.running_count }}/{{ app.service_count }}</span>
-                  </span>
-                </span>
-              </div>
-            </div>
+              :app="app"
+              :menu-open="!!menuAnchor && menuApp?.host_id === app.host_id && menuApp?.stack_name === app.stack_name"
+              @launch="handleAppClick(app)"
+              @menu="openAppMenu(app, $event)"
+            />
           </div>
         </section>
       </template>
 
       <!-- View: All (No Categories) -->
       <template v-else>
-        <div class="apps-grid mt-4">
-          <div
+        <div class="apps-grid u-mt-4">
+          <AppTile
             v-for="app in filteredApps"
             :key="`${app.host_id}-${app.stack_name}`"
-            class="app-tile"
-            @click="handleAppClick(app)"
-            @contextmenu="handleContextMenu($event, app)"
-          >
-            <div class="app-icon-wrap">
-              <el-image v-if="app.icon_url" :src="getIconUrl(app.icon_url)" class="app-icon-img" fit="contain">
-                <template #error>
-                  <el-icon class="app-icon-fallback"><Picture /></el-icon>
-                </template>
-              </el-image>
-              <el-icon v-else class="app-icon-fallback"><FolderOpened /></el-icon>
-              <span class="app-icon-update-dot" v-if="app.update_status === 'updatable'" :title="t('update.status.updatable')" />
-            </div>
-            <div class="app-info">
-              <span class="app-title">{{ app.title || app.stack_name }}</span>
-              <span class="app-meta">
-                <span class="meta-pair meta-pair--host">
-                  <span class="host-connection-dot" :class="`host-${hostStatusType(app.host_status)}`" :title="app.host_status" />
-                  <span class="host-text">{{ app.host_name }}</span>
-                </span>
-                <span class="meta-spacer" aria-hidden="true" />
-                <span class="meta-pair">
-                  <span class="dot-state" :class="`dot-${stackStatusType(app.status)}`" />
-                  <span class="count-text">{{ app.running_count }}/{{ app.service_count }}</span>
-                </span>
-              </span>
-            </div>
-          </div>
+            :app="app"
+            :menu-open="!!menuAnchor && menuApp?.host_id === app.host_id && menuApp?.stack_name === app.stack_name"
+            @launch="handleAppClick(app)"
+            @menu="openAppMenu(app, $event)"
+          />
         </div>
       </template>
-    </main>
+    </div>
 
-    <!-- Custom Context Menu Overlay -->
-    <Teleport to="body">
-      <div
-        v-if="contextMenuVisible"
-        ref="contextMenuRef"
-        class="custom-context-menu"
-        :style="{ top: contextMenuY + 'px', left: contextMenuX + 'px' }"
-        @click.stop
-      >
-        <div class="context-item" @click="triggerAction('open-dashboard')">
-          <el-icon><Monitor /></el-icon> <span>{{ t('apps.menu.openDashboard') }}</span>
-        </div>
-        <div class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('restart')">
-          <el-icon><Refresh /></el-icon> <span>{{ t('apps.menu.restartApp') }}</span>
-        </div>
-        <div v-if="activeApp && isRunning(activeApp.status)" class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('stop')">
-          <el-icon><VideoPause /></el-icon> <span>{{ t('apps.menu.stopApp') }}</span>
-        </div>
-        <div v-else class="context-item" :class="{ disabled: activeApp?.management_status === 'unmanaged' }" @click="triggerAction('start')">
-          <el-icon><VideoPlay /></el-icon> <span>{{ t('apps.menu.startApp') }}</span>
-        </div>
-        <div class="context-item" :class="{ disabled: !activeApp?.app_url }" @click="triggerAction('copy-url')">
-          <el-icon><DocumentCopy /></el-icon> <span>{{ t('apps.menu.copyUrl') }}</span>
-        </div>
-        <el-divider class="my-1" />
-        <div class="context-item" @click="triggerAction('edit-profile')">
-          <el-icon><Setting /></el-icon> <span>{{ t('apps.menu.editProfile') }}</span>
-        </div>
-      </div>
-    </Teleport>
+    <AppContextMenu
+      v-if="menuApp && menuAnchor"
+      :app="menuApp"
+      :anchor="menuAnchor"
+      @close="menuAnchor = null"
+      @command="executeAppCommand"
+    />
 
     <!-- SSE Operations Dialog -->
     <el-dialog
       v-model="dockDialogVisible"
       :title="dockTitle"
-      width="720px"
-      custom-class="ui-dialog"
+      width="min(720px, calc(100vw - 24px))"
+      class="ui-dialog"
       :close-on-click-modal="false"
-      @close="stopOperation"
+      @close="operation.discard"
     >
       <div class="sse-dialog-body">
         <StackOperationDock
@@ -296,7 +206,7 @@
           :status="operationStatus"
           :message="operationMessage"
           @close="dockDialogVisible = false"
-          @cancel="cancelOperation"
+          @cancel="operation.cancel"
         />
       </div>
     </el-dialog>
@@ -313,33 +223,27 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onUnmounted, watch } from "vue";
+import { copyText } from "@/utils/clipboard";
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
 import {
-  Search,
-  Collection,
-  Monitor,
-  VideoPlay,
-  VideoPause,
-  Refresh,
-  DocumentCopy,
-  Setting,
-  Picture,
-  FolderOpened,
-  Link,
-  Grid,
-  Operation,
   Filter,
-} from "@element-plus/icons-vue";
-import { apiClient } from "@/api/client";
-import { streamSse } from "@/api/sse";
+  Layers,
+  LayoutGrid,
+  Link2,
+  Search,
+  SlidersHorizontal,
+} from "@lucide/vue";
+import { isRunning, listApps, type LauncherApp } from "@/api/apps";
+import { useSseOperation } from "@/composables/useSseOperation";
+import AppTile, { type AppMenuAnchor } from "@/components/apps/AppTile.vue";
+import AppContextMenu, { type AppCommand } from "@/components/apps/AppContextMenu.vue";
 import { useDashboardStore } from "@/stores/dashboard";
 import { useTheme } from "@/composables/useTheme";
 import { resolveHostLogo } from "@/utils/hostLogo";
 import StackOperationDock from "@/components/StackOperationDock.vue";
-import UpdateBadge from "@/components/UpdateBadge.vue";
 import AppProfilesDialog from "@/components/AppProfilesDialog.vue";
 
 const router = useRouter();
@@ -349,7 +253,7 @@ const theme = useTheme();
 const { t } = useI18n();
 
 // Component data
-const rawApps = ref<any[]>([]);
+const rawApps = ref<LauncherApp[]>([]);
 const loading = ref(false);
 const error = ref("");
 
@@ -358,9 +262,8 @@ const searchQuery = ref("");
 const filterHost = ref("");
 const filterStatus = ref("");
 const filterNoUrl = ref(false);
-const viewMode = ref<"group" | "host" | "all">(
-  (localStorage.getItem("apps_view_mode") as any) || "group"
-);
+const storedViewMode = localStorage.getItem("apps_view_mode");
+const viewMode = ref(storedViewMode === "host" || storedViewMode === "all" ? storedViewMode : "group");
 
 watch(viewMode, (newVal) => {
   localStorage.setItem("apps_view_mode", newVal);
@@ -369,59 +272,54 @@ watch(viewMode, (newVal) => {
 const routeStatusFilters = new Set(["", "running", "error", "updatable", "no-url"]);
 
 watch(
-  () => route.query.status,
-  (value) => {
-    const next = Array.isArray(value) ? value[0] : value;
-    filterStatus.value = typeof next === "string" && routeStatusFilters.has(next) ? next : "";
+  () => [route.query.status, route.query.host] as const,
+  ([statusVal, hostVal]) => {
+    const nextStatus = Array.isArray(statusVal) ? statusVal[0] : statusVal;
+    filterStatus.value = typeof nextStatus === "string" && routeStatusFilters.has(nextStatus) ? nextStatus : "";
+    const nextHost = Array.isArray(hostVal) ? hostVal[0] : hostVal;
+    filterHost.value = typeof nextHost === "string" ? nextHost : "";
   },
   { immediate: true },
 );
 
 // SSE Dock Dialog state
 const dockDialogVisible = ref(false);
-const activeApp = ref<any>(null);
+const activeApp = ref<LauncherApp | null>(null);
 const operationAction = ref("");
 const operationStatus = ref<"running" | "success" | "error" | "idle">("idle");
 const operationMessage = ref("");
 const terminalOutputs = ref<string[]>([]);
-let sseController: AbortController | null = null;
-
-// Context Menu state
-const contextMenuVisible = ref(false);
-const contextMenuRef = ref<HTMLElement | null>(null);
-const contextMenuX = ref(0);
-const contextMenuY = ref(0);
+const operation = useSseOperation();
+const menuAnchor = shallowRef<AppMenuAnchor | null>(null);
+const menuTarget = ref<{ hostId: string; stackName: string } | null>(null);
 
 // App Profile Edit state
 const editProfileVisible = ref(false);
 const selectedHostId = ref("");
 const selectedHostName = ref("");
 
-// Fetch apps aggregator from API
+let listRequest: AbortController | null = null;
+
 async function fetchApps(options: { silent?: boolean } = {}) {
-  if (!options.silent) {
-    loading.value = true;
-  }
+  listRequest?.abort();
+  const request = new AbortController();
+  listRequest = request;
+  if (!options.silent) loading.value = true;
   error.value = "";
   try {
-    const res = await apiClient.get("/api/apps");
-    rawApps.value = res.data || [];
+    const apps = await listApps(request.signal);
+    if (!request.signal.aborted) rawApps.value = apps;
   } catch (err: any) {
-    error.value = err.response?.data?.detail || err.message || "Failed to fetch launcher apps";
+    if (!request.signal.aborted) error.value = err.response?.data?.detail || err.message || "Failed to fetch launcher apps";
   } finally {
-    if (!options.silent) {
+    if (listRequest === request) {
+      listRequest = null;
       loading.value = false;
     }
   }
 }
 
-const liveHostsById = computed(() => {
-  const map = new Map<string, any>();
-  dashboardStore.hosts.forEach((host) => {
-    map.set(host.host_id, host);
-  });
-  return map;
-});
+const liveHostsById = computed(() => new Map(dashboardStore.hosts.map(host => [host.host_id, host])));
 
 const appsWithLiveHostState = computed(() =>
   rawApps.value.map((app) => {
@@ -499,31 +397,29 @@ const filteredApps = computed(() => {
 
 // Group apps dynamically
 const appsByGroup = computed(() => {
-  const groups: Record<string, any[]> = {};
+  const groups = new Map<string, LauncherApp[]>();
   filteredApps.value.forEach(app => {
     const gName = app.group ? app.group.trim() : "Other";
-    if (!groups[gName]) groups[gName] = [];
-    groups[gName].push(app);
+    const groupApps = groups.get(gName);
+    if (groupApps) groupApps.push(app);
+    else groups.set(gName, [app]);
   });
-  return Object.keys(groups)
-    .sort()
-    .map(name => ({ name, apps: groups[name] }));
+  return [...groups.keys()].sort().map(name => ({ name, apps: groups.get(name)! }));
 });
 
 // Group apps by host dynamically
 const appsByHost = computed(() => {
-  const hosts: Record<string, { name: string; apps: any[] }> = {};
+  const hosts = new Map<string, { name: string; apps: LauncherApp[] }>();
   filteredApps.value.forEach(app => {
-    if (!hosts[app.host_id]) {
-      hosts[app.host_id] = { name: app.host_name || app.host_id, apps: [] };
-    }
-    hosts[app.host_id].apps.push(app);
+    const host = hosts.get(app.host_id);
+    if (host) host.apps.push(app);
+    else hosts.set(app.host_id, { name: app.host_name || app.host_id, apps: [app] });
   });
 
   // Get host IDs ordered as in dashboardStore.hosts
   const orderedHostIds = dashboardStore.hosts.map(h => h.host_id);
 
-  return Object.keys(hosts)
+  return [...hosts.keys()]
     .sort((a, b) => {
       const indexA = orderedHostIds.indexOf(a);
       const indexB = orderedHostIds.indexOf(b);
@@ -533,98 +429,50 @@ const appsByHost = computed(() => {
       return indexA - indexB;
     })
     .map(id => ({
-      id, name: hosts[id].name, apps: hosts[id].apps,
+      id, ...hosts.get(id)!,
       logo: resolveHostLogo(liveHostsById.value.get(id)?.logo),
     }));
 });
 
-// Helpers
-function isRunning(status: string) {
-  return status === "running" || status === "active";
+const menuApp = computed(() => filteredApps.value.find(app =>
+  app.host_id === menuTarget.value?.hostId && app.stack_name === menuTarget.value?.stackName,
+));
+
+function openAppMenu(app: LauncherApp, anchor: AppMenuAnchor) {
+  menuTarget.value = { hostId: app.host_id, stackName: app.stack_name };
+  menuAnchor.value = anchor;
 }
 
-function stackStatusType(status: string): string {
-  if (status === "running" || status === "active") return "running";
-  if (status === "exited") return "exited";
-  if (status === "stopped" || status === "inactive") return "stopped";
-  return "partial";
+watch([viewMode, menuApp], ([mode, app], [previousMode]) => {
+  if (!app || mode !== previousMode) menuAnchor.value = null;
+});
+
+function openDashboard(app: LauncherApp) {
+  void router.push({ name: "host-detail", params: { hostId: app.host_id }, query: { stack: app.stack_name } });
 }
 
-function hostStatusType(status: string): string {
-  if (status === "online") return "online";
-  if (status === "offline" || status === "unknown") return "offline";
-  return "degraded";
+function handleAppClick(app: LauncherApp) {
+  if (app.app_url) window.open(app.app_url, "_blank", "noopener,noreferrer");
+  else openDashboard(app);
 }
 
-function getIconUrl(value: string | null) {
-  if (!value) return "";
-  if (/^https?:\/\//.test(value)) return value;
-  if (value.startsWith("/api/") || value.startsWith("/")) return value;
-  return `/api/static/icons/${value}`;
-}
-
-// App actions
-function handleAppClick(app: any) {
-  if (app.app_url) {
-    window.open(app.app_url, "_blank");
-  } else {
-    // Navigate to host detail page focused on the stack
-    router.push({
-      name: "host-detail",
-      params: { hostId: app.host_id },
-      query: { stack: app.stack_name }
-    });
-  }
-}
-
-// Custom Context Menu handlers
-async function handleContextMenu(e: MouseEvent, app: any) {
-  e.preventDefault();
-  activeApp.value = app;
-  contextMenuX.value = e.clientX;
-  contextMenuY.value = e.clientY;
-  contextMenuVisible.value = true;
-  document.addEventListener("click", closeContextMenu, { once: true });
-  await nextTick();
-  if (!contextMenuRef.value) return;
-  const { width, height } = contextMenuRef.value.getBoundingClientRect();
-  const margin = 8;
-  const viewportWidth = document.documentElement.clientWidth;
-  const viewportHeight = document.documentElement.clientHeight;
-  const x = e.clientX + width > viewportWidth - margin ? e.clientX - width : e.clientX;
-  const y = e.clientY + height > viewportHeight - margin ? e.clientY - height : e.clientY;
-  contextMenuX.value = Math.max(margin, Math.min(x, viewportWidth - width - margin));
-  contextMenuY.value = Math.max(margin, Math.min(y, viewportHeight - height - margin));
-}
-
-function closeContextMenu() {
-  contextMenuVisible.value = false;
-}
-
-function triggerAction(cmd: string) {
-  closeContextMenu();
-  if (activeApp.value) {
-    executeAppCommand(cmd, activeApp.value);
-  }
-}
-
-function executeAppCommand(cmd: string, app: any) {
-  activeApp.value = app;
+async function executeAppCommand(cmd: AppCommand) {
+  const app = menuApp.value;
+  if (!app) return;
   if (cmd === "open-dashboard") {
-    router.push({
-      name: "host-detail",
-      params: { hostId: app.host_id },
-      query: { stack: app.stack_name }
-    });
+    openDashboard(app);
   } else if (cmd === "copy-url") {
-    if (app.app_url) {
-      navigator.clipboard.writeText(app.app_url);
+    if (!app.app_url) return;
+    try {
+      await copyText(app.app_url);
       ElMessage.success(t("stackOp.copied"));
+    } catch {
+      ElMessage.warning(t("stackOp.copyFailed"));
     }
   } else if (cmd === "edit-profile") {
     openAppProfileDialogForHost(app.host_id, app.host_name);
-  } else if (cmd === "start" || cmd === "stop" || cmd === "restart") {
-    startSseOperation(cmd, app);
+  } else {
+    void startSseOperation(cmd, app);
   }
 }
 
@@ -636,67 +484,35 @@ const dockTitle = computed(() => {
     stop: "stackOp.stopping",
     restart: "stackOp.restarting",
   };
-  return t(keyMap[operationAction.value] || "kicker");
+  return t(keyMap[operationAction.value] || "stackOp.operation");
 });
 
-async function startSseOperation(action: string, app: any) {
-  stopOperation();
+async function startSseOperation(action: string, app: LauncherApp) {
   activeApp.value = app;
   operationAction.value = action;
   operationStatus.value = "running";
-  operationMessage.value = t("stack.confirm.running", { action: t(`stack.action.${action}`) });
+  const label = t(`stack.action.${action}`);
+  operationMessage.value = t("stack.confirm.running", { action: label });
   terminalOutputs.value = [];
   dockDialogVisible.value = true;
 
-  sseController = new AbortController();
-  const label = t(`stack.action.${action}`);
-
-  try {
-    const url = `/api/hosts/${app.host_id}/stacks/${encodeURIComponent(app.stack_name)}/${action}?cols=110&rows=24`;
-    await streamSse({
-      url,
-      method: "POST",
-      signal: sseController.signal,
-      timeoutMs: 180000,
-      onTimeout: () => {
-        operationStatus.value = "error";
-        operationMessage.value = t("stack.confirm.timeout");
-      },
-      onEvent: (ev) => {
-        if (ev.event === "chunk") {
-          terminalOutputs.value.push(ev.data?.raw ?? ev.rawData);
-        } else if (ev.event === "line") {
-          terminalOutputs.value.push(ev.data?.text ?? ev.rawData);
-        } else if (ev.event === "complete") {
-          const success = ev.data?.status === "success";
-          operationStatus.value = success ? "success" : "error";
-          operationMessage.value = ev.data?.message || t(success ? "stack.confirm.success" : "stack.confirm.failure", { action: label });
-          void fetchApps({ silent: true }); // Refresh statuses after operation finishes
-        } else if (ev.event === "error") {
-          operationStatus.value = "error";
-          operationMessage.value = ev.data?.message || t("stack.confirm.failure", { action: label });
-        }
-      }
-    });
-  } catch (err: any) {
-    if (sseController?.signal.aborted) return;
-    operationStatus.value = "error";
-    operationMessage.value = err.message || t("stack.confirm.failure", { action: label });
-  }
-}
-
-function cancelOperation() {
-  if (sseController) {
-    sseController.abort();
-    sseController = null;
-  }
-  operationStatus.value = "error";
-  operationMessage.value = t("stack.confirm.cancelled");
-}
-
-function stopOperation() {
-  cancelOperation();
-  dockDialogVisible.value = false;
+  const result = await operation.run({
+    hostId: app.host_id,
+    stackName: app.stack_name,
+    action,
+    cols: 110,
+    rows: 24,
+    timeoutMs: 180000,
+    onChunk: chunk => terminalOutputs.value.push(chunk),
+  });
+  if (!result) return;
+  const success = result.kind === "complete" && result.success;
+  operationStatus.value = success ? "success" : "error";
+  if (result.kind === "timeout") operationMessage.value = t("stack.confirm.timeout");
+  else if (result.kind === "cancelled") operationMessage.value = t("stack.confirm.cancelled");
+  else if (result.kind === "no-result") operationMessage.value = t("stack.confirm.noResult");
+  else operationMessage.value = ("message" in result && result.message) || t(success ? "stack.confirm.success" : "stack.confirm.failure", { action: label });
+  if (result.kind === "complete") void fetchApps({ silent: true });
 }
 
 // Profile dialog functions
@@ -714,9 +530,7 @@ onMounted(() => {
   }
 });
 
-onUnmounted(() => {
-  stopOperation();
-});
+onBeforeUnmount(() => listRequest?.abort());
 </script>
 
 <style scoped>
@@ -1052,242 +866,12 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.app-tile {
-  border: 1px solid var(--border-subtle);
-  background: var(--surface-panel);
-  border-radius: var(--ui-radius-lg);
-  padding: 8px 12px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  cursor: pointer;
-  position: relative;
-  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-  overflow: hidden;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.02);
-}
-
-.app-tile:hover {
-  transform: translateY(-2px);
-  border-color: var(--accent-blue);
-  background: var(--ui-control-hover-bg);
-  box-shadow: var(--ui-control-shadow);
-}
-
-.app-icon-wrap {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  overflow: visible;
-}
-
-.app-icon-img {
-  width: 100%;
-  height: 100%;
-  border-radius: var(--ui-radius-md);
-  object-fit: contain;
-}
-
-.app-icon-update-dot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 10px;
-  height: 10px;
-  background: var(--danger);
-  border: 2px solid var(--surface-panel);
-  border-radius: 50%;
-  box-shadow: 0 0 6px var(--danger);
-  z-index: 10;
-}
-
-.app-icon-fallback {
-  font-size: 32px;
-  color: var(--text-muted);
-}
-
-.app-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  flex: 1;
-}
-
-.app-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.35;
-  margin-bottom: 6px;
-}
-
-.app-meta {
-  font-size: 12px;
-  color: var(--text-muted);
-  display: flex;
-  align-items: center;
-  gap: 0;
-  overflow: visible;
-  min-width: 0;
-}
-
-.meta-pair {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  line-height: 16px;
-  white-space: nowrap;
-}
-
-.meta-pair--host {
-  overflow: hidden;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.meta-spacer {
-  flex: 0 0 14px;
-  width: 14px;
-}
-
-.host-text,
-.count-text {
-  line-height: 16px;
-}
-
-.host-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.host-connection-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  flex: 0 0 8px;
-}
-
-.host-online {
-  background: var(--success);
-  box-shadow: 0 0 6px var(--success);
-}
-
-.host-degraded {
-  background: var(--warning);
-  box-shadow: 0 0 6px var(--warning);
-}
-
-.host-offline {
-  background: var(--text-muted);
-}
-
-.dot-state {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: 0 0 8px;
-}
-
-.dot-running {
-  background: var(--success);
-  box-shadow: 0 0 6px var(--success);
-}
-
-.dot-stopped {
-  background: var(--text-muted);
-}
-
-.dot-exited {
-  background: var(--danger);
-  box-shadow: 0 0 6px var(--danger);
-}
-
-.dot-partial {
-  background: var(--warning);
-}
-
-.app-status-badge {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.mini-update-badge {
-  transform: scale(0.85);
-  transform-origin: center;
-}
-
-/* Custom Context Menu */
-.custom-context-menu {
-  position: fixed;
-  box-sizing: border-box;
-  max-width: calc(100vw - 16px);
-  max-height: calc(100dvh - 16px);
-  overflow: auto;
-  z-index: 3000;
-  background: var(--surface-panel-raised);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  box-shadow: var(--ui-control-shadow);
-  padding: 4px;
-  min-width: 160px;
-}
-
-.context-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  border-radius: 6px;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.context-item:hover:not(.disabled) {
-  background: var(--ui-control-hover-bg);
-  color: var(--text-primary);
-}
-
-.context-item.disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 .mb-4 {
   margin-bottom: 16px;
 }
 
-.mr-1 {
-  margin-right: 4px;
-}
-
 .mr-2 {
   margin-right: 8px;
-}
-
-.my-1 {
-  margin-top: 4px;
-  margin-bottom: 4px;
-}
-
-.flex-1 {
-  flex: 1;
 }
 
 @media (max-width: 1260px) {
@@ -1364,6 +948,12 @@ onUnmounted(() => {
 
   .view-action {
     padding: 0 7px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-action,
+  .app-status-tab {
+    transition: none;
   }
 }
 </style>

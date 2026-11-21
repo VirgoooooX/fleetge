@@ -14,7 +14,7 @@ export type Locale = "zh-CN" | "en-US";
 const STORAGE_KEY = "hd-locale";
 
 export function getStoredLocale(): Locale {
-  const stored = localStorage.getItem(STORAGE_KEY);
+  const stored = typeof localStorage !== "undefined" ? localStorage.getItem(STORAGE_KEY) : null;
   if (stored === "zh-CN" || stored === "en-US") return stored;
   return "zh-CN";
 }
@@ -27,7 +27,7 @@ export function getOppositeLocale(locale: Locale): Locale {
   return locale === "zh-CN" ? "en-US" : "zh-CN";
 }
 
-export const i18n = createI18n<[typeof zhCN], "zh-CN" | "en-US">({
+export const i18n = createI18n<[I18nSchema], Locale, false>({
   legacy: false,
   locale: getStoredLocale(),
   fallbackLocale: "zh-CN",
@@ -38,6 +38,6 @@ export const i18n = createI18n<[typeof zhCN], "zh-CN" | "en-US">({
 });
 
 /** Type-safe translate function for use outside of components (stores, plain TS). */
-export function t(key: keyof I18nSchema, params?: Record<string, any>): string {
-  return i18n.global.t(key, params as any);
+export function t(key: keyof I18nSchema, params?: Record<string, unknown>): string {
+  return params ? i18n.global.t(key, params) : i18n.global.t(key);
 }

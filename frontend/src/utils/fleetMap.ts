@@ -1,4 +1,5 @@
 import { geoEqualEarth, type GeoProjection } from "d3-geo";
+import type { FleetMapHost, FleetMapSnapshot } from "@/api/fleetMap";
 
 export type FleetMapFilter = "all" | "online" | "degraded" | "offline" | "unlocated";
 export type LatLngTuple = [number, number];
@@ -111,4 +112,77 @@ export function clusterProjectedNodes<T>(nodes: ProjectedMapNode<T>[], threshold
       group.reduce((sum, node) => sum + node.point[1], 0) / group.length,
     ],
   }));
+}
+
+export interface FleetLocationDraft {
+  name: string;
+  city: string;
+  region: string;
+  country: string;
+  country_code: string;
+  latitude: number | undefined;
+  longitude: number | undefined;
+}
+
+export const fleetStatusKey = {
+  online: "map.online",
+  degraded: "map.issues",
+  offline: "map.offline",
+  unknown: "map.unknown",
+} as const;
+
+function estimateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const radians = Math.PI / 180;
+  const a = Math.sin((lat2 - lat1) * radians / 2) ** 2
+    + Math.cos(lat1 * radians) * Math.cos(lat2 * radians) * Math.sin((lon2 - lon1) * radians / 2) ** 2;
+  return Math.round(6371 * 2 * Math.asin(Math.sqrt(Math.min(1, a))));
+}
+
+function estimateRttMs(distanceKm: number) {
+  if (distanceKm <= 5) return 1;
+  if (distanceKm < 50) return 6;
+  if (distanceKm < 200) return 14;
+  return Math.round(15 + distanceKm * 0.016);
+}
+
+function rttTone(status: FleetMapHost["status"], ms: number | null) {
+  if (status === "offline") return "offline";
+  if (ms === null) return "unknown";
+  if (ms < 30) return "excellent";
+  if (ms < 120) return "good";
+  return "fair";
+}
+
+export function buildFleetTopology(snapshot: FleetMapSnapshot | null) {
+  let locatedCount = 0;
+  let rttCount = 0;
+  let sumRtt = 0;
+  const center = snapshot?.center;
+  const hasCenter = center && Number.isFinite(center.latitude) && Number.isFinite(center.longitude);
+  const nodes = (snapshot?.hosts ?? []).map((host) => {
+    const location = host.location;
+    const hasLocation = location && Number.isFinite(location.latitude) && Number.isFinite(location.longitude);
+    if (hasLocation) locatedCount++;
+    const distanceKm = hasCenter && hasLocation
+      ? estimateDistanceKm(center.latitude, center.longitude, location.latitude, location.longitude)
+      : null;
+    const rttMs = distanceKm === null ? null : estimateRttMs(distanceKm);
+    if (rttMs !== null && host.status !== "offline") {
+      rttCount++;
+      sumRtt += rttMs;
+    }
+    return {
+      host_id: host.host_id,
+      display_name: host.display_name,
+      status: host.status,
+      container_count: host.container_count,
+      effectiveIp: host.network_identity?.effectiveIp || "—",
+      locationText: location ? [location.city || location.region, location.country].filter(Boolean).join(", ") : "",
+      distanceKm,
+      rttMs,
+      rttTone: rttTone(host.status, rttMs),
+      host,
+    };
+  });
+  return { nodes, locatedCount, averageRttMs: rttCount ? Math.round(sumRtt / rttCount) : 0 };
 }

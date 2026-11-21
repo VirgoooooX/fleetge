@@ -17,7 +17,7 @@ from app.schemas import ContainerSummary, DockerInfo, ContainerPort, ContainerSt
 
 class DockerApiTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = TestClient(app, client=("127.0.0.1", 50000))
         self.host_id = "test-host"
         
         self.config = HostConfig(

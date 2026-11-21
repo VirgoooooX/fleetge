@@ -6,13 +6,11 @@ export type ConfirmTone = "info" | "warning" | "danger" | "success" | "error";
 export interface ConfirmOptions extends Partial<Omit<ElMessageBoxOptions, "type" | "customClass">> {
   /** 风险等级：决定弹窗色调与图标（推荐） */
   tone?: ConfirmTone;
-  /** 样式方案：'a' (优雅悬浮图标) | 'b' (当前侧栏警示) | 'c' (赛博微光玻璃) | 'd' (简约顶边饰条) */
-  scheme?: "a" | "b" | "c" | "d";
   /** 是否隐藏关闭 × 按钮（高风险弹窗默认隐藏） */
   showClose?: boolean;
   /** 点击遮罩是否关闭（高风险弹窗默认不关闭） */
   closeOnClickModal?: boolean;
-  /** 自定义 class，会自动追加 `pg-confirm-{scheme} tone-{tone}` */
+  /** 自定义 class，会自动追加 `pg-confirm tone-{tone}` */
   customClass?: string;
 }
 
@@ -27,7 +25,6 @@ const ELEMENT_TYPE_MAP: Record<ConfirmTone, ElMessageBoxOptions["type"]> = {
 function buildOptions(opts: ConfirmOptions, tone: ConfirmTone): ElMessageBoxOptions {
   const {
     tone: _ignored,
-    scheme = "b",
     showClose,
     closeOnClickModal,
     customClass,
@@ -40,8 +37,8 @@ function buildOptions(opts: ConfirmOptions, tone: ConfirmTone): ElMessageBoxOpti
     showClose: showClose ?? tone !== "danger",
     closeOnClickModal: closeOnClickModal ?? tone === "info",
     closeOnPressEscape: true,
-    customClass: ["pg-confirm", `pg-confirm-${scheme}`, `tone-${tone}`, customClass].filter(Boolean).join(" "),
-    customStyle: { borderRadius: "8px", ...(rest.customStyle || {}) },
+    customClass: ["pg-confirm", `tone-${tone}`, customClass].filter(Boolean).join(" "),
+    customStyle: { borderRadius: "var(--radius-lg, 8px)", ...(rest.customStyle || {}) },
   };
 }
 

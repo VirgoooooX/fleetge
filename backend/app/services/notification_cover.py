@@ -12,6 +12,7 @@ import httpx
 import resvg_py
 
 from app.config import get_settings
+from app.services.network_utils import validate_outbound_http_url
 
 logger = logging.getLogger(__name__)
 _BACKGROUND = Path(__file__).resolve().parents[1] / "assets" / "notifications" / "container-update.png"
@@ -62,12 +63,10 @@ def _read_local_icon(url: str) -> bytes:
 async def _load_icon(client: httpx.AsyncClient, url: str) -> bytes:
     if url.startswith(("/api/static/icons/", "/vendor-logos/")):
         return await asyncio.to_thread(_read_local_icon, url)
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-        raise ValueError("Stack icon must use a configured local file or HTTP(S) URL")
+    validated_url = validate_outbound_http_url(url, allow_private=True)
     # These URLs come from the administrator's Stack configuration, including LAN icons.
     # Never forward Notify Hub credentials, cookies, or redirects to an icon host.
-    async with client.stream("GET", url, follow_redirects=False, timeout=httpx.Timeout(5, connect=3)) as response:
+    async with client.stream("GET", validated_url, follow_redirects=False, timeout=httpx.Timeout(5, connect=3)) as response:
         response.raise_for_status()
         chunks = bytearray()
         async for chunk in response.aiter_bytes():

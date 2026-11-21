@@ -10,6 +10,7 @@ Cache tiers:
 """
 
 import asyncio
+from collections.abc import Sequence
 import logging
 import time
 import uuid
@@ -18,8 +19,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import httpx
-from decimal import Decimal
-from zoneinfo import ZoneInfo
 from sqlmodel import select
 
 from app.config import get_settings
@@ -32,14 +31,18 @@ from app.schemas import (
     DockerInfo,
     DockerDiskUsage,
     HostMetrics,
-    HostSubscriptionSummary,
     HostSummary,
     StackSummary,
-    StackService,
     UpdateCheckResult,
 )
 from app.services.agent_client import AgentClient
-from app.services.billing_service import UNIT_BYTES, _date_status, subscription_is_configured
+from app.services.host_summary import build_host_summary
+from app.services.metrics_broadcaster import MetricsBroadcaster, metrics_payload
+from app.services.stack_parser import (
+    _match_icon, _match_profile, apply_app_profiles, merge_stacks_with_container_labels,
+    parse_agent_stacks, stacks_from_container_labels,
+)
+from app.time_utils import as_utc as _as_utc, utc_now as _utc_now
 from app.services.update_check import MANIFEST_MEDIA_TYPES, _extract_local_digest, _parse_platform, _platform_matches, run_update_check
 
 logger = logging.getLogger(__name__)
@@ -58,8 +61,11 @@ TRANSIENT_AGENT_ERRORS = (
 )
 
 
-def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+_STOP_STRUCTURE_RETRY_STATUSES = {401, 403, 429}
+
+
+def _stop_structure_retry(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in _STOP_STRUCTURE_RETRY_STATUSES
 
 
 def _same_digest(left: str | None, right: str | None) -> bool:
@@ -137,14 +143,6 @@ def _container_image_identity_block_reason(
     return None
 
 
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 class HostSnapshot:
     """Immutable snapshot of one host's data."""
 
@@ -181,20 +179,21 @@ class SnapshotManager:
         self._snapshots: dict[str, HostSnapshot] = {}
         self._lock = asyncio.Lock()
         self._running = False
+        self._stopping = False
         self._tasks: list[asyncio.Task] = []
 
         # Clients — lazily created
         self._agent_clients: dict[str, AgentClient] = {}
         self._host_refresh_locks: dict[str, asyncio.Lock] = {}
         self._metrics_refresh_lock = asyncio.Lock()
-        self._metrics_broadcast_task: asyncio.Task | None = None
-        self._metrics_subscribers: set[asyncio.Queue] = set()
-        self._metrics_wake_event = asyncio.Event()
-        self._metrics_idle_deadline: float | None = None
+        self._metrics_broadcaster = MetricsBroadcaster(
+            self._collect_metrics_summaries, lambda: float(get_settings().METRICS_STREAM_INTERVAL),
+        )
         self._update_check_lock = asyncio.Lock()
         self._stats_tasks: dict[str, asyncio.Task] = {}
         self._update_check_tasks: dict[str, asyncio.Task] = {}
         self._pending_update_checks: dict[str, set[str]] = {}
+        self._operation_refresh_tasks: dict[str | None, asyncio.Task] = {}
         self._realtime_refresh_tasks: dict[str, asyncio.Task] = {}  # coalesce WebSocket-triggered refreshes
 
         # Update-check gating. Plain bools are the right primitive here:
@@ -305,99 +304,20 @@ class SnapshotManager:
         return min(candidates) if candidates else float(background_interval)
 
     def add_metrics_subscriber(self) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
-        self._metrics_subscribers.add(queue)
-        self._metrics_idle_deadline = None
-        self._metrics_wake_event.set()
-        if self._running and (self._metrics_broadcast_task is None or self._metrics_broadcast_task.done()):
-            self._metrics_broadcast_task = asyncio.create_task(self._metrics_broadcast_loop())
+        queue = self._metrics_broadcaster.subscribe()
+        if self._running:
+            self._metrics_broadcaster.start()
         return queue
 
     def remove_metrics_subscriber(self, queue: asyncio.Queue) -> None:
-        self._metrics_subscribers.discard(queue)
-        if not self._metrics_subscribers and self._metrics_idle_deadline is None:
-            self._metrics_idle_deadline = time.monotonic() + 15.0
-        self._metrics_wake_event.set()
+        self._metrics_broadcaster.unsubscribe(queue)
 
     def current_metrics_payload(self) -> dict:
-        summaries = [self.build_host_summary(snapshot) for snapshot in self.list_snapshots()]
-        return {
-            "hosts": [summary.model_dump() for summary in summaries],
-            "updated": time.time(),
-        }
+        return metrics_payload([self.build_host_summary(snapshot) for snapshot in self.list_snapshots()])
 
-    @staticmethod
-    def _metrics_signature(summaries: list[HostSummary]) -> tuple:
-        return tuple(
-            (
-                summary.host_id,
-                summary.status,
-                summary.error_message,
-                summary.metrics.timestamp if summary.metrics else None,
-                summary.metrics.networkCounterEpoch if summary.metrics else None,
-            )
-            for summary in summaries
-        )
-
-    async def _metrics_broadcast_loop(self) -> None:
-        """One Agent refresh loop shared by every browser and tab."""
-        next_deadline = time.monotonic()
-        last_signature: tuple | None = None
-        try:
-            while self._running:
-                now = time.monotonic()
-                if not self._metrics_subscribers:
-                    if self._metrics_idle_deadline is None:
-                        self._metrics_idle_deadline = now + 15.0
-                    if now >= self._metrics_idle_deadline:
-                        return
-                    self._metrics_wake_event.clear()
-                    try:
-                        await asyncio.wait_for(
-                            self._metrics_wake_event.wait(),
-                            timeout=self._metrics_idle_deadline - now,
-                        )
-                        next_deadline = time.monotonic()
-                        continue
-                    except asyncio.TimeoutError:
-                        return
-                try:
-                    await self.refresh_hosts()
-                    summaries = await self.refresh_metrics_now()
-                    signature = self._metrics_signature(summaries)
-                    if signature != last_signature:
-                        payload = {
-                            "hosts": [summary.model_dump() for summary in summaries],
-                            "updated": time.time(),
-                        }
-                        for queue in tuple(self._metrics_subscribers):
-                            if queue.full():
-                                try:
-                                    queue.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    pass
-                            queue.put_nowait(payload)
-                        last_signature = signature
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.debug("Shared metrics refresh failed: %s", exc)
-
-                interval = max(float(get_settings().METRICS_STREAM_INTERVAL), 0.5)
-                next_deadline += interval
-                now = time.monotonic()
-                if next_deadline <= now:
-                    next_deadline = now + interval
-                timeout = next_deadline - now
-                self._metrics_wake_event.clear()
-                try:
-                    await asyncio.wait_for(self._metrics_wake_event.wait(), timeout=timeout)
-                    if self._metrics_subscribers:
-                        next_deadline = min(next_deadline, time.monotonic())
-                except asyncio.TimeoutError:
-                    pass
-        finally:
-            self._metrics_broadcast_task = None
+    async def _collect_metrics_summaries(self) -> list[HostSummary]:
+        await self.refresh_hosts()
+        return await self.refresh_metrics_now()
 
     # ── Failure backoff ─────────────────────────────────────────────
 
@@ -433,6 +353,7 @@ class SnapshotManager:
         if self._running:
             return
         self._running = True
+        self._stopping = False
         settings = get_settings()
         self._tasks = [
             asyncio.create_task(
@@ -448,123 +369,51 @@ class SnapshotManager:
                 )
             ),
         ]
+        self._metrics_broadcaster.start()
         logger.info(
             "SnapshotManager started with low-frequency structure polling; metrics are frontend-driven"
         )
 
     async def stop(self) -> None:
+        self._stopping = True
         self._running = False
-        if self._metrics_broadcast_task is not None:
-            self._metrics_broadcast_task.cancel()
-        for t in self._tasks:
-            t.cancel()
-        for t in list(self._stats_tasks.values()):
-            t.cancel()
-        for t in list(self._update_check_tasks.values()):
-            t.cancel()
-        for t in list(self._realtime_refresh_tasks.values()):
-            t.cancel()
-        await asyncio.gather(
-            *self._tasks, *self._stats_tasks.values(),
-            *self._update_check_tasks.values(),
-            *self._realtime_refresh_tasks.values(),
-            *([self._metrics_broadcast_task] if self._metrics_broadcast_task else []),
-            return_exceptions=True,
-        )
+        tasks = [
+            *self._tasks, *self._stats_tasks.values(), *self._update_check_tasks.values(),
+            *self._realtime_refresh_tasks.values(), *self._operation_refresh_tasks.values(),
+        ]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._tasks.clear()
+        await self._metrics_broadcaster.stop(clear_subscribers=True)
         self._stats_tasks.clear()
         self._update_check_tasks.clear()
         self._pending_update_checks.clear()
         self._realtime_refresh_tasks.clear()
-        for c in self._agent_clients.values():
-            await c.close()
+        self._operation_refresh_tasks.clear()
+        clients = list(self._agent_clients.values())
         self._agent_clients.clear()
+        for result in await asyncio.gather(*(client.close() for client in clients), return_exceptions=True):
+            if isinstance(result, Exception):
+                logger.warning("Could not close Agent client: %s", result)
         logger.info("SnapshotManager stopped")
 
     async def restart_poll_loops(self) -> None:
-        """Cancel and restart background pollers with updated config intervals.
+        """Restart background pollers with updated intervals."""
+        from app.services.settings_service import clear_cache
 
-        IMPORTANT: Tasks are cancelled OUTSIDE the lock to avoid deadlock,
-        since _poll_loop → refresh_hosts() also acquires self._lock.
-        """
         logger.info("Restarting poll loops...")
-
-        # Step 1: Cancel tasks outside the lock
         self._running = False
-        tasks_to_cancel = list(self._tasks)
-        metrics_task = self._metrics_broadcast_task
-        if metrics_task is not None:
-            metrics_task.cancel()
-        for t in tasks_to_cancel:
-            t.cancel()
-        await asyncio.gather(
-            *tasks_to_cancel,
-            *([metrics_task] if metrics_task else []),
-            return_exceptions=True,
-        )
-
-        # Step 2: Acquire lock for state rebuild
-        async with self._lock:
-            self._tasks.clear()
-
-            # Clear settings cache so new intervals are read fresh
-            from app.services.settings_service import clear_cache
-            clear_cache()
-
-            settings = get_settings()
-
-            # Refresh host snapshots
-            # (inline refresh since we hold the lock — don't call refresh_hosts() which also locks)
-            with Session(engine) as session:
-                hosts = session.exec(select(HostConfig).where(HostConfig.enabled == True)).all()
-            configured_ids = {h.host_id for h in hosts}
-            for hid in list(self._snapshots.keys()):
-                if hid not in configured_ids:
-                    del self._snapshots[hid]
-                    self._agent_clients.pop(hid, None)
-                    self._host_refresh_locks.pop(hid, None)
-            for h in hosts:
-                if h.host_id not in self._snapshots:
-                    snap = HostSnapshot()
-                    snap.host_config = h
-                    self._snapshots[h.host_id] = snap
-                else:
-                    snap = self._snapshots[h.host_id]
-                    previous = snap.host_config
-                    connection_changed = bool(
-                        previous
-                        and (
-                            previous.agent_url != h.agent_url
-                            or previous.agent_token_encrypted != h.agent_token_encrypted
-                        )
-                    )
-                    snap.host_config = h
-                    if connection_changed:
-                        stale_client = self._agent_clients.pop(h.host_id, None)
-                        if stale_client is not None:
-                            await stale_client.close()
-
-            # Spin up new loops
-            self._running = True
-            self._tasks = [
-                asyncio.create_task(
-                    self._poll_loop(
-                        "structure",
-                        settings.BACKGROUND_STRUCTURE_REFRESH_INTERVAL,
-                        self._refresh_docker,
-                    )
-                ),
-                asyncio.create_task(
-                    self._poll_loop(
-                        "update_checks",
-                        settings.UPDATE_CHECK_INTERVAL,
-                        self._refresh_update_checks,
-                    )
-                ),
-            ]
-            if self._metrics_subscribers:
-                self._metrics_broadcast_task = asyncio.create_task(self._metrics_broadcast_loop())
-        logger.info("Poll loops restarted successfully.")
-
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        # The poll loops can acquire the host lock, so drain them outside it.
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await self._metrics_broadcaster.stop()
+        clear_cache()
+        await self.refresh_hosts()
+        await self.start()
+        logger.info("Poll loops restarted successfully")
 
     def get_snapshot(self, host_id: str) -> Optional[HostSnapshot]:
         return self._snapshots.get(host_id)
@@ -641,7 +490,7 @@ class SnapshotManager:
                 registry_manifest_digest=row.registry_manifest_digest,
                 registry_config_digest=row.registry_config_digest,
                 identity_error=row.identity_error,
-                registry=row.registry,
+                registry=row.registry_name,
                 platform=row.platform,
                 http_status=row.http_status,
                 matched_field=row.matched_field,
@@ -1200,6 +1049,27 @@ class SnapshotManager:
         await self._refresh_docker()
         return [self.build_host_summary(s) for s in self.list_snapshots()]
 
+    def schedule_host_structure_refresh(self, host_id: str) -> None:
+        self._schedule_operation_refresh(host_id)
+
+    def schedule_all_structure_refresh(self) -> None:
+        self._schedule_operation_refresh(None)
+
+    def _schedule_operation_refresh(self, host_id: str | None) -> None:
+        if self._stopping or host_id in self._operation_refresh_tasks:
+            return
+        refresh = self.refresh_all_structure_now() if host_id is None else self.refresh_host_docker_with_retry(host_id)
+        task = asyncio.create_task(refresh, name=f"fleetge-structure-refresh:{host_id or 'all'}")
+        self._operation_refresh_tasks[host_id] = task
+
+        def done(finished: asyncio.Task) -> None:
+            if self._operation_refresh_tasks.get(host_id) is finished:
+                self._operation_refresh_tasks.pop(host_id)
+            if not finished.cancelled() and (error := finished.exception()) is not None:
+                logger.warning("Scheduled structure refresh for %s failed: %s", host_id or "all hosts", error)
+
+        task.add_done_callback(done)
+
     async def refresh_host_structure_now(self, host_id: str) -> Optional[HostSnapshot]:
         """Refresh Docker/Agent structure for one host and return its snapshot."""
         await self.refresh_hosts()
@@ -1212,17 +1082,25 @@ class SnapshotManager:
         Call this after any host config change.
         """
         with Session(engine) as session:
-            hosts = session.query(HostConfig).filter(HostConfig.enabled == True).all()
-            subscriptions = {s.host_id: s for s in session.query(HostSubscription).all()}
+            hosts = session.exec(select(HostConfig).where(HostConfig.enabled.is_(True))).all()
+            subscriptions = {s.host_id: s for s in session.exec(select(HostSubscription)).all()}
 
+        stale_clients = []
+        cancelled_tasks = []
         async with self._lock:
             # Remove hosts no longer configured
             configured_ids = {h.host_id for h in hosts}
             for hid in list(self._snapshots.keys()):
                 if hid not in configured_ids:
                     del self._snapshots[hid]
-                    self._agent_clients.pop(hid, None)
+                    if (client := self._agent_clients.pop(hid, None)) is not None:
+                        stale_clients.append(client)
                     self._host_refresh_locks.pop(hid, None)
+                    self._pending_update_checks.pop(hid, None)
+                    for tasks in (self._stats_tasks, self._update_check_tasks, self._realtime_refresh_tasks, self._operation_refresh_tasks):
+                        if (task := tasks.pop(hid, None)) is not None:
+                            task.cancel()
+                            cancelled_tasks.append(task)
 
             # Add/update snapshots
             for h in hosts:
@@ -1246,7 +1124,12 @@ class SnapshotManager:
                     if connection_changed:
                         stale_client = self._agent_clients.pop(h.host_id, None)
                         if stale_client is not None:
-                            await stale_client.close()
+                            stale_clients.append(stale_client)
+
+        await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+        for result in await asyncio.gather(*(client.close() for client in stale_clients), return_exceptions=True):
+            if isinstance(result, Exception):
+                logger.warning("Could not close stale Agent client: %s", result)
 
     # ── Poll helpers ───────────────────────────────────────────────
 
@@ -1352,7 +1235,7 @@ class SnapshotManager:
         force_status_on_timeout: bool = True,
         lock_timeout: float = 10.0,
         execution_timeout: float = 15.0,
-    ) -> None:
+    ) -> int | None:
         """Poll the Agent for a specific host immediately."""
         if self._should_skip(host_id):
             return
@@ -1370,7 +1253,7 @@ class SnapshotManager:
             return
 
         try:
-            await asyncio.wait_for(
+            return await asyncio.wait_for(
                 self._refresh_host_docker_locked(
                     host_id,
                     trigger_initial_update_check=trigger_initial_update_check,
@@ -1384,15 +1267,12 @@ class SnapshotManager:
                 snap.status = "degraded"
                 snap.error_message = "refresh execution timeout"
         finally:
-            try:
-                lock.release()
-            except RuntimeError:
-                # In case the lock was not held or already released
-                pass
+            lock.release()
+        return None
 
     async def _refresh_host_docker_locked(
         self, host_id: str, trigger_initial_update_check: bool = True
-    ) -> None:
+    ) -> int | None:
         """Poll agent for a specific host immediately."""
         snap = self._snapshots.get(host_id)
         if not snap or not snap.host_config:
@@ -1424,79 +1304,56 @@ class SnapshotManager:
                     raise
                 structure = None
 
-            if structure is not None and not (
-                isinstance(structure.get("version"), dict)
-                and isinstance(structure.get("info"), dict)
-                and isinstance(structure.get("containers"), list)
-                and isinstance(structure.get("images"), list)
-            ):
-                # A partially failed aggregate must not blank the host; the
-                # per-endpoint path still returns whatever Docker can serve.
-                structure = None
-
+            failures = {}
+            stop_retry_status = None
             if structure is not None:
-                ver = structure["version"]
-                info = structure["info"]
-                raw_images = structure["images"]
-                raw_containers = structure["containers"]
-                inspect_by_id = structure.get("container_details")
-                if not isinstance(inspect_by_id, dict):
-                    inspect_by_id = None
-                df = structure.get("df")
+                failures = dict(structure.get("errors") or {})
             else:
-                ver = await proxy.version()
-                info = await proxy.info()
-                raw_images = await proxy.list_images()
-                raw_containers = await proxy.list_containers(all=True)
-                df = await proxy.disk_usage()
-                inspect_by_id = None
+                structure_parts = {
+                    "version": await proxy.version(),
+                }
+                for key, fetch in (
+                    ("info", proxy.info), ("images", proxy.list_images),
+                    ("containers", lambda: proxy.list_containers(all=True)), ("df", proxy.disk_usage),
+                ):
+                    try:
+                        structure_parts[key] = await fetch()
+                    except (httpx.HTTPError, ValueError) as exc:
+                        failures[key] = str(exc)
+                        if _stop_structure_retry(exc):
+                            stop_retry_status = exc.response.status_code
+                            break
+            parts = structure if structure is not None else structure_parts
 
-            if inspect_by_id is None:
-                inspect_semaphore = asyncio.Semaphore(8)
+            def read_part(key: str, expected: type):
+                value = parts.get(key)
+                if key in failures or not isinstance(value, expected):
+                    return None
+                return value
 
-                async def inspect_container(container_id: str) -> tuple[str, dict]:
-                    async with inspect_semaphore:
-                        return container_id, await proxy.container_inspect(container_id)
+            ver = read_part("version", dict)
+            info = read_part("info", dict)
+            raw_images = read_part("images", list)
+            raw_containers = read_part("containers", list)
+            df = read_part("df", dict)
+            inspect_by_id = read_part("container_details", dict)
 
-                inspect_results = await asyncio.gather(
-                    *(inspect_container(c.get("Id", "")) for c in raw_containers if c.get("Id")),
-                    return_exceptions=True,
+            # Merge independent successes before touching the container inventory.
+            values = {}
+            if ver is not None:
+                values.update(version=ver.get("Version"), api_version=ver.get("ApiVersion"))
+            if info is not None:
+                values.update(
+                    os=info.get("OSType"), architecture=info.get("Architecture"),
+                    docker_root_dir=info.get("DockerRootDir"), server_version=info.get("ServerVersion"),
+                    kernel_version=info.get("KernelVersion"), operating_system=info.get("OperatingSystem"),
+                    n_cpus=info.get("NCPU"), memory_total=info.get("MemTotal"), name=info.get("Name"),
                 )
-                inspect_by_id = {}
-                for result in inspect_results:
-                    if isinstance(result, Exception):
-                        logger.debug("Container inspect failed for %s: %s", cfg.host_id, result)
-                        continue
-                    container_id, detail = result
-                    inspect_by_id[container_id] = detail
-
-            # Version / Info
-            containerd_store = any(
-                key == "driver-type" and "containerd" in value
-                for key, value in (info.get("DriverStatus") or [])
-            )
-            snap.docker_info = DockerInfo(
-                version=ver.get("Version"),
-                api_version=ver.get("ApiVersion"),
-                os=info.get("OSType"),
-                architecture=info.get("Architecture"),
-                docker_root_dir=info.get("DockerRootDir"),
-                server_version=info.get("ServerVersion"),
-                kernel_version=info.get("KernelVersion"),
-                operating_system=info.get("OperatingSystem"),
-                n_cpus=info.get("NCPU"),
-                memory_total=info.get("MemTotal"),
-                name=info.get("Name"),
-            )
+            if values:
+                snap.docker_info = (snap.docker_info or DockerInfo()).model_copy(update=values)
 
             # Disk usage (non-fatal, since /system/df can be slow/deadlocked on Windows/WSL2)
-            if df is None:
-                logger.warning(
-                    "Failed to fetch docker disk usage for %s: %s",
-                    cfg.host_id, (structure.get("errors") or {}).get("df") if structure else "unavailable"
-                )
-                snap.docker_disk = None
-            else:
+            if df is not None:
                 snap.docker_disk = DockerDiskUsage(
                     images_total=len(df.get("Images", [])),
                     images_size=sum(
@@ -1518,10 +1375,40 @@ class SnapshotManager:
                 )
             # /system/df can include extra disk-accounting entries. /images/json
             # matches the visible local image list more closely.
-            snap.image_count = len(raw_images)
+            if raw_images is not None:
+                snap.image_count = len(raw_images)
 
+            if raw_containers is None:
+                self._record_failure(cfg.host_id)
+                snap.status = "degraded"
+                snap.error_message = failures.get("containers", "Agent did not return a container inventory.")
+                return stop_retry_status
+
+            if inspect_by_id is None:
+                inspect_semaphore = asyncio.Semaphore(8)
+
+                async def inspect_container(container_id: str) -> tuple[str, dict]:
+                    async with inspect_semaphore:
+                        return container_id, await proxy.container_inspect(container_id)
+
+                inspect_results = await asyncio.gather(
+                    *(inspect_container(c.get("Id", "")) for c in raw_containers if c.get("Id")),
+                    return_exceptions=True,
+                )
+                inspect_by_id = {}
+                for result in inspect_results:
+                    if isinstance(result, Exception):
+                        logger.debug("Container inspect failed for %s: %s", cfg.host_id, result)
+                        continue
+                    container_id, detail = result
+                    inspect_by_id[container_id] = detail
+
+            containerd_store = any(
+                key == "driver-type" and "containerd" in value
+                for key, value in ((info or {}).get("DriverStatus") or [])
+            )
             # Container list
-            snap.containers = []
+            containers = []
             for c in raw_containers:
                 inspect = inspect_by_id.get(c.get("Id", ""), {})
                 host_config = inspect.get("HostConfig", {}) or {}
@@ -1554,7 +1441,7 @@ class SnapshotManager:
 
                 runtime_descriptor = inspect.get("ImageManifestDescriptor") or c.get("ImageManifestDescriptor") or {}
                 runtime_platform = runtime_descriptor.get("platform") or {}
-                snap.containers.append(
+                containers.append(
                     ContainerSummary(
                         id=c.get("Id", "")[:12],
                         name=container_name,
@@ -1594,8 +1481,8 @@ class SnapshotManager:
             # Resolve the new container's image metadata without repeatedly
             # inspecting unchanged running IDs. Tag targets are refreshed every
             # round because an external docker pull does not change containers.
-            running_image_ids = list({c.image_id for c in snap.containers if c.image_id})
-            unique_images = list({c.image for c in snap.containers if c.image})
+            running_image_ids = list({c.image_id for c in containers if c.image_id})
+            unique_images = list({c.image for c in containers if c.image})
 
             def image_metadata(info: dict) -> tuple[list[str], str, str, dict]:
                 digests = info.get("RepoDigests", []) or []
@@ -1605,31 +1492,40 @@ class SnapshotManager:
                 return digests, image_id, platform_value, info.get("Descriptor") or {}
 
             if structure is not None:
-                evidence = await proxy.fetch_image_evidence(
-                    [
-                        image_id for image_id in running_image_ids
-                        if image_id not in getattr(snap, "_running_image_metadata", {})
-                    ],
-                    unique_images,
-                )
+                try:
+                    evidence = await proxy.fetch_image_evidence(
+                        [
+                            image_id for image_id in running_image_ids
+                            if image_id not in getattr(snap, "_running_image_metadata", {})
+                        ],
+                        unique_images,
+                    )
+                except (httpx.HTTPError, ValueError) as exc:
+                    logger.debug("Image evidence fetch failed for %s: %s", cfg.host_id, exc)
+                    evidence = {"running": {}, "tags": {}}
+                    if _stop_structure_retry(exc):
+                        stop_retry_status = exc.response.status_code
+                evidence = evidence if isinstance(evidence, dict) else {}
+                evidence_running = evidence.get("running") or {}
+                evidence_tags = evidence.get("tags") or {}
                 running_metadata = dict(getattr(snap, "_running_image_metadata", {}))
-                for image_id, info in evidence["running"].items():
+                for image_id, info in evidence_running.items():
                     running_metadata[image_id] = image_metadata(info)
                 for image_id in list(running_metadata):
                     if (
-                        image_id not in evidence["running"]
+                        image_id not in evidence_running
                         and any(
                             c.image_id == image_id
                             and not (
                                 (previous := previous_snapshot_containers.get(c.id)) is not None
                                 and c.image == previous.image and previous.inspection_complete
                             )
-                            for c in snap.containers
+                            for c in containers
                         )
                     ):
                         del running_metadata[image_id]
                 snap._running_image_metadata = running_metadata
-                tag_metadata = {ref: image_metadata(info) for ref, info in evidence["tags"].items()}
+                tag_metadata = {ref: image_metadata(info) for ref, info in evidence_tags.items()}
             else:
                 running_metadata = {}
                 tag_metadata = {}
@@ -1656,7 +1552,7 @@ class SnapshotManager:
                         _, info = result
                         tag_metadata[image_ref] = image_metadata(info)
 
-            for container in snap.containers:
+            for container in containers:
                 previous = previous_snapshot_containers.get(container.id)
                 if (
                     structure is not None and previous is not None
@@ -1687,19 +1583,24 @@ class SnapshotManager:
                     container.tag_image_id = tag[1] or None
                     container.tag_platform = tag[2] or None
 
+            snap.containers = containers
             snap.containers_updated = time.monotonic()
 
             # Stacks from Agent. The aggregate snapshot already includes the
             # stack names; service states are derived from the container labels.
             if structure is not None:
-                self._build_stacks_from_container_labels(snap)
-                if structure.get("stack_names"):
+                stack_names = read_part("stack_names", list)
+                if stack_names is None:
+                    # Containers can still provide service state for known stacks.
+                    snap.stacks = self._merge_stacks_with_container_labels(snap.stacks, snap)
+                else:
+                    self._build_stacks_from_container_labels(snap)
                     existing = {stack.name for stack in snap.stacks}
                     snap.stacks.extend(
                         StackSummary(name=name, status="stopped", management_status="file-only")
-                        for name in structure["stack_names"] if name not in existing
+                        for name in stack_names if name not in existing
                     )
-                    snap.stacks = self._apply_stack_icons(snap.stacks, cfg)
+                    snap.stacks = apply_app_profiles(snap.stacks, cfg)
             else:
                 await self._refresh_stacks(snap, cfg)
 
@@ -1721,8 +1622,9 @@ class SnapshotManager:
             except Exception as cache_exc:
                 logger.warning("Failed to verify/update image update cache for host %s: %s", host_id, cache_exc)
 
-            snap.status = "online"
-            snap.error_message = ""
+            missing = [name for name, value in (("version", ver), ("info", info), ("images", raw_images)) if value is None]
+            snap.status = "degraded" if missing else "online"
+            snap.error_message = f"Partial Agent snapshot: {', '.join(missing)} unavailable." if missing else ""
 
             # A recreated container can have a new running image while its tag's
             # registry cache is still within the normal check interval.
@@ -1741,7 +1643,11 @@ class SnapshotManager:
             if existing_task is None or existing_task.done():
                 task = asyncio.create_task(self._refresh_container_stats(snap, proxy, cfg))
                 self._stats_tasks[cfg.host_id] = task
-                task.add_done_callback(lambda _: self._stats_tasks.pop(cfg.host_id, None))
+                def remove_stats_task(finished: asyncio.Task) -> None:
+                    if self._stats_tasks.get(cfg.host_id) is finished:
+                        self._stats_tasks.pop(cfg.host_id)
+
+                task.add_done_callback(remove_stats_task)
 
         except Exception as exc:
             if isinstance(exc, TRANSIENT_AGENT_ERRORS):
@@ -1753,24 +1659,32 @@ class SnapshotManager:
             self._record_failure(cfg.host_id)
             snap.status = "degraded"
             snap.error_message = str(exc)
+            if _stop_structure_retry(exc):
+                return exc.response.status_code
         else:
             self._record_success(cfg.host_id)
+            return stop_retry_status
+        return None
 
     async def refresh_host_docker_with_retry(
-        self, host_id: str, steps: list[float] = [0.0, 2.0, 5.0, 8.0]
+        self, host_id: str, steps: Sequence[float] = (0.0, 2.0, 5.0, 8.0)
     ) -> None:
         """Refresh host Docker state multiple times with delays to capture transition states."""
         for i, delay in enumerate(steps):
             if delay > 0:
                 await asyncio.sleep(delay)
             try:
-                await self.refresh_host_docker(
+                status_code = await self.refresh_host_docker(
                     host_id,
                     lock_timeout=3.0,
                     execution_timeout=5.0,
                     force_status_on_timeout=False,
                 )
+                if status_code in _STOP_STRUCTURE_RETRY_STATUSES:
+                    return
             except Exception as exc:
+                if _stop_structure_retry(exc):
+                    return
                 logger.warning(
                     "Retry refresh failed for host %s (step %d): %s",
                     host_id, i, exc
@@ -1799,196 +1713,9 @@ class SnapshotManager:
             if isinstance(result, Exception):
                 logger.warning("Docker poll task failed: %s", result)
 
-    def parse_agent_stacks(self, raw_stacks: list) -> list[StackSummary]:
-        """Parse raw Agent stacks payload into StackSummary schemas."""
-        stacks: list[StackSummary] = []
-        for s in raw_stacks:
-            name = s.get("name", s.get("Name", ""))
-            services_raw = s.get("services", s.get("Services", [])) or []
-            compose_file = s.get("composeFile", s.get("filePath"))
-
-            svcs: list[StackService] = []
-            running = 0
-            for svc in services_raw:
-                state = svc.get("state", svc.get("State", "unknown"))
-                if state == "running":
-                    running += 1
-                svcs.append(
-                    StackService(
-                        name=svc.get("name", svc.get("Name", "")),
-                        container_id=svc.get("containerId"),
-                        state=state,
-                        status=svc.get("status", ""),
-                    )
-                )
-
-            # Overall stack status
-            if not svcs:
-                raw_status = s.get("status")
-                if raw_status in ("inactive", "stopped"):
-                    overall = "stopped"
-                elif raw_status == "exited":
-                    overall = "exited"
-                elif raw_status in ("active", "running"):
-                    overall = "running"
-                elif raw_status in ("partial", "partially running"):
-                    overall = "partially running"
-                elif raw_status is None:
-                    overall = "stopped"
-                else:
-                    overall = raw_status or "unknown"
-            elif running == len(svcs):
-                overall = "running"
-            elif running == 0:
-                if any(svc.state == "exited" for svc in svcs):
-                    overall = "exited"
-                else:
-                    overall = "stopped"
-            else:
-                overall = "partially running"
-
-            stacks.append(
-                StackSummary(
-                    name=name,
-                    status=overall,
-                    compose_file=compose_file,
-                    service_count=len(svcs),
-                    running_count=running,
-                    services=svcs,
-                    management_status=s.get("management_status", s.get("managementStatus", "managed")),
-                )
-            )
-        return stacks
-
-    def _apply_stack_icons(
-        self, stacks: list[StackSummary], cfg: HostConfig | None
-    ) -> list[StackSummary]:
-        if cfg is None:
-            return stacks
-        snap = self.get_snapshot(cfg.host_id)
-        if not snap:
-            snap = HostSnapshot()
-            snap.host_config = cfg
-        return self._apply_app_profiles(stacks, snap)
-
-    def _apply_app_profiles(
-        self, stacks: list[StackSummary], snap: HostSnapshot
-    ) -> list[StackSummary]:
-        """Apply app profile metadata and fallback icons to stack summaries."""
-        cfg = snap.host_config
-        if cfg is None:
-            return stacks
-
-        profiles: list[dict] = []
-        if cfg.app_profiles:
-            try:
-                import json
-                parsed = json.loads(cfg.app_profiles)
-                if isinstance(parsed, list):
-                    profiles = parsed
-            except Exception as e:
-                logger.warning("Failed to parse app_profiles JSON for host %s: %s", cfg.host_id, e)
-
-        stack_icons_mapping: dict[str, str] = {}
-        if cfg.stack_icons:
-            try:
-                import json
-                parsed_icons = json.loads(cfg.stack_icons)
-                if isinstance(parsed_icons, dict):
-                    stack_icons_mapping = parsed_icons
-            except Exception as e:
-                logger.warning("Failed to parse stack_icons JSON for host %s: %s", cfg.host_id, e)
-
-        for stack in stacks:
-            matched = self._match_profile(stack.name, profiles)
-            
-            if matched and matched.get("title"):
-                stack.title = matched["title"]
-            else:
-                stack.title = self._format_stack_title(stack.name)
-
-            if matched and matched.get("app_url"):
-                stack.app_url = matched["app_url"]
-            else:
-                stack.app_url = None
-
-            if matched and matched.get("group"):
-                stack.group = matched["group"]
-            else:
-                stack.group = "未分组"
-
-            icon_val = None
-            if matched and matched.get("icon_value"):
-                icon_val = matched["icon_value"]
-            else:
-                icon_val = self._match_icon(stack.name, stack_icons_mapping)
-
-            if icon_val:
-                if icon_val.startswith("http://") or icon_val.startswith("https://"):
-                    stack.icon_url = icon_val
-                else:
-                    filename = icon_val.lstrip("/")
-                    stack.icon_url = f"/api/static/icons/{filename}"
-            else:
-                stack.icon_url = None
-
-        return stacks
-
-    @staticmethod
-    def _format_stack_title(name: str) -> str:
-        s = name.replace("-", " ").replace("_", " ")
-        return s.title()
-
-    @staticmethod
-    def _match_profile(name: str, profiles: list[dict]) -> dict | None:
-        # Priority: exact match > prefix wildcard (key*) > suffix wildcard (*key).
-        # 1. Exact match
-        for p in profiles:
-            pattern = p.get("stack_pattern", "")
-            if pattern == name:
-                return p
-
-        # 2. Prefix wildcard (e.g. key*)
-        for p in profiles:
-            pattern = p.get("stack_pattern", "")
-            if pattern.endswith("*") and not pattern.startswith("*"):
-                prefix = pattern[:-1]
-                if name.startswith(prefix):
-                    return p
-
-        # 3. Suffix wildcard (e.g. *key)
-        for p in profiles:
-            pattern = p.get("stack_pattern", "")
-            if pattern.startswith("*") and not pattern.endswith("*"):
-                suffix = pattern[1:]
-                if name.endswith(suffix):
-                    return p
-
-        return None
-
-    @staticmethod
-    def _match_icon(name: str, mapping: dict[str, str]) -> str | None:
-        """Match a stack name against icon mapping keys.
-
-        Priority: exact match > prefix wildcard (``key*``) > suffix wildcard (``*key``).
-        """
-        # 1. Exact match
-        if name in mapping:
-            return mapping[name]
-
-        # 2. Prefix wildcard (e.g. key*)
-        for key, value in mapping.items():
-            if key.endswith("*") and not key.startswith("*"):
-                if name.startswith(key[:-1]):
-                    return value
-
-        # 3. Suffix wildcard (e.g. *key)
-        for key, value in mapping.items():
-            if key.startswith("*") and not key.endswith("*"):
-                if name.endswith(key[1:]):
-                    return value
-
-        return None
+    parse_agent_stacks = staticmethod(parse_agent_stacks)
+    _match_profile = staticmethod(_match_profile)
+    _match_icon = staticmethod(_match_icon)
 
     def update_host_stacks_realtime(self, host_id: str, raw_stacks: list) -> None:
         """Real-time update of host stacks when Agent pushes stackList event."""
@@ -1998,7 +1725,7 @@ class SnapshotManager:
         try:
             logger.info("Real-time stack list update received for %s", host_id)
             stacks = self.parse_agent_stacks(raw_stacks)
-            stacks = self._apply_stack_icons(stacks, snap.host_config)
+            stacks = apply_app_profiles(stacks, snap.host_config)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
             # Coalesce rapid stackList events: cancel previous pending refresh and
@@ -2061,56 +1788,18 @@ class SnapshotManager:
             )
 
             stacks = self.parse_agent_stacks(raw_stacks)
-            stacks = self._apply_stack_icons(stacks, cfg)
+            stacks = apply_app_profiles(stacks, cfg)
             snap.stacks = self._merge_stacks_with_container_labels(stacks, snap)
             snap.stacks_updated = time.monotonic()
 
         except Exception as exc:
             logger.warning("Agent refresh failed for %s: %s", cfg.host_id, exc)
-            self._build_stacks_from_container_labels(snap)
+            snap.stacks = self._merge_stacks_with_container_labels(snap.stacks, snap)
 
     def _merge_stacks_with_container_labels(
-        self, agent_stacks: list[StackSummary], snap: HostSnapshot
+        self, agent_stacks: list[StackSummary], snap: HostSnapshot,
     ) -> list[StackSummary]:
-        """Fill missing Agent stack states from Docker Compose labels.
-
-        Some Agent versions may return only the stack names.
-        When that happens the UI would show ``unknown`` even though the
-        Agent already has reliable container state and compose
-        labels for the same stacks.
-        """
-        label_stacks = self._stacks_from_container_labels(snap)
-        label_by_name = {stack.name: stack for stack in label_stacks}
-
-        merged: list[StackSummary] = []
-        seen: set[str] = set()
-        for stack in agent_stacks:
-            seen.add(stack.name)
-            fallback = label_by_name.get(stack.name)
-            if fallback and not stack.services:
-                merged.append(
-                    StackSummary(
-                        name=stack.name,
-                        status=fallback.status,
-                        compose_file=stack.compose_file or fallback.compose_file,
-                        service_count=fallback.service_count,
-                        running_count=fallback.running_count,
-                        services=fallback.services,
-                        icon_url=stack.icon_url,
-                        management_status="deployed",
-                    )
-                )
-            else:
-                if stack.management_status == "managed":
-                    stack.management_status = "deployed" if fallback else "file-only"
-                merged.append(stack)
-
-        for stack in label_stacks:
-            if stack.name not in seen:
-                stack.management_status = "unmanaged"
-                merged.append(stack)
-
-        return self._apply_stack_icons(merged, snap.host_config)
+        return apply_app_profiles(merge_stacks_with_container_labels(agent_stacks, snap.containers), snap.host_config)
 
     async def _refresh_container_stats(
         self, snap: HostSnapshot, proxy: AgentClient, cfg: HostConfig
@@ -2203,61 +1892,9 @@ class SnapshotManager:
         This keeps the monitoring UI useful when the Agent is offline.
         Mutating stack operations still require a working Agent connection.
         """
-        snap.stacks = self._stacks_from_container_labels(snap)
-        snap.stacks = self._apply_stack_icons(snap.stacks, snap.host_config)
+        snap.stacks = stacks_from_container_labels(snap.containers)
+        snap.stacks = apply_app_profiles(snap.stacks, snap.host_config)
         snap.stacks_updated = time.monotonic()
-
-    def _stacks_from_container_labels(self, snap: HostSnapshot) -> list[StackSummary]:
-        """Build stack summaries from Docker Compose labels."""
-        grouped: dict[str, list[ContainerSummary]] = {}
-        for container in snap.containers:
-            if not container.stack_name:
-                continue
-            grouped.setdefault(container.stack_name, []).append(container)
-
-        stacks: list[StackSummary] = []
-        for stack_name, containers in sorted(grouped.items()):
-            services: list[StackService] = []
-            running = 0
-            for container in containers:
-                if container.state == "running":
-                    running += 1
-                services.append(
-                    StackService(
-                        name=container.service_name or container.name,
-                        container_id=container.id,
-                        state=container.state,
-                        status=container.status,
-                    )
-                )
-
-            if running == len(services):
-                overall = "running"
-            elif running == 0:
-                if any(svc.state == "exited" for svc in services):
-                    overall = "exited"
-                else:
-                    overall = "stopped"
-            else:
-                overall = "partially running"
-
-            compose_file = None
-            labels = containers[0].labels if containers else {}
-            if labels:
-                compose_file = labels.get("com.docker.compose.project.config_files")
-
-            stacks.append(
-                StackSummary(
-                    name=stack_name,
-                    status=overall,
-                    compose_file=compose_file,
-                    service_count=len(services),
-                    running_count=running,
-                    services=services,
-                )
-            )
-
-        return stacks
 
     # ── Update checks ─────────────────────────────────────────────
 
@@ -2397,7 +2034,7 @@ class SnapshotManager:
                 status=PENDING_UPDATE_STATUS if result.status == "updatable" else result.status,
                 current_digest=result.current_digest,
                 registry_digest=result.registry_digest,
-                registry=result.registry,
+                registry_name=result.registry,
                 platform=result.platform,
                 registry_index_digest=result.registry_index_digest,
                 registry_manifest_digest=result.registry_manifest_digest,
@@ -2416,7 +2053,7 @@ class SnapshotManager:
             existing.pending_platform = result.platform
             existing.pending_matched_field = result.matched_field
             existing.pending_detected_at = now
-            existing.registry = result.registry
+            existing.registry_name = result.registry
             existing.http_status = result.http_status
             existing.retry_after = result.retry_after
             existing.checked_at = now
@@ -2449,7 +2086,7 @@ class SnapshotManager:
                 existing.status = result.status
                 existing.current_digest = result.current_digest
                 existing.registry_digest = result.registry_digest
-                existing.registry = result.registry
+                existing.registry_name = result.registry
                 existing.platform = result.platform
                 existing.http_status = result.http_status
                 existing.matched_field = result.matched_field
@@ -2461,7 +2098,7 @@ class SnapshotManager:
         existing.status = result.status
         existing.current_digest = result.current_digest
         existing.registry_digest = result.registry_digest
-        existing.registry = result.registry
+        existing.registry_name = result.registry
         existing.platform = result.platform
         existing.registry_index_digest = result.registry_index_digest
         existing.registry_manifest_digest = result.registry_manifest_digest
@@ -2600,84 +2237,7 @@ class SnapshotManager:
     # ── Build summaries for API ────────────────────────────────────
 
     def build_host_summary(self, snap: HostSnapshot) -> HostSummary:
-        """Build a HostSummary from a snapshot, for the /api/hosts response."""
-        cfg = snap.host_config
-        info = snap.docker_info
-        disk = snap.docker_disk
-        containers = snap.containers
-
-        if info is None and snap.status == "degraded":
-            effective_status = "degraded"
-        elif snap.metrics is None and snap.status == "online":
-            effective_status = "degraded"
-        else:
-            effective_status = snap.status
-
-        sub_summary = None
-        sub = snap.subscription
-        if sub and subscription_is_configured(sub):
-            try:
-                tz = ZoneInfo(sub.billing_timezone)
-            except Exception:
-                tz = timezone.utc
-            local_today = datetime.now(tz).date()
-            _, expiry_days = _date_status(sub.service_expiry_date, local_today)
-            _, payment_days = _date_status(sub.next_payment_date, local_today)
-            quota_bytes = None
-            if (
-                sub.quota_enabled
-                and sub.traffic_quota_value is not None
-                and sub.traffic_quota_unit in UNIT_BYTES
-            ):
-                try:
-                    quota_bytes = int(Decimal(str(sub.traffic_quota_value)) * UNIT_BYTES[sub.traffic_quota_unit])
-                except Exception:
-                    quota_bytes = None
-
-            sub_summary = HostSubscriptionSummary(
-                configured=True,
-                provider=sub.provider,
-                plan_name=sub.plan_name,
-                payment_amount=float(sub.payment_amount) if sub.payment_amount is not None else None,
-                currency=sub.currency or "CNY",
-                payment_cycle=sub.payment_cycle,
-                next_payment_date=sub.next_payment_date.isoformat() if sub.next_payment_date else None,
-                payment_days_remaining=payment_days,
-                service_expiry_date=sub.service_expiry_date.isoformat() if sub.service_expiry_date else None,
-                service_days_remaining=expiry_days,
-                auto_renew=sub.auto_renew,
-                quota_enabled=sub.quota_enabled,
-                traffic_direction=sub.traffic_direction or "both",
-                traffic_quota_value=float(sub.traffic_quota_value) if sub.traffic_quota_value is not None else None,
-                traffic_quota_unit=sub.traffic_quota_unit,
-                traffic_quota_bytes=quota_bytes,
-                management_url=sub.management_url,
-            )
-
-        return HostSummary(
-            host_id=cfg.host_id,
-            display_name=cfg.display_name or cfg.host_id,
-            status=effective_status,
-            traffic_billing_day=cfg.traffic_billing_day,
-            logo=cfg.logo,
-            metrics=snap.metrics,
-            docker_version=info.version if info else None,
-            api_version=info.api_version if info else None,
-            os_info=info.operating_system if info else None,
-            architecture=info.architecture if info else None,
-            docker_root_dir=info.docker_root_dir if info else None,
-            container_running=sum(1 for c in containers if c.state == "running"),
-            container_stopped=sum(1 for c in containers if c.state != "running"),
-            container_total=len(containers),
-            image_count=snap.image_count,
-            docker_disk_images=disk.images_size if disk else None,
-            docker_disk_containers=disk.containers_size if disk else None,
-            docker_disk_volumes=disk.volumes_size if disk else None,
-            docker_disk_build_cache=disk.build_cache_size if disk else None,
-            update_count=snap.update_count,  # From update_check background task
-            error_message=snap.error_message,  # From snapshot error state
-            subscription=sub_summary,
-        )
+        return build_host_summary(snap)
 
 
 # Singleton

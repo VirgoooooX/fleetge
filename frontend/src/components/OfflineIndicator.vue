@@ -1,7 +1,7 @@
 <template>
   <Transition name="offline-fade">
     <div v-if="isOffline" class="offline-indicator" role="alert">
-      <el-icon><WarningFilled /></el-icon>
+      <el-icon><AlertTriangle /></el-icon>
       <span>{{ t('mobile.offline') }}</span>
     </div>
   </Transition>
@@ -10,7 +10,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { WarningFilled } from "@element-plus/icons-vue";
+import { AlertTriangle } from "@lucide/vue";
 
 const { t } = useI18n();
 const isOffline = ref(!navigator.onLine);
@@ -40,9 +40,10 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 32px;
+  min-height: 32px;
+  padding-top: var(--safe-area-top);
   background: var(--warning);
-  color: #1e293b;
+  color: #0f172a;
   font-size: 13px;
   font-weight: 700;
 }

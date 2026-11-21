@@ -29,7 +29,6 @@
         :host-id="hostId"
         :metrics="host.metrics"
         :traffic="trafficState"
-        variant="detail"
       />
       <div class="metrics-item">
         <div class="metrics-header">
@@ -77,7 +76,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
-import { apiClient } from "@/api/client";
+import { fetchHostDetail, fetchUpdateResults } from "@/api/hosts";
 import {
   useDashboardStore,
   type HostSummary,
@@ -95,7 +94,6 @@ const dashboardStore = useDashboardStore();
 const { t } = useI18n();
 const hostId = computed(() => route.params.hostId as string);
 
-const loading = ref(true);
 const host = ref<HostSummary | null>(null);
 const stacks = ref<StackSummary[]>([]);
 const containers = ref<ContainerSummary[]>([]);
@@ -104,7 +102,8 @@ const updateResults = ref<UpdateResult[]>([]);
 const updateLoading = ref(false);
 
 const structureLoading = ref(false);
-const detailRequestSeq = ref(0);
+let detailRequest: AbortController | null = null;
+let updateRequest: AbortController | null = null;
 const trafficState = computed(() => dashboardStore.getHostTrafficState(hostId.value));
 
 // Computed metrics
@@ -173,9 +172,7 @@ const ioActivityLevel = computed(() => {
 });
 
 function activateHostDetail(targetHostId: string) {
-  const currentHost = dashboardStore.hosts.find(
-    (item) => item.host_id === targetHostId
-  );
+  const currentHost = dashboardStore.hostsById.get(targetHostId);
   host.value = currentHost || null;
 
   const cached = dashboardStore.getHostDetailCache(targetHostId);
@@ -194,160 +191,65 @@ function activateHostDetail(targetHostId: string) {
   }
 }
 
-function applyUpdateResults(results: UpdateResult[], targetHostId = hostId.value): UpdateResult[] {
-  dashboardStore.applyUpdateResults(results || []);
-  const filteredResults = (results || []).filter(
-    (item) => item.host_id === targetHostId
-  );
-  if (targetHostId === hostId.value) {
-    updateResults.value = filteredResults;
-  }
-  return filteredResults;
-}
-
-async function fetchUpdateResults(targetHostId = hostId.value): Promise<UpdateResult[]> {
-  updateLoading.value = true;
-  try {
-    const res = await apiClient.get("/api/update-checks");
-    return applyUpdateResults(res.data || [], targetHostId);
-  } catch (e) {
-    console.error("Failed to fetch update checks:", e);
-    if (targetHostId === hostId.value) {
-      updateResults.value = [];
-    }
-    return [];
-  } finally {
-    if (targetHostId === hostId.value) {
-      updateLoading.value = false;
-    }
-  }
-}
-
-async function runUpdateCheck() {
-  const requestedHostId = hostId.value;
-  updateLoading.value = true;
-  try {
-    const runState = await dashboardStore.runUpdateCheck();
-    applyUpdateResults(runState.results || [], requestedHostId);
-    if (requestedHostId !== hostId.value) return;
-    await fetchDetail({ skipUpdates: true });
-  } catch (e) {
-    console.error("Failed to run update check:", e);
-  } finally {
-    if (requestedHostId === hostId.value) {
-      updateLoading.value = false;
-    }
-  }
-}
-
 async function syncUpdateResults() {
   const requestedHostId = hostId.value;
-  const fetchedUpdateResults = await fetchUpdateResults(requestedHostId);
-  dashboardStore.patchHostDetailUpdateResults(requestedHostId, fetchedUpdateResults);
+  updateRequest?.abort();
+  const request = new AbortController();
+  updateRequest = request;
+  updateLoading.value = true;
+  try {
+    const { data } = await fetchUpdateResults(request.signal);
+    if (updateRequest !== request || requestedHostId !== hostId.value) return;
+    dashboardStore.applyUpdateResults(data || []);
+    updateResults.value = (data || []).filter((item) => item.host_id === requestedHostId);
+    dashboardStore.patchHostDetailUpdateResults(requestedHostId, updateResults.value);
+  } catch (error) {
+    if (!request.signal.aborted) console.error("Failed to fetch update checks:", error);
+  } finally {
+    if (updateRequest === request) {
+      updateRequest = null;
+      updateLoading.value = false;
+    }
+  }
 }
 
-async function fetchDetailCached(options: { skipUpdates?: boolean; silent?: boolean } = {}) {
-  const requestId = ++detailRequestSeq.value;
+async function loadDetail(refresh = false, poll = false) {
+  if (poll && detailRequest) return;
+  detailRequest?.abort();
+  const request = new AbortController();
+  detailRequest = request;
   const requestedHostId = hostId.value;
 
-  if (!options.silent) {
-    loading.value = true;
-  }
   try {
-    const res = await apiClient.get(
-      `/api/hosts/${encodeURIComponent(hostId.value)}`
-    );
+    const { data } = await fetchHostDetail(requestedHostId, refresh, request.signal);
+    if (detailRequest !== request || requestedHostId !== hostId.value) return;
 
-    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
-
-    host.value = res.data.host || null;
-    stacks.value = res.data.stacks || [];
-    containers.value = res.data.containers || [];
-    containerStats.value = res.data.container_stats || {};
-
-    if (host.value) {
-      dashboardStore.upsertHost(host.value);
-    }
+    host.value = data.host || null;
+    stacks.value = data.stacks || [];
+    containers.value = data.containers || [];
+    containerStats.value = data.container_stats || {};
+    if (host.value) dashboardStore.upsertHost(host.value);
 
     dashboardStore.setHostDetailCache(requestedHostId, {
       host: host.value,
       stacks: stacks.value,
       containers: containers.value,
       containerStats: containerStats.value,
-      updateResults: options.skipUpdates
-        ? (dashboardStore.getHostDetailCache(requestedHostId)?.updateResults || [])
-        : updateResults.value,
+      updateResults: updateResults.value,
     });
-
-    if (!options.skipUpdates) {
-      const fetchedUpdateResults = await fetchUpdateResults(requestedHostId);
-      if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
-        dashboardStore.patchHostDetailUpdateResults(requestedHostId, fetchedUpdateResults);
-      }
-    }
-  } catch (e: any) {
-    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
-    console.error("Failed to fetch host detail:", e);
+    if (!poll) await syncUpdateResults();
+  } catch (error) {
+    if (!request.signal.aborted) console.error("Failed to fetch host detail:", error);
   } finally {
-    if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
+    if (detailRequest === request) {
+      detailRequest = null;
       structureLoading.value = false;
-      if (!options.silent) {
-        loading.value = false;
-      }
     }
   }
 }
 
-async function fetchDetail(options: { skipUpdates?: boolean; silent?: boolean } = {}) {
-  const requestId = ++detailRequestSeq.value;
-  const requestedHostId = hostId.value;
-
-  if (!options.silent) {
-    loading.value = true;
-  }
-  try {
-    const res = await apiClient.post(
-      `/api/hosts/${encodeURIComponent(hostId.value)}/refresh`
-    );
-
-    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
-
-    host.value = res.data.host || null;
-    stacks.value = res.data.stacks || [];
-    containers.value = res.data.containers || [];
-    containerStats.value = res.data.container_stats || {};
-
-    if (host.value) {
-      dashboardStore.upsertHost(host.value);
-    }
-
-    dashboardStore.setHostDetailCache(requestedHostId, {
-      host: host.value,
-      stacks: stacks.value,
-      containers: containers.value,
-      containerStats: containerStats.value,
-      updateResults: options.skipUpdates
-        ? (dashboardStore.getHostDetailCache(requestedHostId)?.updateResults || [])
-        : updateResults.value,
-    });
-
-    if (!options.skipUpdates) {
-      const fetchedUpdateResults = await fetchUpdateResults(requestedHostId);
-      if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
-        dashboardStore.patchHostDetailUpdateResults(requestedHostId, fetchedUpdateResults);
-      }
-    }
-  } catch (e: any) {
-    if (requestId !== detailRequestSeq.value || requestedHostId !== hostId.value) return;
-    console.error("Failed to fetch host detail:", e);
-  } finally {
-    if (requestId === detailRequestSeq.value && requestedHostId === hostId.value) {
-      structureLoading.value = false;
-      if (!options.silent) {
-        loading.value = false;
-      }
-    }
-  }
+function fetchDetail() {
+  void loadDetail(true);
 }
 
 let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -358,7 +260,7 @@ function startPolling() {
   void dashboardStore.fetchHostTrafficSummary(hostId.value, true);
   pollInterval = setInterval(() => {
     if (!document.hidden) {
-      fetchDetailCached({ skipUpdates: true, silent: true });
+      void loadDetail(false, true);
     }
   }, 10000);
   trafficInterval = setInterval(() => {
@@ -381,27 +283,36 @@ function stopPolling() {
 
 onMounted(() => {
   activateHostDetail(hostId.value);
-  fetchDetailCached();
+  void loadDetail();
   startPolling();
 });
 
 watch(hostId, () => {
+  cancelRequests();
   activateHostDetail(hostId.value);
-  fetchDetailCached();
+  void loadDetail();
   startPolling();
 });
 
 watch(
-  () => dashboardStore.hosts.find((item) => item.host_id === hostId.value),
+  () => dashboardStore.hostsById.get(hostId.value),
   (nextHost) => {
     if (nextHost) {
       host.value = nextHost;
     }
   },
-  { deep: true }
 );
 
+function cancelRequests() {
+  detailRequest?.abort();
+  detailRequest = null;
+  updateRequest?.abort();
+  updateRequest = null;
+  updateLoading.value = false;
+}
+
 onUnmounted(() => {
+  cancelRequests();
   stopPolling();
 });
 </script>

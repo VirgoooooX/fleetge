@@ -2,16 +2,20 @@
   <section class="operation-terminal" :class="[`is-${status}`, { compact }]">
     <div class="terminal-head">
       <div class="terminal-title">
-        <span class="terminal-mark">[_]</span>
+        <span class="terminal-mark" aria-hidden="true">[_]</span>
         <strong>{{ actionTitle }}</strong>
         <span class="stack-name">{{ stackName }}</span>
       </div>
 
       <div class="terminal-tools">
-        <span v-if="status !== 'running'" class="terminal-state" :class="`state-${status}`">
-          <el-icon v-if="status === 'success'"><SuccessFilled /></el-icon>
-          <el-icon v-else-if="status === 'error' || status === 'partial'"><WarningFilled /></el-icon>
-          {{ statusLabel }}
+        <span role="status" class="terminal-state" :class="`state-${status}`">
+          <el-icon v-if="status === 'success'"><CheckCircle2 /></el-icon>
+          <el-icon v-else-if="status === 'error' || status === 'partial'"><AlertTriangle /></el-icon>
+          <span v-if="status === 'running'" class="terminal-visually-hidden">{{ message }}</span>
+          <template v-else>
+            {{ statusLabel }}
+            <span class="terminal-visually-hidden">{{ message }}</span>
+          </template>
         </span>
         <el-button v-if="status === 'running' && canStopPending" type="danger" link size="small" @click.stop="$emit('stop-pending')">
           {{ t("workspace.stopPendingUpdates") }}
@@ -23,7 +27,7 @@
           {{ copied ? t("stackOp.copied") : t("stackOp.copy") }}
         </el-button>
         <el-button class="ui-icon-button ui-icon-button--small" size="small" text :aria-label="t('compose.close')" @click.stop="$emit('close')">
-          <el-icon><Close /></el-icon>
+          <el-icon><X /></el-icon>
         </el-button>
       </div>
     </div>
@@ -33,10 +37,11 @@
 </template>
 
 <script setup lang="ts">
+import { copyText } from "@/utils/clipboard";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
-import { Close, SuccessFilled, WarningFilled } from "@element-plus/icons-vue";
+import { AlertTriangle, CheckCircle2, X } from "@lucide/vue";
 import { Terminal as XtermTerminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -67,6 +72,7 @@ let renderedChunkCount = 0;
 let renderedCompletion = "";
 let resizeObserver: ResizeObserver | null = null;
 let themeObserver: MutationObserver | null = null;
+let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
 const darkTerminalTheme: ITheme = {
   background: "#000000",
@@ -123,6 +129,7 @@ onMounted(() => {
   terminal = new XtermTerminal({
     convertEol: true,
     cursorBlink: false,
+    disableStdin: true,
     fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
     fontSize: 13,
     lineHeight: 1.2,
@@ -151,6 +158,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  clearTimeout(copiedTimer);
   resizeObserver?.disconnect();
   resizeObserver = null;
   themeObserver?.disconnect();
@@ -251,13 +259,15 @@ function getTerminalPlainText(): string {
 
 async function copyOutput() {
   try {
-    await navigator.clipboard.writeText(getTerminalPlainText());
+    await copyText(getTerminalPlainText());
+    if (!terminal) return;
     copied.value = true;
-    setTimeout(() => {
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
       copied.value = false;
     }, 1800);
   } catch {
-    ElMessage.warning(t("stackOp.copyFailed"));
+    if (terminal) ElMessage.warning(t("stackOp.copyFailed"));
   }
 }
 </script>
@@ -271,7 +281,7 @@ async function copyOutput() {
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.12);
 }
 
-:global([data-theme="light"] .operation-terminal) {
+:global([data-theme="light"]) .operation-terminal {
   background: #f8fafc;
   border-color: rgba(22, 163, 74, 0.42);
   box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.08);
@@ -282,7 +292,7 @@ async function copyOutput() {
   box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.16);
 }
 
-:global([data-theme="light"] .operation-terminal.is-error) {
+:global([data-theme="light"]) .operation-terminal.is-error {
   border-color: rgba(220, 38, 38, 0.46);
   box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.10);
 }
@@ -308,7 +318,7 @@ async function copyOutput() {
   background: #050914;
 }
 
-:global([data-theme="light"] .terminal-head) {
+:global([data-theme="light"]) .terminal-head {
   border-bottom-color: rgba(60, 72, 88, 0.14);
   background: #eef2f7;
 }
@@ -328,33 +338,43 @@ async function copyOutput() {
   font-size: 12px;
 }
 
-:global([data-theme="light"] .terminal-title) {
+:global([data-theme="light"]) .terminal-title {
   color: #0f172a;
 }
 
 .terminal-title strong {
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .terminal-mark {
   color: #3b82f6;
-  font-weight: 900;
+  font-weight: 700;
 }
 
 .stack-name {
   overflow: hidden;
   color: #f8fbff;
-  font-weight: 800;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-:global([data-theme="light"] .stack-name) {
+:global([data-theme="light"]) .operation-terminal .stack-name {
   color: #0f172a;
 }
 
 .terminal-tools {
   gap: 10px;
+}
+
+.terminal-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .terminal-state {
@@ -382,7 +402,7 @@ async function copyOutput() {
   background: #000000;
 }
 
-:global([data-theme="light"] .terminal-surface) {
+:global([data-theme="light"]) .terminal-surface {
   background: #f8fafc;
 }
 
@@ -398,7 +418,7 @@ async function copyOutput() {
   background: #000000 !important;
 }
 
-:global([data-theme="light"] .terminal-surface) :deep(.xterm-viewport) {
+:global([data-theme="light"]) .terminal-surface :deep(.xterm-viewport) {
   background: #f8fafc !important;
 }
 

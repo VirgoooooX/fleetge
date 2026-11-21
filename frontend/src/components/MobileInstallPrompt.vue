@@ -16,7 +16,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { Download } from "@element-plus/icons-vue";
+import { Download } from "@lucide/vue";
 
 const { t } = useI18n();
 
@@ -67,7 +67,7 @@ onUnmounted(() => {
 <style scoped>
 .install-prompt-banner {
   position: fixed;
-  bottom: 16px;
+  bottom: calc(16px + var(--safe-area-bottom));
   left: 50%;
   transform: translateX(-50%);
   z-index: 9980;

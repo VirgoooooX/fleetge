@@ -6,37 +6,34 @@ import logging
 import re
 import uuid
 from collections import OrderedDict, deque
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
 import httpx
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models import AuditLog, AutoUpdateRun, ImageUpdateCache, Setting, StackAutoUpdate
+from app.models import AuditLog, AutoUpdateRun, HostBillingAlertState, ImageUpdateCache, Setting, StackAutoUpdate
+from app.services import auto_update_policy
 from app.services.agent_client import AgentClient
+from app.services.auto_update_policy import control_stack, ingress_services
 from app.services.crypto import decrypt_string, encrypt_string
 from app.services.notification_cover import prepare_notification
+from app.services.notify_hub import NOTIFY_KEYS, matches_destination, submit_event
+from app.time_utils import as_utc as utc, utc_now as now_utc
 from app.services.update_check import _normalize_digest, _parse_platform, _platform_matches
 
 logger = logging.getLogger(__name__)
-NOTIFY_KEYS = ("NOTIFYHUB_URL", "NOTIFYHUB_KEY", "NOTIFYHUB_RECIPIENT")
 PULL_RETRY_DELAY = 10
 OPERATION_TIMEOUT = 600
 TERMINAL_STATES = {"success", "partial", "failed", "uncertain", "skipped"}
 
 
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def get_engine():
     import app.services.auto_update as this_module
     return getattr(this_module, "engine", engine)
-
-
-def utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
 
 class UpdateRunError(Exception):
@@ -76,72 +73,41 @@ def save_notify_settings(url: str, recipient: str, api_key: str | None) -> None:
             row = session.get(Setting, key) or Setting(setting_key=key)
             row.setting_value = value
             session.add(row)
-        for run in session.exec(select(AutoUpdateRun).where(AutoUpdateRun.notify_status == "blocked")).all():
-            if run.notify_url == url and run.notify_recipient == recipient:
-                run.notify_status = "pending"
-                run.notify_next_at = now_utc()
-                session.add(run)
+        key = session.get(Setting, "NOTIFYHUB_KEY")
+        if url and recipient and key and key.setting_value:
+            now = now_utc()
+            session.exec(update(AutoUpdateRun).where(
+                AutoUpdateRun.notify_status == "blocked",
+                AutoUpdateRun.notify_url == url,
+                AutoUpdateRun.notify_recipient == recipient,
+                (AutoUpdateRun.notify_expires_at.is_(None) | (AutoUpdateRun.notify_expires_at > now)),
+            ).values(notify_status="pending", notify_next_at=now, notify_error=""))
+            session.exec(update(HostBillingAlertState).where(
+                HostBillingAlertState.status == "blocked",
+                HostBillingAlertState.notify_url == url,
+                HostBillingAlertState.notify_recipient == recipient,
+                HostBillingAlertState.expires_at > now,
+            ).values(status="pending", next_attempt_at=now, last_error=""))
         session.commit()
 
 
 def stack_policy(host_id: str, stack_name: str) -> StackAutoUpdate:
     with Session(get_engine()) as session:
-        return session.exec(select(StackAutoUpdate).where(
-            StackAutoUpdate.host_id == host_id, StackAutoUpdate.stack_name == stack_name,
-        )).first() or StackAutoUpdate(host_id=host_id, stack_name=stack_name)
+        return auto_update_policy.stack_policy(session, host_id, stack_name)
 
 
 def policy_map(host_id: str) -> dict[str, StackAutoUpdate]:
     with Session(get_engine()) as session:
-        return {row.stack_name: row for row in session.exec(select(StackAutoUpdate).where(StackAutoUpdate.host_id == host_id)).all()}
+        return auto_update_policy.policy_map(session, host_id)
 
 
 def stack_summaries(snap) -> list:
-    policies = policy_map(snap.host_config.host_id)
-    return [stack.model_copy(update={
-        "auto_update_enabled": policies[stack.name].enabled if stack.name in policies else False,
-        "auto_update_reason": policies[stack.name].reason if stack.name in policies else "",
-    }) for stack in snap.stacks]
+    return auto_update_policy.stack_summaries(snap, policy_map(snap.host_config.host_id))
 
 
 def set_policy(host_id: str, stack_name: str, enabled: bool) -> StackAutoUpdate:
     with Session(get_engine()) as session:
-        row = session.exec(select(StackAutoUpdate).where(
-            StackAutoUpdate.host_id == host_id, StackAutoUpdate.stack_name == stack_name,
-        )).first() or StackAutoUpdate(host_id=host_id, stack_name=stack_name)
-        row.enabled = enabled
-        row.reason = ""
-        session.add(row)
-        session.commit()
-        session.refresh(row)
-        return row
-
-
-def ingress_services(snap, stack_name: str, ingress: dict) -> list[str]:
-    """Services of this stack that currently hold the agent's ingress ports."""
-    services = []
-    for item in ingress.get("services") or []:
-        if not isinstance(item, dict) or item.get("stack_name") != stack_name:
-            continue
-        service = str(item.get("service_name") or "")
-        if service and any(
-            container.stack_name == stack_name and container.service_name == service
-            for container in snap.containers
-        ):
-            services.append(service)
-    return services
-
-
-def control_stack(snap, stack_name: str, self_info: dict) -> bool:
-    if self_info.get("stack_name") == stack_name:
-        return True
-    for container in snap.containers:
-        if container.stack_name != stack_name:
-            continue
-        repository = container.image.split("@", 1)[0].rsplit("/", 1)[-1].split(":", 1)[0]
-        if repository in {"fleetge", "fleetge-agent"}:
-            return True
-    return False
+        return auto_update_policy.set_policy(session, host_id, stack_name, enabled)
 
 
 def scrub_log(text: str, token: str = "", *, terminal: bool = False) -> str:
@@ -280,6 +246,18 @@ class AutoUpdateManager:
             self.workers.pop(host_id, None)
             self.pending.pop(host_id, None)
 
+    def _existing_batch(self, session: Session, request_id: str, host_id: str, mode: str, names: list[str]) -> dict | None:
+        existing = session.exec(select(AutoUpdateRun).where(
+            AutoUpdateRun.request_id == request_id,
+        ).order_by(AutoUpdateRun.id)).all()
+        if not existing:
+            return None
+        if any(row.host_id != host_id for row in existing):
+            raise UpdateRunError(409, "request_id is already used by another host.")
+        if any(row.source != mode for row in existing) or [row.stack_name for row in existing] != names:
+            raise UpdateRunError(409, "request_id was already submitted with different parameters.")
+        return self.batch_payload(existing)
+
     async def submit(self, host_id: str, request_id: str, mode: str, stack_names: list[str], requested_by: str) -> dict:
         if not self.started:
             raise UpdateRunError(503, "Update scheduler is unavailable.")
@@ -294,14 +272,8 @@ class AutoUpdateManager:
             raise UpdateRunError(422, "manual mode requires one Stack; bulk mode requires at least one Stack.")
 
         with Session(get_engine()) as session:
-            existing = session.exec(select(AutoUpdateRun).where(AutoUpdateRun.request_id == request_id).order_by(AutoUpdateRun.id)).all()
-            if existing:
-                if any(row.host_id != host_id for row in existing):
-                    raise UpdateRunError(409, "request_id is already used by another host.")
-                existing_names = [row.stack_name for row in existing]
-                if any(row.source != mode for row in existing) or existing_names != names:
-                    raise UpdateRunError(409, "request_id was already submitted with different parameters.")
-                return self.batch_payload(existing)
+            if (existing := self._existing_batch(session, request_id, host_id, mode, names)) is not None:
+                return existing
 
         snap = self.snapshots().get_snapshot(host_id)
         if not snap or not snap.host_config:
@@ -324,16 +296,13 @@ class AutoUpdateManager:
 
         runs: list[AutoUpdateRun] = []
         with Session(get_engine()) as session:
+            if (existing := self._existing_batch(session, request_id, host_id, mode, names)) is not None:
+                return existing
             for name in names:
-                stack = stacks[name]
                 reason = ""
-                status = "queued"
-                if mode == "bulk" and control_stack(snap, name, self_info):
-                    status, reason = "skipped", "Fleetge／Agent 自身所在的 Stack，请使用单独更新入口。"
-                elif mode == "bulk" and stack.management_status == "unmanaged":
-                    status, reason = "skipped", "该 Stack 没有可管理的 Compose 配置。"
-                elif mode == "bulk" and stack.status != "running":
-                    status, reason = "skipped", "Stack 当前未运行，未提交更新。"
+                if mode == "bulk":
+                    reason = auto_update_policy.bulk_skip_reason(stacks[name], control_stack(snap, name, self_info))
+                status = "skipped" if reason else "queued"
 
                 active_run = session.exec(select(AutoUpdateRun).where(
                     AutoUpdateRun.host_id == host_id,
@@ -358,7 +327,13 @@ class AutoUpdateManager:
                 )
                 session.add(run)
                 runs.append(run)
-            session.commit()
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                if (existing := self._existing_batch(session, request_id, host_id, mode, names)) is not None:
+                    return existing
+                raise
             for run in runs:
                 session.refresh(run)
                 if run.status == "queued":
@@ -455,10 +430,7 @@ class AutoUpdateManager:
         if source == "auto" and not stack_policy(host_id, stack_name).enabled:
             return None
         snap = self.snapshots().get_snapshot(host_id)
-        if not snap or not snap.host_config or not snap.host_config.enabled or not snap.host_config.agent_url or snap.status != "online":
-            return None
-        stack = next((s for s in snap.stacks if s.name == stack_name), None)
-        return snap if stack and stack.status == "running" and stack.management_status != "unmanaged" else None
+        return snap if auto_update_policy.can_run_stack(snap, stack_name) else None
 
     def _set_run_stage(self, run_id: int, stage: str, *, attempts: int | None = None, targets: dict | None = None) -> None:
         with Session(get_engine()) as session:
@@ -922,15 +894,7 @@ class AutoUpdateManager:
             run.detail = scrub_log(detail)
             run.finished_at = now_utc()
 
-            if run.source == "auto" and status in {"partial", "failed", "uncertain"}:
-                policy = session.exec(select(StackAutoUpdate).where(
-                    StackAutoUpdate.host_id == run.host_id,
-                    StackAutoUpdate.stack_name == run.stack_name,
-                )).first()
-                if policy:
-                    policy.enabled = False
-                    policy.reason = run.detail
-                    session.add(policy)
+            auto_update_policy.disable_policy_on_failure(session, run)
 
             action = "stack.auto_update" if run.source == "auto" else "stack.update_run"
             session.add(AuditLog(
@@ -987,7 +951,7 @@ class AutoUpdateManager:
                     continue
                 else:
                     status, error = "pending", ""
-                    if config.get("NOTIFYHUB_URL") != run.notify_url or config.get("NOTIFYHUB_RECIPIENT") != run.notify_recipient or not config.get("NOTIFYHUB_KEY"):
+                    if not matches_destination(config, run.notify_url, run.notify_recipient):
                         status, error = "blocked", "通知配置已删除或目标已改变。"
                     else:
                         try:
@@ -997,24 +961,18 @@ class AutoUpdateManager:
                             # A timeout/restart retries the same event and the same payload.
                             with Session(get_engine()) as session:
                                 row = session.get(AutoUpdateRun, run.id)
+                                if row is None or row.notify_status != "pending":
+                                    continue
                                 row.notify_payload = json.dumps(payload, ensure_ascii=False)
                                 session.add(row)
                                 session.commit()
-                            response = await client.post(run.notify_url + "/api/v1/events", json=payload, headers={"X-API-Key": api_key})
-                            if response.status_code == 202:
-                                data = response.json().get("data", {})
-                                if data.get("status") == "accepted" and data.get("event_id"):
-                                    status = "accepted"
-                                else:
-                                    error = "Notify Hub 返回 202，但未确认事件已接收。"
-                            elif response.status_code == 429 or response.status_code >= 500:
-                                error = f"Notify Hub HTTP {response.status_code}，稍后补发。"
-                            else:
-                                status, error = "blocked", f"Notify Hub HTTP {response.status_code}，请检查通知配置。"
+                            status, error = await submit_event(client, run.notify_url, api_key, payload)
                         except (httpx.HTTPError, ValueError):
                             error = "Notify Hub 请求未获确认，稍后使用相同事件 key 补发。"
                 with Session(get_engine()) as session:
                     row = session.get(AutoUpdateRun, run.id)
+                    if row is None or row.notify_status != run.notify_status:
+                        continue
                     row.notify_status = status
                     row.notify_error = error
                     row.notify_attempts += 1

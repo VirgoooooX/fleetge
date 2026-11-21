@@ -1,12 +1,9 @@
 """Stack router — list, start, stop, restart, update, logs."""
 
 import asyncio
-import json
 import logging
-import re
-import shlex
 import uuid
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -15,16 +12,28 @@ from sqlmodel import Session
 
 from app.auth.handler import get_current_user
 from app.database import get_session, engine
-from app.models import AuditLog
 from app.schemas import (
     StackComposeDetail,
     StackComposeSaveRequest,
     StackOperationResponse,
     StackSummary,
 )
+from app.services.audit_service import write_audit_log
 from app.services.agent_client import AgentClient
 from app.services.auto_update import UpdateRunError, auto_update_manager
+from app.services.compose_converter import convert_docker_run_to_compose as _convert_docker_run_to_compose
 from app.services.snapshot import snapshot_manager
+from app.services.stack_streams import (
+    _clean_log_text as _clean_log_text,
+    _safe_error_detail,
+    _sse_event as _sse_event,
+    stream_compose_deploy,
+    stream_compose_logs,
+    stream_service_action,
+    stream_stack_action,
+    stream_system_prune,
+    stream_update_run,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,127 +63,6 @@ SERVICE_ACTIONS: dict[str, str] = {
     "restart": "restartService",
 }
 
-_ANSI_RE = re.compile(
-    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
-)
-_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
-
-
-def _sse_event(event: str, data: dict) -> str:
-    """Format an SSE event frame with JSON-encoded data.
-
-    JSON encoding ensures the payload does not contain ``\\n`` or ``\\n\\n``
-    sequences that would corrupt the SSE protocol framing.
-    """
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _clean_log_text(text: str) -> str:
-    """Remove terminal color/control sequences before sending logs to the UI."""
-    text = _ANSI_RE.sub("", text)
-    return _CONTROL_RE.sub("", text)
-
-
-def _convert_docker_run_to_compose(command: str) -> str:
-    """Small v1 docker-run-to-compose converter for common flags."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid docker run command: {exc}")
-
-    if len(tokens) >= 2 and tokens[0] == "docker" and tokens[1] == "run":
-        tokens = tokens[2:]
-    elif tokens and tokens[0] == "run":
-        tokens = tokens[1:]
-    else:
-        raise HTTPException(status_code=400, detail="Command must start with 'docker run' or 'run'")
-
-    service: dict[str, Any] = {}
-    ports: list[str] = []
-    volumes: list[str] = []
-    env: list[str] = []
-    image = ""
-    cmd: list[str] = []
-
-    flag_value = {
-        "--name", "--restart", "--network", "--hostname", "--user", "--workdir",
-        "-p", "--publish", "-v", "--volume", "-e", "--env",
-    }
-    bool_flags = {"-d", "--detach", "--rm", "--privileged"}
-
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if image:
-            cmd.append(token)
-            i += 1
-            continue
-
-        key = token
-        value: str | None = None
-        if token.startswith("--") and "=" in token:
-            key, value = token.split("=", 1)
-        elif token in flag_value:
-            i += 1
-            if i >= len(tokens):
-                raise HTTPException(status_code=400, detail=f"Missing value for {token}")
-            value = tokens[i]
-
-        if key in ("--name",):
-            service["container_name"] = value
-        elif key in ("--restart",):
-            service["restart"] = value
-        elif key in ("--network",):
-            service["network_mode"] = value
-        elif key in ("--hostname",):
-            service["hostname"] = value
-        elif key in ("--user",):
-            service["user"] = value
-        elif key in ("--workdir",):
-            service["working_dir"] = value
-        elif key in ("-p", "--publish"):
-            ports.append(value or "")
-        elif key in ("-v", "--volume"):
-            volumes.append(value or "")
-        elif key in ("-e", "--env"):
-            env.append(value or "")
-        elif key in bool_flags:
-            if key == "--privileged":
-                service["privileged"] = True
-            # -d and --rm do not map cleanly for persistent compose stacks.
-        elif token.startswith("-"):
-            raise HTTPException(status_code=400, detail=f"Unsupported docker run flag: {token}")
-        else:
-            image = token
-        i += 1
-
-    if not image:
-        raise HTTPException(status_code=400, detail="Docker image is required")
-
-    service["image"] = image
-    if ports:
-        service["ports"] = ports
-    if volumes:
-        service["volumes"] = volumes
-    if env:
-        service["environment"] = env
-    if cmd:
-        service["command"] = cmd
-
-    service_name = service.get("container_name") or image.split("/")[-1].split(":")[0] or "app"
-    service_name = "".join(ch if ch.isalnum() or ch in "_-" else "-" for ch in service_name.lower()).strip("-") or "app"
-
-    try:
-        import yaml
-        return yaml.safe_dump(
-            {"services": {service_name: service}},
-            sort_keys=False,
-            allow_unicode=True,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to render compose YAML: {exc}")
-
-
 def _write_audit_log(
     session: Session,
     user: str,
@@ -185,17 +73,7 @@ def _write_audit_log(
     detail: str | None = None,
     ip_address: str | None = None,
 ):
-    log = AuditLog(
-        user=user,
-        action=action,
-        host_id=host_id,
-        stack_name=stack_name,
-        result=result,
-        detail=detail,
-        ip_address=ip_address,
-    )
-    session.add(log)
-    session.commit()
+    write_audit_log(session, user, action, host_id, result, detail, ip_address, stack_name=stack_name)
 
 
 def _write_audit_log_standalone(
@@ -215,17 +93,7 @@ def _write_audit_log_standalone(
     from app.database import Session as DbSession
 
     with DbSession(engine) as session:
-        log = AuditLog(
-            user=user,
-            action=action,
-            host_id=host_id,
-            stack_name=stack_name,
-            result=result,
-            detail=detail,
-            ip_address=ip_address,
-        )
-        session.add(log)
-        session.commit()
+        _write_audit_log(session, user, action, host_id, stack_name, result, detail, ip_address)
 
 
 @router.get("/hosts/{host_id}/stacks", response_model=list[StackSummary])
@@ -299,7 +167,8 @@ async def get_stack_compose(host_id: str, stack_name: str):
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        logger.warning("Failed to get compose detail for %s/%s: %s", host_id, stack_name, exc)
+        raise HTTPException(status_code=502, detail=_safe_error_detail(exc))
     finally:
         await conn.close()
 
@@ -347,7 +216,7 @@ async def _save_stack_compose(
         )
 
         if payload.is_add:
-            asyncio.create_task(snapshot_manager.refresh_host_docker_with_retry(host_id))
+            snapshot_manager.schedule_host_structure_refresh(host_id)
 
         return StackOperationResponse(
             success=True,
@@ -355,14 +224,15 @@ async def _save_stack_compose(
             detail=str(result),
         )
     except Exception as exc:
+        logger.warning("Failed to save compose for %s/%s: %s", host_id, stack_name, exc)
         _write_audit_log(
             session, username, "stack.compose.save",
-            host_id, stack_name, "error", str(exc),
+            host_id, stack_name, "error", str(exc)[:500],
             request.client.host if request.client else None,
         )
         if isinstance(exc, HTTPException):
             raise
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_safe_error_detail(exc))
     finally:
         await conn.close()
 
@@ -424,85 +294,15 @@ async def deploy_stack_compose(
         host_id, stack_name, "running", "Deploy started", ip,
     )
 
-    async def _stream() -> AsyncGenerator[str, None]:
-        log_queue: asyncio.Queue = asyncio.Queue()
-        task: Optional[asyncio.Task] = None
-        if not snap.host_config.agent_url:
-            yield _sse_event("error", {"message": "Host has no agent_url configured"})
-            return
-
-        conn = AgentClient(snap.host_config)
-        try:
-            # Capture pre-deploy updatable targets so finalize can judge them.
-            target_images = _capture_updatable_targets(snap, stack_name)
-
-            task = asyncio.create_task(
-                conn.save_stack(
-                    stack_name, payload.compose_yaml, payload.compose_env,
-                    compose_file_name=payload.compose_file_name,
-                    deploy=True,
-                    is_add=payload.is_add,
-                    log_queue=log_queue,
-                    cols=cols,
-                    rows=rows,
-                )
-            )
-
-            while True:
-                chunk = await log_queue.get()
-                if chunk is None:
-                    break
-                yield _sse_event("chunk", {"raw": chunk})
-
-            result = await task
-            task = None
-
-            success = True
-            msg = str(result)
-            if isinstance(result, dict):
-                ok_val = result.get("success", result.get("ok", True))
-                success = bool(ok_val) if ok_val is not None else True
-                msg = result.get("msg", result.get("message", str(result)))
-
-            if success:
-                try:
-                    await snapshot_manager.refresh_host_docker(host_id)
-                except Exception as refresh_exc:
-                    logger.warning("Pre-complete refresh failed for deploy: %s", refresh_exc)
-
-                if target_images:
-                    async for event in _run_finalize(host_id, stack_name, target_images):
-                        yield event
-
-            yield _sse_event(
-                "complete",
-                {"status": "success" if success else "error", "message": msg},
-            )
-
-            asyncio.create_task(snapshot_manager.refresh_host_docker_with_retry(host_id))
-            _write_audit_log_standalone(
-                username, "stack.compose.deploy", host_id, stack_name,
-                "success" if success else "error", msg, ip,
-            )
-
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if task and not task.done():
-                task.cancel()
-            yield _sse_event("error", {"message": str(exc)})
-            _write_audit_log_standalone(
-                username, "stack.compose.deploy", host_id, stack_name,
-                "error", str(exc), ip,
-            )
-        finally:
-            # Ensure background task is cleaned up even if client disconnects
-            if task is not None and not task.done():
-                task.cancel()
-            if conn is not None:
-                await conn.close()
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_compose_deploy(
+            snap.host_config, host_id, stack_name, snap, payload, cols, rows, username, ip,
+            agent_client=AgentClient,
+            snapshot_manager=snapshot_manager,
+            audit_log=_write_audit_log_standalone,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.delete(
@@ -555,11 +355,12 @@ async def delete_stack(
     except HTTPException:
         raise
     except Exception as exc:
+        logger.warning("Delete stack failed for %s/%s: %s", host_id, stack_name, exc)
         _write_audit_log(
             session, username, "stack.delete",
-            host_id, stack_name, "error", str(exc), ip,
+            host_id, stack_name, "error", str(exc)[:500], ip,
         )
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise HTTPException(status_code=502, detail=_safe_error_detail(exc))
     finally:
         await conn.close()
 
@@ -592,60 +393,15 @@ async def prune_docker_system(
         host_id, None, "running", "Prune started", ip,
     )
 
-    async def _stream() -> AsyncGenerator[str, None]:
-        log_queue: asyncio.Queue = asyncio.Queue()
-        task: Optional[asyncio.Task] = None
-        conn: Optional[AgentClient] = None
-        try:
-            conn = AgentClient(snap.host_config)
-            task = asyncio.create_task(
-                conn.prune_system(log_queue=log_queue)
-            )
-
-            while True:
-                chunk = await log_queue.get()
-                if chunk is None:
-                    break
-                yield _sse_event("chunk", {"raw": chunk})
-
-            result = await task
-            task = None
-
-            success = True
-            msg = str(result)
-            if isinstance(result, dict):
-                ok_val = result.get("success", True)
-                success = bool(ok_val) if ok_val is not None else True
-                msg = result.get("message", str(result))
-
-            yield _sse_event(
-                "complete",
-                {"status": "success" if success else "error", "message": msg},
-            )
-
-            asyncio.create_task(snapshot_manager.refresh_all_structure_now())
-            _write_audit_log_standalone(
-                username, "docker.prune", host_id, None,
-                "success" if success else "error", msg, ip,
-            )
-
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if task and not task.done():
-                task.cancel()
-            yield _sse_event("error", {"message": str(exc)})
-            _write_audit_log_standalone(
-                username, "docker.prune", host_id, None,
-                "error", str(exc), ip,
-            )
-        finally:
-            if task is not None and not task.done():
-                task.cancel()
-            if conn is not None:
-                await conn.close()
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_system_prune(
+            snap.host_config, host_id, username, ip,
+            agent_client=AgentClient,
+            snapshot_manager=snapshot_manager,
+            audit_log=_write_audit_log_standalone,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/hosts/{host_id}/stacks/{stack_name}/logs")
@@ -726,142 +482,13 @@ async def stream_stack_logs(
     if snap is None or snap.host_config is None:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
-    def parse_compose_log_line(line: str) -> dict:
-        clean = _clean_log_text(line).rstrip("\r")
-        if " | " in clean:
-            service, text = clean.split(" | ", 1)
-            return {"text": text, "service": service.strip()}
-        return {"text": clean, "service": ""}
-
-    async def _stream() -> AsyncGenerator[str, None]:
-        if not snap.host_config.agent_url:
-            yield _sse_event(
-                "complete",
-                {"message": "Host has no agent_url configured"},
-            )
-            return
-
-        proxy = AgentClient(snap.host_config)
-        stack_containers = [
-            c
-            for c in snap.containers
-            if c.stack_name == stack_name and c.state == "running"
-        ]
-
-        async def stream_container_fallback(container, queue: asyncio.Queue) -> None:
-            service_label = container.service_name or container.name
-            buffer = ""
-            try:
-                async for chunk in proxy.stream_container_logs(container.id, tail=tail):
-                    buffer += _clean_log_text(chunk)
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        await queue.put(
-                            (
-                                "line",
-                                {
-                                    "text": line.rstrip("\r"),
-                                    "container": container.id,
-                                    "service": service_label,
-                                },
-                            )
-                        )
-                if buffer:
-                    await queue.put(
-                        (
-                            "line",
-                            {
-                                "text": buffer.rstrip("\r"),
-                                "container": container.id,
-                                "service": service_label,
-                            },
-                        )
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await queue.put(
-                    (
-                        "error",
-                        {
-                            "message": str(exc),
-                            "container": container.id,
-                            "service": service_label,
-                        },
-                    )
-                )
-
-        async def wait_for_tasks() -> None:
-            await asyncio.gather(*tasks, return_exceptions=True)
-            await queue.put(None)
-
-        try:
-            yield _sse_event(
-                "ready",
-                {
-                    "message": "Log stream connected.",
-                    "mode": "compose",
-                },
-            )
-
-            buffer = ""
-            try:
-                async for chunk in proxy.stream_stack_compose_logs(stack_name, tail=tail):
-                    buffer += _clean_log_text(chunk)
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
-                        yield _sse_event("line", parse_compose_log_line(line))
-                if buffer:
-                    yield _sse_event("line", parse_compose_log_line(buffer))
-                yield _sse_event("complete", {"message": "Log stream ended."})
-                return
-            except Exception as exc:
-                logger.debug(
-                    "Compose log stream unavailable for %s/%s, falling back to container logs: %s",
-                    host_id,
-                    stack_name,
-                    exc,
-                )
-
-            if not stack_containers:
-                yield _sse_event(
-                    "complete",
-                    {"message": "No running containers found for this stack."},
-                )
-                return
-
-            queue: asyncio.Queue = asyncio.Queue()
-            tasks: list[asyncio.Task] = []
-            done_task: Optional[asyncio.Task] = None
-
-            tasks = [
-                asyncio.create_task(stream_container_fallback(container, queue))
-                for container in stack_containers
-            ]
-            done_task = asyncio.create_task(wait_for_tasks())
-
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                event, payload = item
-                yield _sse_event(event, payload)
-        except asyncio.CancelledError:
-            raise
-        finally:
-            if "tasks" in locals():
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                if tasks:
-                    await asyncio.gather(*tasks, return_exceptions=True)
-            if "done_task" in locals() and done_task:
-                if not done_task.done():
-                    done_task.cancel()
-                await asyncio.gather(done_task, return_exceptions=True)
-            await proxy.close()
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_compose_logs(
+            snap.host_config, host_id, stack_name, snap.containers, tail,
+            agent_client=AgentClient,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.post(
@@ -902,131 +529,16 @@ async def stack_service_action(
         "running", f"Service operation started: {service_name}", ip,
     )
 
-    async def _stream() -> AsyncGenerator[str, None]:
-        log_queue: asyncio.Queue = asyncio.Queue()
-        task: Optional[asyncio.Task] = None
-        if not snap.host_config.agent_url:
-            yield _sse_event("error", {"message": "Host has no agent_url configured"})
-            return
-
-        conn = AgentClient(snap.host_config)
-        try:
-            task = asyncio.create_task(
-                conn.stack_action(
-                    stack_name,
-                    socket_event,
-                    log_queue=log_queue,
-                    cols=cols,
-                    rows=rows,
-                    service=service_name,
-                )
-            )
-
-            while True:
-                chunk = await log_queue.get()
-                if chunk is None:
-                    break
-                yield _sse_event("chunk", {"raw": chunk})
-
-            result = await task
-            task = None
-
-            success = True
-            msg = str(result)
-            if isinstance(result, dict):
-                ok_val = result.get("success", result.get("ok", True))
-                success = bool(ok_val) if ok_val is not None else True
-                msg = result.get("msg", result.get("message", str(result)))
-
-            if success:
-                try:
-                    await snapshot_manager.refresh_host_docker(host_id)
-                except Exception as refresh_exc:
-                    logger.warning("Pre-complete refresh failed for service action: %s", refresh_exc)
-
-            yield _sse_event(
-                "complete",
-                {"status": "success" if success else "error", "message": msg},
-            )
-
-            asyncio.create_task(snapshot_manager.refresh_host_docker_with_retry(host_id))
-            _write_audit_log_standalone(
-                username, f"stack.service.{action}", host_id, stack_name,
-                "success" if success else "error", f"{service_name}: {msg}", ip,
-            )
-
-        except Exception as exc:
-            if task and not task.done():
-                task.cancel()
-            yield _sse_event("error", {"message": str(exc)})
-            _write_audit_log_standalone(
-                username, f"stack.service.{action}", host_id, stack_name,
-                "error", f"{service_name}: {exc}", ip,
-            )
-        finally:
-            if task is not None and not task.done():
-                task.cancel()
-            await conn.close()
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
-
-
-def _capture_updatable_targets(snap: Any, stack_name: str) -> list[str]:
-    """Snapshot the images marked updatable for this stack BEFORE the update.
-
-    ``finalize_stack_update`` only needs to judge these images — an image that
-    was already up_to_date has nothing to clear. Capturing pre-update avoids
-    racing with the refresh that runs after ``compose up``.
-    """
-    targets: list[str] = []
-    seen: set[str] = set()
-    for container in getattr(snap, "containers", []):
-        if container.stack_name != stack_name or not container.image:
-            continue
-        if container.image in seen:
-            continue
-        result = getattr(snap, "update_results", {}).get(container.image)
-        if result == "updatable":
-            targets.append(container.image)
-            seen.add(container.image)
-    return targets
-
-
-async def _run_finalize(
-    host_id: str,
-    stack_name: str,
-    target_images: list[str],
-    wait_timeout: float = 45.0,
-) -> AsyncGenerator[str, None]:
-    """Run finalize_stack_update and stream a per-image verdict block.
-
-    Emits ``chunk`` SSE events containing the verdict lines. Intended to be
-    emitted right before the ``complete`` event on a successful update, so the
-    user sees *why* each tag was cleared or kept.
-    """
-    if not target_images:
-        yield _sse_event("chunk", {"raw": "No images were marked updatable; nothing to clear.\n"})
-        return
-
-    yield _sse_event("chunk", {"raw": "\n--- update verification ---\n"})
-    try:
-        summaries = await snapshot_manager.finalize_stack_update(
-            host_id, stack_name, target_images, wait_timeout=wait_timeout
-        )
-    except Exception as exc:
-        logger.warning("finalize_stack_update failed for %s/%s: %s", host_id, stack_name, exc)
-        yield _sse_event("chunk", {
-            "raw": f"Update verification skipped (internal error: {exc}). Tag state unchanged.\n"
-        })
-        return
-
-    if not summaries:
-        yield _sse_event("chunk", {"raw": "No updatable tags found to verify.\n"})
-        return
-
-    for s in summaries:
-        marker = "✓" if s.cleared else "·"
-        yield _sse_event("chunk", {"raw": f"{marker} {s.verdict}\n"})
+    return StreamingResponse(
+        stream_service_action(
+            snap.host_config, host_id, stack_name, service_name, socket_event, action,
+            cols, rows, username, ip,
+            agent_client=AgentClient,
+            snapshot_manager=snapshot_manager,
+            audit_log=_write_audit_log_standalone,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/hosts/{host_id}/stacks/{stack_name}/update-runs/{request_id}/stream")
@@ -1041,36 +553,10 @@ async def stream_existing_update_run(host_id: str, stack_name: str, request_id: 
     )
 
 
-async def _stream_update_run(host_id: str, request_id: str, stack_name: str, after: int = 0) -> AsyncGenerator[str, None]:
-    replayed_tail = False
-    last_stage = ""
-    while True:
-        batch = auto_update_manager.get_batch(host_id, request_id)
-        if batch is None:
-            yield _sse_event("error", {"message": "Update run could not be found."})
-            return
-        run = next((item for item in batch["items"] if item["stack_name"] == stack_name), None)
-        if run is None:
-            yield _sse_event("error", {"message": "Update run does not include this Stack."})
-            return
-        chunks = auto_update_manager.read_run_output(run["id"], after)
-        if chunks is None and not replayed_tail and run.get("log_tail"):
-            yield _sse_event("chunk", {"raw": run["log_tail"]})
-            replayed_tail = True
-        for sequence, text in chunks or []:
-            yield _sse_event("chunk", {"raw": text, "cursor": sequence})
-            after = sequence
-        if run["stage"] != last_stage:
-            yield _sse_event("stage", {"stage": run["stage"], "status": run["status"]})
-            last_stage = run["stage"]
-        if run["status"] in {"success", "partial", "failed", "uncertain", "skipped"}:
-            yield _sse_event("complete", {
-                "status": "success" if run["status"] == "success" else "error",
-                "outcome": run["status"],
-                "message": run.get("detail") or run["status"],
-            })
-            return
-        await asyncio.sleep(0.2)
+def _stream_update_run(
+    host_id: str, request_id: str, stack_name: str, after: int = 0,
+) -> AsyncGenerator[str, None]:
+    return stream_update_run(auto_update_manager, host_id, request_id, stack_name, after=after)
 
 
 @router.post(
@@ -1133,70 +619,12 @@ async def stack_action(
         "running", "Operation started", ip,
     )
 
-    async def _stream() -> AsyncGenerator[str, None]:
-        log_queue: asyncio.Queue = asyncio.Queue()
-        task: Optional[asyncio.Task] = None
-        if not snap.host_config.agent_url:
-            yield _sse_event("error", {"message": "Host has no agent_url configured"})
-            return
-
-        conn = AgentClient(snap.host_config)
-        try:
-            task = asyncio.create_task(
-                conn.stack_action(
-                    stack_name, socket_event, log_queue=log_queue, cols=cols, rows=rows
-                )
-            )
-
-            while True:
-                chunk = await log_queue.get()
-                if chunk is None:  # EOF sentinel from _run_with_terminal
-                    break
-                yield _sse_event("chunk", {"raw": chunk})
-
-            result = await task
-            task = None
-
-            success = True
-            msg = str(result)
-            if isinstance(result, dict):
-                ok_val = result.get("success", result.get("ok", True))
-                success = bool(ok_val) if ok_val is not None else True
-                msg = result.get("msg", result.get("message", str(result)))
-
-            if success:
-                try:
-                    await snapshot_manager.refresh_host_docker(host_id)
-                except Exception as refresh_exc:
-                    logger.warning("Pre-complete refresh failed for stack action: %s", refresh_exc)
-
-            yield _sse_event(
-                "complete",
-                {"status": "success" if success else "error", "message": msg},
-            )
-
-            asyncio.create_task(
-                snapshot_manager.refresh_host_docker_with_retry(host_id)
-            )
-            _write_audit_log_standalone(
-                username, f"stack.{action}", host_id, stack_name,
-                "success" if success else "error", msg, ip,
-            )
-
-        except HTTPException:
-            raise
-        except Exception as exc:
-            if task and not task.done():
-                task.cancel()
-            yield _sse_event("error", {"message": str(exc)})
-            _write_audit_log_standalone(
-                username, f"stack.{action}", host_id, stack_name,
-                "error", str(exc), ip,
-            )
-        finally:
-            if task is not None and not task.done():
-                task.cancel()
-            if conn is not None:
-                await conn.close()
-
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_stack_action(
+            snap.host_config, host_id, stack_name, socket_event, action, cols, rows, username, ip,
+            agent_client=AgentClient,
+            snapshot_manager=snapshot_manager,
+            audit_log=_write_audit_log_standalone,
+        ),
+        media_type="text/event-stream",
+    )

@@ -1,5 +1,6 @@
 """Auth router — login, logout, me."""
 
+import hmac
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session
 
@@ -12,6 +13,7 @@ from app.auth.handler import (
 from app.config import get_settings
 from app.database import get_session
 from app.schemas import LoginRequest, LoginResponse, MeResponse
+from app.services.network_utils import resolve_request_source_ip
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
@@ -26,7 +28,7 @@ async def login(
 
     Rate-limited: 5 failures per 15 min per IP.
     """
-    ip = request.client.host if request.client else "unknown"
+    ip = resolve_request_source_ip(request) or "unknown"
 
     if rate_limiter.is_blocked(ip):
         raise HTTPException(
@@ -37,7 +39,7 @@ async def login(
     settings = get_settings()
 
     # Verify credentials against env-configured admin
-    if req.username != settings.ADMIN_USERNAME:
+    if not hmac.compare_digest(req.username, settings.ADMIN_USERNAME):
         rate_limiter.record_failure(ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

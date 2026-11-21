@@ -1,335 +1,142 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
-import { apiClient } from "@/api/client";
+import { reactive, ref } from "vue";
+import {
+  settingsApi,
+  type AppProfileEntry,
+  type ConnectionTestResponse,
+  type HostConfigResponse,
+  type HostCreateRequest,
+  type HostUpdateRequest,
+  type SettingItem,
+} from "@/api/settings";
+import { apiErrorMessage } from "@/api/errors";
 import { useDashboardStore } from "./dashboard";
 
-export interface SettingItem {
-  key: string;
-  value: string;
-  type: "number" | "string" | "password";
-  is_writable: boolean;
-  description: string;
-  min_value?: number;
-  max_value?: number;
-  unit?: string;
-}
+export type { AppProfileEntry, HostConfigResponse, SettingItem, StackIconEntry } from "@/api/settings";
 
-export interface HostConfigResponse {
-  host_id: string;
-  display_name: string;
-  enabled: boolean;
-  sort_order: number;
-  traffic_billing_day: number;
-  logo?: string | null;
-  agent_url?: string;
-  has_agent_token: boolean;
-  agent_instance_id?: string;
-  location_latitude?: number;
-  location_longitude?: number;
-  location_city?: string;
-  location_region?: string;
-  location_country?: string;
-  location_country_code?: string;
-  location_source?: string;
-  location_confirmed: boolean;
-  stack_icons?: Record<string, string>;
-  app_profiles?: AppProfileEntry[];
-}
-
-export type EnrollmentStatus =
-  | "issued" | "downloaded" | "verifying" | "active" | "needs_url"
-  | "failed" | "expired" | "revoked";
-
-export interface EnrollmentInvite {
-  invite_id: string;
-  status: EnrollmentStatus;
-  expires_at: string;
-  downloaded_at?: string;
-  completed_at?: string;
-  host_id?: string;
-  agent_instance_id: string;
-  agent_port: number;
-  stack_root: string;
-  agent_image: string;
-  agent_public_host: string;
-  agent_public_url: string;
-  failure_reason?: string;
-  install_command?: string;
-}
-
-export interface StackIconEntry {
-  stack_pattern: string;
-  icon_value: string;
-}
-
-export interface AppProfileEntry {
-  stack_pattern: string;
-  title: string | null;
-  app_url: string | null;
-  group: string | null;
-  icon_value: string | null;
-}
-
-export interface ConnectionTestResponse {
-  success: boolean;
-  response_time_ms: number;
-  message: string;
+function trackByHost<T>(pending: Set<string>, hostId: string, request: () => Promise<T>) {
+  if (pending.has(hostId)) return Promise.reject(new Error("Host action is already in progress"));
+  pending.add(hostId);
+  return request().finally(() => pending.delete(hostId));
 }
 
 export const useSettingsStore = defineStore("settings", () => {
   const settings = ref<SettingItem[]>([]);
   const hosts = ref<HostConfigResponse[]>([]);
-  const loading = ref(false);
-  const saving = ref(false);
-  const error = ref("");
-  const enrollmentInvites = ref<EnrollmentInvite[]>([]);
+  const loadingSettings = ref(false);
+  const savingSettings = ref(false);
+  const loadingHosts = ref(false);
+  const updatingHosts = reactive(new Set<string>());
+  const deletingHosts = reactive(new Set<string>());
+  const testingHosts = reactive(new Set<string>());
+  const savingGlobalEnv = reactive(new Set<string>());
+  const savingAppProfiles = reactive(new Set<string>());
+  let settingsRevision = 0;
+  let hostsRevision = 0;
+  let hostListRequest = 0;
 
   async function fetchSettings() {
-    loading.value = true;
-    error.value = "";
+    const revision = settingsRevision;
+    loadingSettings.value = true;
     try {
-      const res = await apiClient.get("/api/admin/settings");
-      settings.value = res.data.settings || [];
-    } catch (e: any) {
-      error.value = e.response?.data?.detail || e.message || "Failed to fetch settings";
-      throw e;
+      const data = await settingsApi.fetchSettings();
+      if (revision === settingsRevision) settings.value = data;
     } finally {
-      loading.value = false;
+      loadingSettings.value = false;
     }
   }
 
   async function saveSettings(updates: Record<string, string>) {
-    saving.value = true;
-    error.value = "";
+    savingSettings.value = true;
     try {
-      const res = await apiClient.put("/api/admin/settings", { settings: updates });
-      settings.value = res.data.settings || [];
-      
+      const data = await settingsApi.saveSettings(updates);
+      ++settingsRevision;
+      settings.value = data;
       void useDashboardStore().fetchHosts();
-    } catch (e: any) {
-      error.value = e.response?.data?.detail || e.message || "Failed to save settings";
-      throw e;
     } finally {
-      saving.value = false;
+      savingSettings.value = false;
     }
   }
 
   async function fetchHosts() {
-    loading.value = true;
-    error.value = "";
+    const requestId = ++hostListRequest;
+    const revision = hostsRevision;
+    loadingHosts.value = true;
     try {
-      const res = await apiClient.get("/api/admin/hosts");
-      hosts.value = res.data || [];
-    } catch (e: any) {
-      error.value = e.response?.data?.detail || e.message || "Failed to fetch hosts list";
-      throw e;
+      const data = await settingsApi.fetchHosts();
+      if (requestId === hostListRequest && revision === hostsRevision) hosts.value = data;
     } finally {
-      loading.value = false;
+      if (requestId === hostListRequest) loadingHosts.value = false;
     }
   }
 
-  async function createHost(data: any) {
-    saving.value = true;
-    try {
-      const res = await apiClient.post("/api/admin/hosts", data);
-      await fetchHosts();
-      void useDashboardStore().fetchHosts();
-      
-      return res.data;
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to create host";
-    } finally {
-      saving.value = false;
-    }
+  function applyHost(host: HostConfigResponse) {
+    ++hostsRevision;
+    const index = hosts.value.findIndex((item) => item.host_id === host.host_id);
+    if (index < 0) hosts.value.push(host);
+    else hosts.value[index] = host;
+    hosts.value = [...hosts.value].sort((a, b) => a.sort_order - b.sort_order);
+    void useDashboardStore().fetchHosts();
   }
 
-  async function updateHost(hostId: string, data: any) {
-    saving.value = true;
-    try {
-      const res = await apiClient.put(`/api/admin/hosts/${hostId}`, data);
-      await fetchHosts();
-      void useDashboardStore().fetchHosts();
-      
-      return res.data;
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to update host";
-    } finally {
-      saving.value = false;
-    }
+  function createHost(request: HostCreateRequest) {
+    return trackByHost(updatingHosts, request.host_id, async () => {
+      const host = await settingsApi.createHost(request);
+      applyHost(host);
+      return host;
+    });
   }
 
-  async function deleteHost(hostId: string) {
-    saving.value = true;
-    try {
-      await apiClient.delete(`/api/admin/hosts/${hostId}`);
-      await fetchHosts();
+  function updateHost(hostId: string, request: HostUpdateRequest) {
+    return trackByHost(updatingHosts, hostId, async () => {
+      const host = await settingsApi.updateHost(hostId, request);
+      applyHost(host);
+      return host;
+    });
+  }
+
+  function deleteHost(hostId: string) {
+    return trackByHost(deletingHosts, hostId, async () => {
+      await settingsApi.deleteHost(hostId);
+      ++hostsRevision;
+      hosts.value = hosts.value.filter((host) => host.host_id !== hostId);
       void useDashboardStore().fetchHosts();
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to delete host";
-    } finally {
-      saving.value = false;
-    }
+    });
   }
 
   async function testConnection(hostId: string): Promise<ConnectionTestResponse> {
     try {
-      const res = await apiClient.post(`/api/admin/hosts/${hostId}/test-connection`);
-      return res.data;
-    } catch (e: any) {
-      return {
-        success: false,
-        response_time_ms: 0,
-        message: e.response?.data?.detail || e.message || "Connection test failed",
-      };
+      return await trackByHost(testingHosts, hostId, () => settingsApi.testConnection(hostId));
+    } catch (error) {
+      return { success: false, response_time_ms: 0, message: apiErrorMessage(error, "") };
     }
   }
 
-  async function testNewConnection(data: any): Promise<ConnectionTestResponse> {
+  async function testNewConnection(request: HostCreateRequest): Promise<ConnectionTestResponse> {
     try {
-      const res = await apiClient.post(`/api/admin/hosts/test-connection`, data);
-      return res.data;
-    } catch (e: any) {
-      return {
-        success: false,
-        response_time_ms: 0,
-        message: e.response?.data?.detail || e.message || "Connection test failed",
-      };
+      return await settingsApi.testNewConnection(request);
+    } catch (error) {
+      return { success: false, response_time_ms: 0, message: apiErrorMessage(error, "") };
     }
   }
 
-  async function fetchStackIcons(hostId: string): Promise<{ icons: StackIconEntry[]; available_files: string[] }> {
-    try {
-      const res = await apiClient.get(`/api/admin/hosts/${hostId}/stack-icons`);
-      return res.data;
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to fetch stack icons";
-    }
+  function saveGlobalEnv(hostId: string, content: string) {
+    return trackByHost(savingGlobalEnv, hostId, () => settingsApi.saveGlobalEnv(hostId, content));
   }
 
-  async function saveStackIcons(hostId: string, icons: StackIconEntry[]) {
-    saving.value = true;
-    try {
-      await apiClient.put(`/api/admin/hosts/${hostId}/stack-icons`, { icons });
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to save stack icons";
-    } finally {
-      saving.value = false;
-    }
-  }
-
-  async function uploadIcon(hostId: string, file: File): Promise<string> {
-    saving.value = true;
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const res = await apiClient.post(`/api/admin/hosts/${hostId}/stack-icons/upload`, formData, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-      return res.data.filename;
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to upload stack icon";
-    } finally {
-      saving.value = false;
-    }
-  }
-
-  async function fetchGlobalEnv(hostId: string): Promise<string> {
-    try {
-      const res = await apiClient.get(`/api/admin/hosts/${hostId}/global-env`);
-      return res.data.content || "";
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to fetch global.env";
-    }
-  }
-
-  async function saveGlobalEnv(hostId: string, content: string) {
-    saving.value = true;
-    try {
-      await apiClient.put(`/api/admin/hosts/${hostId}/global-env`, { content });
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to save global.env";
-    } finally {
-      saving.value = false;
-    }
-  }
-
-  async function fetchEnrollmentInvites() {
-    const res = await apiClient.get("/api/admin/enrollment-invites");
-    enrollmentInvites.value = res.data || [];
-    return enrollmentInvites.value;
-  }
-
-  async function createEnrollmentInvite(data: {
-    dashboard_url: string;
-    agent_public_host: string;
-    stack_root: string;
-    agent_port: number;
-    agent_image?: string;
-  }): Promise<EnrollmentInvite> {
-    const res = await apiClient.post("/api/admin/enrollment-invites", data);
-    enrollmentInvites.value = [res.data, ...enrollmentInvites.value];
-    return res.data;
-  }
-
-  async function revokeEnrollmentInvite(inviteId: string): Promise<EnrollmentInvite> {
-    const res = await apiClient.delete(`/api/admin/enrollment-invites/${inviteId}`);
-    await fetchEnrollmentInvites();
-    return res.data;
-  }
-
-  async function retryEnrollmentInvite(inviteId: string) {
-    const res = await apiClient.post(`/api/admin/enrollment-invites/${inviteId}/retry`, {});
-    await Promise.all([fetchEnrollmentInvites(), fetchHosts()]);
-    return res.data;
-  }
-
-  async function fetchAppProfiles(hostId: string): Promise<{ profiles: AppProfileEntry[]; available_files: string[] }> {
-    try {
-      const res = await apiClient.get(`/api/admin/hosts/${hostId}/app-profiles`);
-      return res.data;
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to fetch app profiles";
-    }
-  }
-
-  async function saveAppProfiles(hostId: string, profiles: AppProfileEntry[]) {
-    saving.value = true;
-    try {
-      await apiClient.put(`/api/admin/hosts/${hostId}/app-profiles`, { profiles });
-    } catch (e: any) {
-      throw e.response?.data?.detail || e.message || "Failed to save app profiles";
-    } finally {
-      saving.value = false;
-    }
+  function saveAppProfiles(hostId: string, profiles: AppProfileEntry[]) {
+    return trackByHost(savingAppProfiles, hostId, () => settingsApi.saveAppProfiles(hostId, profiles));
   }
 
   return {
-    settings,
-    hosts,
-    loading,
-    saving,
-    error,
-    enrollmentInvites,
-    fetchSettings,
-    saveSettings,
-    fetchHosts,
-    createHost,
-    updateHost,
-    deleteHost,
-    testConnection,
-    testNewConnection,
-    fetchStackIcons,
-    saveStackIcons,
-    fetchAppProfiles,
-    saveAppProfiles,
-    uploadIcon,
-    fetchGlobalEnv,
-    saveGlobalEnv,
-    fetchEnrollmentInvites,
-    createEnrollmentInvite,
-    revokeEnrollmentInvite,
-    retryEnrollmentInvite,
+    settings, hosts, loadingSettings, savingSettings, loadingHosts,
+    updatingHosts, deletingHosts, testingHosts, savingGlobalEnv, savingAppProfiles,
+    fetchSettings, saveSettings, fetchHosts, createHost, updateHost, deleteHost,
+    testConnection, testNewConnection, saveGlobalEnv, saveAppProfiles,
+    fetchStackIcons: settingsApi.fetchStackIcons,
+    saveStackIcons: settingsApi.saveStackIcons,
+    uploadIcon: settingsApi.uploadIcon,
+    fetchGlobalEnv: settingsApi.fetchGlobalEnv,
+    fetchAppProfiles: settingsApi.fetchAppProfiles,
   };
 });

@@ -9,11 +9,16 @@ import base64
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select, delete
 
-from app.auth.handler import get_current_user
+from app.auth.handler import require_admin
 from app.database import get_session, engine
-from app.models import HostConfig, AuditLog, ImageUpdateCache, HostSubscription, HostBillingAlertState
+from app.models import (
+    AutoUpdateRun, HostBillingAlertState, HostConfig, HostSubscription,
+    HostTrafficBucket, HostTrafficCursor, HostTrafficDaily, ImageUpdateCache, StackAutoUpdate,
+)
+from app.time_utils import utc_now
 from app.schemas import (
     HostConfigResponse,
     HostCreateRequest,
@@ -23,8 +28,17 @@ from app.schemas import (
     StackIconsUpdateRequest,
     AppProfilesUpdateRequest,
 )
+from app.services.audit_service import write_audit_log as _write_audit_log
 from app.services.crypto import encrypt_string
-from app.services.host_writer import write_hosts_to_yaml
+from app.services.host_writer import sync_hosts_to_yaml
+from app.services.icon_service import (
+    ALLOWED_ICON_EXTENSIONS,
+    MAX_ICON_BYTES,
+    get_stack_icons_dir,
+    list_available_icon_files,
+    sanitize_svg_bytes,
+)
+from app.services.network_utils import resolve_request_source_ip, validate_outbound_http_url
 from app.services.snapshot import snapshot_manager
 from app.config import get_settings
 from app.services.agent_client import AgentClient
@@ -34,7 +48,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/admin",
     tags=["host-management"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_admin)],
 )
 
 # Resolve Stack Icons Directory
@@ -45,25 +59,6 @@ _STACK_ICONS_DIR = _HOST_CONFIG_PATH.parent / "stack_icons"
 _STACK_ICONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _write_audit_log(
-    session: Session,
-    user: str,
-    action: str,
-    host_id: str,
-    result: str,
-    detail: str | None = None,
-    ip_address: str | None = None,
-):
-    log = AuditLog(
-        user=user,
-        action=action,
-        host_id=host_id,
-        result=result,
-        detail=detail,
-        ip_address=ip_address,
-    )
-    session.add(log)
-    session.commit()
 async def _test_connection_logic(cfg: HostConfig, agent_token_plain: str | None = None) -> ConnectionTestResponse:
     start_time = time.monotonic()
     
@@ -88,11 +83,12 @@ async def _test_connection_logic(cfg: HostConfig, agent_token_plain: str | None 
                 await client.info()
                 success = True
         except Exception as e:
+            logger.warning("Agent connection test failed for %s: %s", cfg.host_id, e)
             duration = int((time.monotonic() - start_time) * 1000)
             return ConnectionTestResponse(
                 success=False,
                 response_time_ms=duration,
-                message=f"Agent connection failed: {str(e)}"
+                message=f"Agent connection failed ({type(e).__name__})"
             )
         finally:
             await client.close()
@@ -103,8 +99,9 @@ async def _test_connection_logic(cfg: HostConfig, agent_token_plain: str | None 
         else:
             return ConnectionTestResponse(success=False, response_time_ms=duration, message="Agent ping failed")
     except Exception as e:
+        logger.warning("Unexpected connection test error for %s: %s", cfg.host_id, e)
         duration = int((time.monotonic() - start_time) * 1000)
-        return ConnectionTestResponse(success=False, response_time_ms=duration, message=f"Unexpected error: {str(e)}")
+        return ConnectionTestResponse(success=False, response_time_ms=duration, message=f"Unexpected error ({type(e).__name__})")
 
 
 def _to_response_model(h: HostConfig) -> HostConfigResponse:
@@ -164,10 +161,10 @@ async def create_host(
     req: HostCreateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Create a new Host configuration, write to hosts.yaml and update poller."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     # Validate host_id pattern
     if not re.match(r"^[a-z0-9][a-z0-9-]*$", req.host_id):
@@ -184,9 +181,12 @@ async def create_host(
         raise HTTPException(status_code=400, detail=f"Host ID '{req.host_id}' already exists")
 
     # Validate URL structures
-    if req.agent_url and not re.match(r"^https?://", req.agent_url):
-        _write_audit_log(session, username, "host.create", req.host_id, "error", "Invalid URL for agent_url", ip)
-        raise HTTPException(status_code=400, detail="agent_url must start with http:// or https://")
+    if req.agent_url:
+        try:
+            validate_outbound_http_url(req.agent_url, allow_private=True)
+        except ValueError as exc:
+            _write_audit_log(session, username, "host.create", req.host_id, "error", "Invalid URL for agent_url", ip)
+            raise HTTPException(status_code=400, detail=f"Invalid agent_url: {exc}")
 
     # Encrypt credentials
     agent_token_encrypted = None
@@ -207,11 +207,18 @@ async def create_host(
     )
 
     session.add(host)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        if session.exec(select(HostConfig.id).where(HostConfig.host_id == req.host_id)).first() is None:
+            raise
+        _write_audit_log(session, username, "host.create", req.host_id, "error", "Duplicate host_id", ip)
+        raise HTTPException(status_code=400, detail=f"Host ID '{req.host_id}' already exists") from exc
     session.refresh(host)
 
     # Sync back to hosts.yaml and update runtime
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     await snapshot_manager.refresh_hosts()
 
     _write_audit_log(session, username, "host.create", req.host_id, "success", f"host_id={req.host_id}", ip)
@@ -224,10 +231,10 @@ async def update_host(
     req: HostUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Update a Host configuration, write to hosts.yaml and update poller."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     # Fetch existing
     existing = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
@@ -235,9 +242,12 @@ async def update_host(
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
     # Validate URLs
-    if req.agent_url and not re.match(r"^https?://", req.agent_url):
-        _write_audit_log(session, username, "host.update", host_id, "error", "Invalid URL for agent_url", ip)
-        raise HTTPException(status_code=400, detail="agent_url must start with http:// or https://")
+    if req.agent_url:
+        try:
+            validate_outbound_http_url(req.agent_url, allow_private=True)
+        except ValueError as exc:
+            _write_audit_log(session, username, "host.update", host_id, "error", "Invalid URL for agent_url", ip)
+            raise HTTPException(status_code=400, detail=f"Invalid agent_url: {exc}")
 
     # Keep track of fields updated
     fields_updated = []
@@ -282,7 +292,7 @@ async def update_host(
     if fields_updated:
         session.commit()
         session.refresh(existing)
-        write_hosts_to_yaml()
+        await sync_hosts_to_yaml()
         await snapshot_manager.refresh_hosts()
         _write_audit_log(session, username, "host.update", host_id, "success", f"fields updated: {', '.join(fields_updated)}", ip)
     else:
@@ -296,26 +306,31 @@ async def delete_host(
     host_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Delete a Host configuration, purge its caches, write to hosts.yaml and update runtime."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
     if not host:
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
-    # Cascade deletes: delete ImageUpdateCache records for this host
-    session.exec(delete(ImageUpdateCache).where(ImageUpdateCache.host_id == host_id))
-    session.exec(delete(HostBillingAlertState).where(HostBillingAlertState.host_id == host_id))
-    session.exec(delete(HostSubscription).where(HostSubscription.host_id == host_id))
+    for model in (ImageUpdateCache, HostBillingAlertState, HostSubscription,
+                  HostTrafficBucket, HostTrafficCursor, HostTrafficDaily, StackAutoUpdate):
+        session.exec(delete(model).where(model.host_id == host_id))
+    for run in session.exec(select(AutoUpdateRun).where(
+        AutoUpdateRun.host_id == host_id, AutoUpdateRun.status == "queued",
+    )).all():
+        run.status = "skipped"
+        run.stage = "skipped"
+        run.detail = "Host was deleted before starting this update run."
+        run.finished_at = utc_now()
     
-    # Delete the HostConfig record
     session.delete(host)
     session.commit()
 
     # Sync to hosts.yaml and rebuild poller state
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     await snapshot_manager.refresh_hosts()
 
     _write_audit_log(session, username, "host.delete", host_id, "success", f"host_id={host_id}", ip)
@@ -327,10 +342,10 @@ async def test_existing_host_connection(
     host_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Test connection for an existing host configuration in database."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
     if not host:
@@ -345,9 +360,14 @@ async def test_existing_host_connection(
 async def test_new_host_connection(
     req: HostCreateRequest,
     request: Request,
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Test connection with unsaved parameters before creating a host."""
+    if req.agent_url:
+        try:
+            validate_outbound_http_url(req.agent_url, allow_private=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid agent_url: {exc}")
     # Construct a temp HostConfig block
     temp_cfg = HostConfig(
         host_id=req.host_id,
@@ -385,12 +405,7 @@ async def get_stack_icons(
             pass
 
     # Read available local files in stack_icons folder
-    available_files = []
-    if _STACK_ICONS_DIR.exists() and _STACK_ICONS_DIR.is_dir():
-        for entry in os.scandir(_STACK_ICONS_DIR):
-            if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
-                available_files.append(entry.name)
-    available_files.sort()
+    available_files = list_available_icon_files()
 
     return {
         "icons": icons_list,
@@ -404,10 +419,10 @@ async def update_stack_icons(
     req: StackIconsUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Update stack icons mapping JSON block for a host, write to hosts.yaml and update runtime."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
     if not host:
@@ -425,7 +440,7 @@ async def update_stack_icons(
     session.commit()
 
     # Sync
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     await snapshot_manager.refresh_hosts()
 
     _write_audit_log(
@@ -439,35 +454,66 @@ async def update_stack_icons(
 async def upload_stack_icon_file(
     host_id: str,
     file: UploadFile = File(...),
-    username: str = Depends(get_current_user),
+    session: Session = Depends(get_session),
+    username: str = Depends(require_admin),
 ):
     """Upload a local image file for stack icons (Max size: 2MB)."""
-    # 1. Size check
-    contents = await file.read()
-    if len(contents) > 2 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large (maximum size is 2MB)")
+    host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
+    if not host:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
 
-    # 2. Extension check
-    ext = os.path.splitext(file.filename)[1].lower()
-    if ext not in [".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif"]:
+    original_name = (file.filename or "").strip()
+    if not original_name:
+        raise HTTPException(status_code=400, detail="Uploaded file must have a filename")
+
+    # 1. Extension check
+    ext = os.path.splitext(original_name)[1].lower()
+    if ext not in ALLOWED_ICON_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail="Invalid file format. Only PNG, JPG, JPEG, SVG, WEBP, and GIF are allowed"
         )
 
-    # 3. Sanitize filename
-    sanitized_name = re.sub(r"[^\w\-_.]", "_", file.filename)
-    if not sanitized_name:
+    # 2. Bounded read (at most MAX_ICON_BYTES + 1)
+    chunks = bytearray()
+    while True:
+        chunk = await file.read(64 * 1024)
+        if not chunk:
+            break
+        chunks.extend(chunk)
+        if len(chunks) > MAX_ICON_BYTES:
+            raise HTTPException(status_code=400, detail="File too large (maximum size is 2MB)")
+    contents = bytes(chunks)
+
+    # 3. Sanitize SVG uploads to prevent stored XSS
+    if ext == ".svg":
+        try:
+            contents = sanitize_svg_bytes(contents)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid SVG file: {exc}")
+
+    # 4. Sanitize filename (strip any traversal)
+    base_name = os.path.basename(original_name)
+    sanitized_name = re.sub(r"[^\w\-_.]", "_", base_name).lstrip(".")
+    if not sanitized_name or sanitized_name == ext:
         sanitized_name = f"uploaded_icon_{int(time.time())}{ext}"
 
-    # Write file to target folder
-    target_path = _STACK_ICONS_DIR / sanitized_name
+    # Write file atomically to target folder
+    icons_dir = get_stack_icons_dir()
+    target_path = (icons_dir / sanitized_name).resolve()
+    if icons_dir.resolve() not in target_path.parents:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    tmp_path = target_path.with_name(f".{sanitized_name}.{int(time.time() * 1000)}.tmp")
     try:
-        with open(target_path, "wb") as f:
+        with open(tmp_path, "wb") as f:
             f.write(contents)
+        os.replace(tmp_path, target_path)
         logger.info("Saved stack icon file: %s", target_path)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(exc)}")
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+        logger.error("Failed to save stack icon file %s: %s", target_path, exc)
+        raise HTTPException(status_code=500, detail="Failed to save uploaded icon file")
 
     return {"filename": sanitized_name}
 
@@ -507,12 +553,7 @@ async def get_app_profiles(
             pass
 
     # Read available local files in stack_icons folder
-    available_files = []
-    if _STACK_ICONS_DIR.exists() and _STACK_ICONS_DIR.is_dir():
-        for entry in os.scandir(_STACK_ICONS_DIR):
-            if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif")):
-                available_files.append(entry.name)
-    available_files.sort()
+    available_files = list_available_icon_files()
 
     return {
         "profiles": profiles_list,
@@ -526,10 +567,10 @@ async def update_app_profiles(
     req: AppProfilesUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Update app profiles list for a host, write to hosts.yaml and update runtime."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
     if not host:
@@ -552,7 +593,7 @@ async def update_app_profiles(
     session.commit()
 
     # Sync configuration and snapshots
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     await snapshot_manager.refresh_hosts()
 
     _write_audit_log(

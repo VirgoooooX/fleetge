@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlmodel import Session
 
-from app.auth.handler import get_current_user
+from app.auth.handler import require_admin
 from app.database import get_session
-from app.models import AuditLog
 from app.schemas import SettingsResponse, SettingItem, SettingsUpdateRequest
+from app.services.audit_service import write_audit_log as _write_audit_log
+from app.services.network_utils import resolve_request_source_ip
 from app.services.settings_service import (
     get_setting_value,
     update_setting_value,
@@ -28,29 +29,8 @@ class GlobalEnvUpdateRequest(BaseModel):
 router = APIRouter(
     prefix="/api/admin",
     tags=["settings"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_admin)],
 )
-
-
-def _write_audit_log(
-    session: Session,
-    user: str,
-    action: str,
-    host_id: str,
-    result: str,
-    detail: str | None = None,
-    ip_address: str | None = None,
-):
-    log = AuditLog(
-        user=user,
-        action=action,
-        host_id=host_id,
-        result=result,
-        detail=detail,
-        ip_address=ip_address,
-    )
-    session.add(log)
-    session.commit()
 
 
 @router.get("/settings", response_model=SettingsResponse)
@@ -156,7 +136,7 @@ async def get_settings_list():
         items.append(
             SettingItem(
                 key=cfg["key"],
-                value=str(val),
+                value="••••••••" if val else "",
                 type=cfg["type"],
                 is_writable=False,
                 description=cfg["description"],
@@ -171,10 +151,10 @@ async def update_settings(
     req: SettingsUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Bulk update system configurations. Restarts poll loops if intervals changed."""
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
 
     # 1. Validate keys and values
     for key, val in req.settings.items():
@@ -271,7 +251,8 @@ async def get_host_global_env(host_id: str):
     try:
         return {"content": await conn.get_global_env()}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        logger.warning("Failed to fetch global.env from host %s: %s", host_id, exc)
+        raise HTTPException(status_code=502, detail="Failed to fetch global.env from Agent")
     finally:
         await conn.close()
 
@@ -282,11 +263,11 @@ async def save_host_global_env(
     payload: GlobalEnvUpdateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
     """Write a host Agent's STACKS_BASE_DIR/global.env."""
     snap = snapshot_manager.get_snapshot(host_id)
-    ip = request.client.host if request.client else None
+    ip = resolve_request_source_ip(request)
     if snap is None or snap.host_config is None:
         _write_audit_log(session, username, "host.global_env.update", host_id, "error", "Host not found", ip)
         raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found")
@@ -300,7 +281,8 @@ async def save_host_global_env(
         _write_audit_log(session, username, "host.global_env.update", host_id, "success", str(result), ip)
         return result
     except Exception as exc:
-        _write_audit_log(session, username, "host.global_env.update", host_id, "error", str(exc), ip)
-        raise HTTPException(status_code=502, detail=str(exc))
+        logger.warning("Failed to save global.env on host %s: %s", host_id, exc)
+        _write_audit_log(session, username, "host.global_env.update", host_id, "error", str(exc)[:500], ip)
+        raise HTTPException(status_code=502, detail="Failed to save global.env to Agent")
     finally:
         await conn.close()

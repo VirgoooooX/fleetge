@@ -5,9 +5,6 @@ interface SortableStack {
   management_status?: string;
 }
 
-/** Statuses that should sort to the bottom. */
-const STOPPED_LIKE = new Set(["stopped", "inactive", "exited"]);
-
 /**
  * Lower priority = higher on the page.
  * Priority 0: Managed running/active/partial/unknown

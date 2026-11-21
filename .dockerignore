@@ -18,3 +18,10 @@ frontend/dist
 frontend/tsconfig.tsbuildinfo
 
 docs
+
+.codegraph
+.ruff_cache
+.codex-tmp
+.tmp
+.playwright-cli
+*.tsbuildinfo

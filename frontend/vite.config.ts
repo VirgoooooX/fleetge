@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { VitePWA } from "vite-plugin-pwa";
+import AutoImport from "unplugin-auto-import/vite";
+import Components from "unplugin-vue-components/vite";
+import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 import path from "path";
 import fs from "node:fs";
 
@@ -11,6 +14,14 @@ const packageJson = JSON.parse(
 export default defineConfig({
   plugins: [
     vue(),
+    AutoImport({
+      resolvers: [ElementPlusResolver()],
+      dts: "src/auto-imports.d.ts",
+    }),
+    Components({
+      resolvers: [ElementPlusResolver({ importStyle: process.env.VITEST ? false : "css" })],
+      dts: "src/components.d.ts",
+    }),
     VitePWA({
       registerType: "prompt",
       includeAssets: [
@@ -23,7 +34,8 @@ export default defineConfig({
       manifest: false, // reuse existing public/site.webmanifest
       workbox: {
         globPatterns: ["**/*.{js,css,html,woff2,svg,png,ico}"],
-        maximumFileSizeToCacheInBytes: 10 * 1024 * 1024, // 10 MB — accommodate large worker chunks
+        globIgnores: ["**/*.worker*.js", "**/MonacoEditor*.js"],
+        maximumFileSizeToCacheInBytes: 2 * 1024 * 1024,
         runtimeCaching: [
           {
             // Static assets — cache-first for fast repeat loads
@@ -35,14 +47,9 @@ export default defineConfig({
             },
           },
           {
-            // API calls — network-first, fall back to cache when offline
-            urlPattern: /^\/api\/.*/,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "api-cache",
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 100, maxAgeSeconds: 5 * 60 },
-            },
+            // API calls — always hit network so auth/SSE streams are never stale or leaked across sessions
+            urlPattern: ({ url }) => url.pathname.startsWith("/api/"),
+            handler: "NetworkOnly",
           },
         ],
       },

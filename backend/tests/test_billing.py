@@ -219,7 +219,7 @@ class BillingPersistenceAndApiTests(unittest.TestCase):
         self.engine.dispose()
 
     def authenticate(self):
-        self.app.dependency_overrides[get_current_user] = lambda: "test-admin"
+        self.app.dependency_overrides[get_current_user] = lambda: "admin"
 
     def test_authenticated_subscription_api_and_confirmed_renewal(self):
         self.assertEqual(self.client.get("/api/hosts/vps/subscription").status_code, 401)

@@ -6,12 +6,13 @@ import asyncio
 import json
 import re
 import time
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from fastapi.responses import PlainTextResponse
 from sqlmodel import Session, select
 
-from app.auth.handler import get_current_user
+from app.auth.handler import require_admin
 from app.config import get_settings
 from app.database import get_session
 from app.models import AuditLog, EnrollmentInvite
@@ -29,7 +30,6 @@ from app.services.enrollment_service import (
     ensure_utc,
     expire_invite_if_needed,
     normalize_geolocation,
-    resolve_request_source_ip,
     normalize_public_host,
     normalize_url,
     render_install_script,
@@ -37,26 +37,23 @@ from app.services.enrollment_service import (
     utc_now,
     enrollment_monitor,
 )
+from app.services.network_utils import is_trusted_proxy_peer, resolve_request_source_ip
 
 admin_router = APIRouter(
     prefix="/api/admin/enrollment-invites",
     tags=["enrollment"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_admin)],
 )
 public_router = APIRouter(prefix="/api/enroll", tags=["enrollment"])
 
 _claim_lock = asyncio.Lock()
+_download_lock = asyncio.Lock()
 _rate_window: dict[str, list[float]] = {}
 _progress_rate_window: dict[str, list[float]] = {}
 _RATE_LIMIT = 12
 _RATE_SECONDS = 300
 _PROGRESS_RATE_LIMIT = 180
-
-
-def _admin(username: str) -> str:
-    if username != get_settings().ADMIN_USERNAME:
-        raise HTTPException(status_code=403, detail="Administrator access required")
-    return username
+_MAX_RATE_KEYS = 4096
 
 
 def _audit(session: Session, user: str, action: str, result: str, detail: str, request: Request) -> None:
@@ -67,16 +64,20 @@ def _audit(session: Session, user: str, action: str, result: str, detail: str, r
             host_id="",
             result=result,
             detail=detail[:500],
-            ip_address=request.client.host if request.client else None,
+            ip_address=resolve_request_source_ip(request),
         )
     )
     session.commit()
 
 
 def _base_url(request: Request) -> str:
-    forwarded_proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    forwarded_host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc))
-    return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+    if is_trusted_proxy_peer(request):
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        host = request.headers.get("x-forwarded-host", request.headers.get("host", request.url.netloc)).split(",")[0].strip()
+    else:
+        proto = request.url.scheme
+        host = request.headers.get("host", request.url.netloc).strip()
+    return f"{proto}://{host}".rstrip("/")
 
 
 def _response(invite, command: str | None = None) -> EnrollmentInviteResponse:
@@ -98,22 +99,30 @@ def _response(invite, command: str | None = None) -> EnrollmentInviteResponse:
     )
 
 
-def _rate_limited(request: Request) -> bool:
-    key = request.client.host if request.client else "unknown"
+def _check_window(window: dict[str, list[float]], key: str, limit: int) -> bool:
     now = time.monotonic()
-    valid = [stamp for stamp in _rate_window.get(key, []) if stamp > now - _RATE_SECONDS]
+    cutoff = now - _RATE_SECONDS
+    if key not in window and len(window) >= _MAX_RATE_KEYS:
+        for k in list(window.keys()):
+            if not any(s > cutoff for s in window[k]):
+                window.pop(k, None)
+        if len(window) >= _MAX_RATE_KEYS:
+            oldest = min(window.items(), key=lambda item: item[1][-1])[0]
+            window.pop(oldest, None)
+    valid = [stamp for stamp in window.get(key, ()) if stamp > cutoff]
     valid.append(now)
-    _rate_window[key] = valid
-    return len(valid) > _RATE_LIMIT
+    window[key] = valid
+    return len(valid) > limit
+
+
+def _rate_limited(request: Request) -> bool:
+    key = resolve_request_source_ip(request) or "unknown"
+    return _check_window(_rate_window, key, _RATE_LIMIT)
 
 
 def _progress_rate_limited(request: Request) -> bool:
-    key = request.client.host if request.client else "unknown"
-    now = time.monotonic()
-    valid = [stamp for stamp in _progress_rate_window.get(key, []) if stamp > now - _RATE_SECONDS]
-    valid.append(now)
-    _progress_rate_window[key] = valid
-    return len(valid) > _PROGRESS_RATE_LIMIT
+    key = resolve_request_source_ip(request) or "unknown"
+    return _check_window(_progress_rate_window, key, _PROGRESS_RATE_LIMIT)
 
 
 @admin_router.post("", response_model=EnrollmentInviteResponse)
@@ -121,9 +130,8 @@ async def create_enrollment_invite(
     req: EnrollmentInviteCreateRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
-    username = _admin(username)
     if not 1 <= req.agent_port <= 65535:
         raise HTTPException(status_code=400, detail="agent_port must be between 1 and 65535")
     if not re.fullmatch(r"/[A-Za-z0-9._~+/@:-]*", req.stack_root):
@@ -132,8 +140,13 @@ async def create_enrollment_invite(
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/@:-]*", agent_image):
         raise HTTPException(status_code=400, detail="Invalid agent image")
     dashboard_url = normalize_url(req.dashboard_url or _base_url(request))
-    if not dashboard_url or any(char in dashboard_url for char in "'\"\\\r\n"):
-        raise HTTPException(status_code=400, detail="dashboard_url must be http(s)")
+    parsed_dash = urlparse(dashboard_url or "")
+    if (
+        not dashboard_url
+        or not parsed_dash.hostname
+        or any(char in dashboard_url for char in "'\"\\$`\r\n\t ")
+    ):
+        raise HTTPException(status_code=400, detail="dashboard_url must be a valid safe http(s) URL")
     agent_public_host = normalize_public_host(req.agent_public_host)
     if not agent_public_host:
         raise HTTPException(status_code=400, detail="agent_public_host must be a concrete public hostname")
@@ -155,9 +168,8 @@ async def create_enrollment_invite(
 @admin_router.get("", response_model=list[EnrollmentInviteResponse])
 async def list_enrollment_invites(
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
-    _admin(username)
     invites = session.exec(select(EnrollmentInvite).order_by(EnrollmentInvite.created_at.desc())).all()
     changed = False
     for invite in invites:
@@ -173,9 +185,8 @@ async def revoke_enrollment_invite(
     invite_id: str,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
-    username = _admin(username)
     invite = session.exec(select(EnrollmentInvite).where(EnrollmentInvite.invite_id == invite_id)).first()
     if invite is None:
         raise HTTPException(status_code=404, detail="Invitation not found")
@@ -195,9 +206,8 @@ async def retry_enrollment(
     req: EnrollmentRetryRequest,
     request: Request,
     session: Session = Depends(get_session),
-    username: str = Depends(get_current_user),
+    username: str = Depends(require_admin),
 ):
-    username = _admin(username)
     invite = session.exec(select(EnrollmentInvite).where(EnrollmentInvite.invite_id == invite_id)).first()
     if invite is None:
         raise HTTPException(status_code=404, detail="Invitation not found")
@@ -226,18 +236,19 @@ async def download_install_script(install_token: str, request: Request, session:
     if decoded is None:
         raise HTTPException(status_code=404, detail="Invalid enrollment token")
     invite_id, claim_token = decoded
-    invite = session.exec(select(EnrollmentInvite).where(EnrollmentInvite.invite_id == invite_id)).first()
-    if invite is None or token_hash(install_token) != invite.install_token_hash:
-        raise HTTPException(status_code=404, detail="Invalid enrollment token")
-    if expire_invite_if_needed(invite):
+    async with _download_lock:
+        invite = session.exec(select(EnrollmentInvite).where(EnrollmentInvite.invite_id == invite_id)).first()
+        if invite is None or token_hash(install_token) != invite.install_token_hash:
+            raise HTTPException(status_code=404, detail="Invalid enrollment token")
+        if expire_invite_if_needed(invite):
+            session.commit()
+            raise HTTPException(status_code=410, detail="Enrollment invitation expired")
+        if invite.status not in {"issued"}:
+            raise HTTPException(status_code=409, detail="Enrollment invitation already used")
+        invite.status = "downloaded"
+        invite.downloaded_at = utc_now()
         session.commit()
-        raise HTTPException(status_code=410, detail="Enrollment invitation expired")
-    if invite.status not in {"issued"}:
-        raise HTTPException(status_code=409, detail="Enrollment invitation already used")
-    invite.status = "downloaded"
-    invite.downloaded_at = utc_now()
-    session.commit()
-    agent_token = decrypt_string(invite.agent_token_encrypted or "")
+        agent_token = decrypt_string(invite.agent_token_encrypted or "")
     script = render_install_script(invite, claim_token, agent_token, invite.dashboard_url)
     return PlainTextResponse(script, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 

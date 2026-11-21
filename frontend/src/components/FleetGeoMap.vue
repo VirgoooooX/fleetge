@@ -8,25 +8,28 @@
       ref="svgElement"
       class="fleet-geo-map__svg"
       :viewBox="`0 0 ${size.width} ${size.height}`"
-      role="img"
+      role="group"
       :aria-label="t('map.globeAria')"
       @wheel.prevent="handleWheel"
       @pointerdown="handlePointerDown"
       @pointermove="handlePointerMove"
       @pointerup="handlePointerUp"
       @pointercancel="handlePointerUp"
+      @lostpointercapture="handlePointerUp"
       @pointerleave="handlePointerLeave"
     >
       <g class="map-camera" :transform="cameraTransform">
-        <path :d="geometry.sphere" class="map-sphere" />
-        <path :d="geometry.graticule" class="map-graticule" />
-        <path :d="geometry.land" class="map-land" />
-        <path :d="geometry.borders" class="map-borders" />
+        <g aria-hidden="true">
+          <path :d="basePaths.sphere" class="map-sphere" />
+          <path :d="basePaths.graticule" class="map-graticule" />
+          <path :d="basePaths.land" class="map-land" />
+          <path :d="basePaths.borders" class="map-borders" />
+        </g>
 
         <g
-          v-if="geometry.centerPoint && center?.confirmed"
+          v-if="centerPoint && center?.confirmed"
           class="fleet-center-node"
-          :transform="`translate(${geometry.centerPoint[0]} ${geometry.centerPoint[1]})`"
+          :transform="`translate(${centerPoint[0]} ${centerPoint[1]})`"
           aria-hidden="true"
         >
           <circle class="fleet-center-node__halo" :r="15 * inverseScale" />
@@ -82,6 +85,7 @@
           @keydown.enter.prevent="selectHosts(cluster.hosts)"
           @keydown.space.prevent="selectHosts(cluster.hosts)"
         >
+          <circle class="fleet-marker-focus" aria-hidden="true" :r="(cluster.hosts.length > 1 ? 21 : 16) * inverseScale" />
           <template v-if="cluster.hosts.length === 1">
             <circle v-if="cluster.hasUnconfirmed" class="fleet-host-node__pending" :r="11.5 * inverseScale" />
             <circle class="fleet-host-node__aura" :r="13 * inverseScale" />
@@ -123,7 +127,7 @@
       </g>
     </svg>
 
-    <div class="map-controls" :aria-label="t('map.controlsAria')">
+    <div class="map-controls" role="group" :aria-label="t('map.controlsAria')">
       <button type="button" :aria-label="t('map.zoomIn')" :disabled="camera.k >= MAX_ZOOM" @click="zoomBy(1.35)">+</button>
       <button type="button" :aria-label="t('map.zoomOut')" :disabled="camera.k <= MIN_ZOOM" @click="zoomBy(1 / 1.35)">−</button>
       <button class="map-controls__reset" type="button" :aria-label="t('map.resetView')" @click="resetView()">◎</button>
@@ -151,14 +155,17 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { useI18n } from "vue-i18n";
 import { Maximize2 } from "@lucide/vue";
 import { feature, mesh as topoMesh } from "topojson-client";
+import type { GeometryCollection, Topology } from "topojson-specification";
 import { geoGraticule10, geoPath } from "d3-geo";
 import worldTopology from "world-atlas/countries-110m.json";
-import type { FleetMapHost, FleetMapSnapshot } from "@/stores/fleetMap";
+import type { FleetMapHost, FleetMapSnapshot } from "@/api/fleetMap";
 import { useTheme } from "@/composables/useTheme";
 import {
   calculateGeographicFocus,
   clusterProjectedNodes,
   createFleetProjection,
+  fleetStatusKey,
+  FLEET_MAP_FOCUS,
   projectFleetPoint,
 } from "@/utils/fleetMap";
 
@@ -172,53 +179,56 @@ const { t } = useI18n();
 const theme = useTheme();
 const isDarkTheme = computed(() => theme.current.value === "dark");
 
+const DEFAULT_LONGITUDE = -FLEET_MAP_FOCUS[1];
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const stageElement = ref<HTMLElement | null>(null);
 const svgElement = ref<SVGSVGElement | null>(null);
 const size = reactive({ width: 960, height: 620 });
 const camera = reactive({ panX: 0, panY: 0, k: 1 });
-const rotation = reactive({ longitude: -105 });
+const rotation = reactive({ longitude: DEFAULT_LONGITUDE });
 const dragging = ref(false);
 const dragMoved = ref(false);
 const hoveredClusterId = ref("");
 let resizeObserver: ResizeObserver | null = null;
 let dragPointerId: number | null = null;
+let suppressClickTimer: ReturnType<typeof setTimeout> | undefined;
 const activePointers = new Map<number, { x: number; y: number }>();
 let dragStart = { x: 0, y: 0 };
 let previousDragPoint = { x: 0, y: 0 };
 let previousDragTime = 0;
 let longitudeVelocity = 0;
-let rotationOrigin = -105;
+let rotationOrigin = DEFAULT_LONGITUDE;
 let panOrigin = { x: 0, y: 0 };
 let activeDragMode: "roll" | "pan" = "roll";
 let pinchDistance = 0;
 let pinchMidpoint = { x: 0, y: 0 };
 
-const topology = worldTopology as any;
-const countries = feature(topology, topology.objects.countries) as any;
-const countryBorders = topoMesh(topology, topology.objects.countries, (a, b) => a !== b) as any;
+const topology = worldTopology as unknown as Topology<{ countries: GeometryCollection }>;
+const countries = feature(topology, topology.objects.countries);
+const countryBorders = topoMesh(topology, topology.objects.countries, (a, b) => a !== b);
+const graticule = geoGraticule10();
 
-const geometry = computed(() => {
-  const projection = createFleetProjection(size.width, size.height, 24, [rotation.longitude, 0]);
-  const path = geoPath(projection);
-  const centerPoint = props.center?.confirmed
-    ? projectFleetPoint(projection, [props.center.latitude, props.center.longitude])
-    : null;
-  const nodes = props.hosts.flatMap((host) => {
-    if (!host.location) return [];
-    const point = projectFleetPoint(projection, [host.location.latitude, host.location.longitude]);
-    return point ? [{ host, point }] : [];
-  });
+const projection = computed(() => createFleetProjection(size.width, size.height, 24, [rotation.longitude, 0]));
+const basePaths = computed(() => {
+  const path = geoPath(projection.value);
   return {
     sphere: path({ type: "Sphere" }) || "",
-    graticule: path(geoGraticule10()) || "",
+    graticule: path(graticule) || "",
     land: path(countries) || "",
     borders: path(countryBorders) || "",
-    centerPoint,
-    nodes,
   };
 });
+const centerPoint = computed(() => {
+  const center = props.center;
+  return center?.confirmed ? projectFleetPoint(projection.value, [center.latitude, center.longitude]) : null;
+});
+const projectedHosts = computed(() => props.hosts.flatMap((host) => {
+  const location = host.location;
+  if (!location) return [];
+  const point = projectFleetPoint(projection.value, [location.latitude, location.longitude]);
+  return point ? [{ item: host, point }] : [];
+}));
 
 const inverseScale = computed(() => 1 / camera.k);
 const centerLocationText = computed(() => {
@@ -245,7 +255,7 @@ const projectionLabel = computed(() => {
   return `${isChinaCenter ? t("map.chinaCenter") : t("map.viewCenter")} · ${longitudeText}`;
 });
 const clusters = computed(() => clusterProjectedNodes(
-  geometry.value.nodes.map((node) => ({ item: node.host, point: node.point })),
+  projectedHosts.value,
   34 / camera.k,
 ).map((cluster) => {
   const hosts = cluster.items;
@@ -292,12 +302,7 @@ const tooltipStyle = computed(() => {
   return { left: `${x}px`, top: `${y}px` };
 });
 
-function statusLabel(status: FleetMapHost["status"]) {
-  if (status === "online") return t("map.online");
-  if (status === "degraded") return t("map.issues");
-  if (status === "offline") return t("map.offline");
-  return t("map.unknown");
-}
+const statusLabel = (status: FleetMapHost["status"]) => t(fleetStatusKey[status]);
 
 function locationLabel(host: FleetMapHost) {
   const location = host.location;
@@ -336,7 +341,7 @@ function clusterSummary(hosts: FleetMapHost[]) {
 }
 
 function clusterAriaLabel(hosts: FleetMapHost[]) {
-  return `${clusterTitle(hosts)}，${clusterSummary(hosts)}`;
+  return `${clusterTitle(hosts)} · ${clusterSummary(hosts)}`;
 }
 
 function showTooltip(clusterId: string) {
@@ -354,7 +359,7 @@ function selectHosts(hosts: FleetMapHost[]) {
 
 function localPoint(event: WheelEvent | PointerEvent) {
   const rect = svgElement.value?.getBoundingClientRect();
-  if (!rect) return { x: size.width / 2, y: size.height / 2 };
+  if (!rect?.width || !rect.height) return { x: size.width / 2, y: size.height / 2 };
   return {
     x: ((event.clientX - rect.left) / rect.width) * size.width,
     y: ((event.clientY - rect.top) / rect.height) * size.height,
@@ -400,6 +405,15 @@ function animateCamera(
 ) {
   stopCameraAnimation();
 
+  if (typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    rotation.longitude = target.longitude;
+    camera.k = target.k;
+    camera.panX = target.panX;
+    camera.panY = target.panY;
+    constrainPan();
+    return;
+  }
+
   const startLon = rotation.longitude;
   const startK = camera.k;
   const startPanX = camera.panX;
@@ -443,7 +457,7 @@ function zoomBy(factor: number) {
 function resetView(animated = true) {
   if (animated) {
     animateCamera({
-      longitude: -105,
+      longitude: DEFAULT_LONGITUDE,
       k: 1,
       panX: 0,
       panY: 0,
@@ -453,7 +467,7 @@ function resetView(animated = true) {
     camera.k = 1;
     camera.panX = 0;
     camera.panY = 0;
-    rotation.longitude = -105;
+    rotation.longitude = DEFAULT_LONGITUDE;
   }
 }
 
@@ -521,6 +535,7 @@ function handleWheel(event: WheelEvent) {
 
 function handlePointerDown(event: PointerEvent) {
   if (event.button !== 0) return;
+  clearTimeout(suppressClickTimer);
   stopCameraAnimation();
   dragging.value = true;
   dragMoved.value = false;
@@ -606,10 +621,10 @@ function startRollInertia() {
 
 function handlePointerUp(event: PointerEvent) {
   if (!activePointers.has(event.pointerId)) return;
+  activePointers.delete(event.pointerId);
   if (svgElement.value?.hasPointerCapture(event.pointerId)) {
     svgElement.value.releasePointerCapture(event.pointerId);
   }
-  activePointers.delete(event.pointerId);
 
   if (activePointers.size === 1) {
     const [remainingId, remainingPoint] = Array.from(activePointers.entries())[0];
@@ -627,8 +642,8 @@ function handlePointerUp(event: PointerEvent) {
   dragging.value = false;
   dragPointerId = null;
   const isFreshRelease = performance.now() - previousDragTime < 80;
-  if (event.type !== "pointercancel" && activeDragMode === "roll" && isFreshRelease) startRollInertia();
-  window.setTimeout(() => { dragMoved.value = false; }, 0);
+  if (event.type === "pointerup" && activeDragMode === "roll" && isFreshRelease) startRollInertia();
+  suppressClickTimer = setTimeout(() => { dragMoved.value = false; }, 0);
 }
 
 function handlePointerLeave() {
@@ -659,6 +674,11 @@ watch(
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();
+  clearTimeout(suppressClickTimer);
+  for (const id of activePointers.keys()) {
+    if (svgElement.value?.hasPointerCapture(id)) svgElement.value.releasePointerCapture(id);
+  }
+  activePointers.clear();
   stopCameraAnimation();
 });
 
@@ -704,7 +724,10 @@ defineExpose({
 .fleet-center-label__dot { fill: var(--accent-blue, #60a5fa); filter: drop-shadow(0 0 3px var(--accent-blue, #60a5fa)); }
 .fleet-center-label__name { fill: var(--fleet-map-ink, var(--text-primary)); font-family: var(--font-body, sans-serif); font-weight: 700; letter-spacing: 0; }
 .fleet-center-label__location { fill: var(--fleet-map-muted, var(--text-muted)); font-family: var(--font-body, sans-serif); font-weight: 500; letter-spacing: .01em; }
-.fleet-host-node { cursor: pointer; outline: none; color: #ef4444; }
+.fleet-host-node { cursor: pointer; color: #ef4444; }
+.fleet-marker-focus { fill: none; stroke: transparent; stroke-width: 2.5; vector-effect: non-scaling-stroke; pointer-events: none; }
+.fleet-host-node:focus-visible .fleet-marker-focus,
+.fleet-host-cluster:focus-visible .fleet-marker-focus { stroke: var(--text-primary); }
 .fleet-host-node.is-online { color: #06b6d4; }
 .fleet-host-node.is-degraded { color: #f59e0b; }
 .fleet-host-node__aura { fill: currentColor; opacity: .1; transform-box: fill-box; transform-origin: center; }
@@ -715,8 +738,7 @@ defineExpose({
 .fleet-host-node__pending { fill: none; stroke: currentColor; stroke-width: 1.2; stroke-dasharray: 2 4; vector-effect: non-scaling-stroke; animation: pending-orbit 5s linear infinite; transform-box: fill-box; transform-origin: center; }
 .fleet-host-node:hover .fleet-host-node__aura,.fleet-host-node:focus-visible .fleet-host-node__aura { opacity: .24; }
 .fleet-host-node:hover .fleet-host-node__ring,.fleet-host-node:focus-visible .fleet-host-node__ring { stroke-width: 2; opacity: 1; }
-.fleet-host-node:focus-visible .fleet-host-node__core { stroke: #fff; stroke-width: 2.5; }
-.fleet-host-cluster { cursor: pointer; outline: none; color: var(--accent-cyan, #22d3ee); }
+.fleet-host-cluster { cursor: pointer; color: var(--accent-cyan, #22d3ee); }
 .fleet-host-cluster.is-degraded { color: var(--warning, #fbbf24); }
 .fleet-host-cluster.is-offline,.fleet-host-cluster.is-unknown { color: var(--danger, #f87171); }
 .fleet-host-cluster__aura { fill: currentColor; opacity: .1; transform-box: fill-box; transform-origin: center; }
@@ -736,27 +758,27 @@ defineExpose({
 .fleet-node-label__title { fill: var(--fleet-map-ink, var(--text-primary)); font-family: var(--font-body, sans-serif); font-weight: 700; }
 .fleet-node-label__meta { fill: var(--fleet-map-muted, var(--text-muted)); font-family: var(--font-body, sans-serif); font-weight: 500; }
 .fleet-node-label--cluster .fleet-node-label__plate { stroke: color-mix(in srgb, currentColor 38%, var(--fleet-map-border)); }
-.map-controls { position: absolute; z-index: 4; top: 12px; left: 12px; display: grid; overflow: hidden; border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); border-radius: 8px; background: var(--fleet-map-overlay, rgba(255,255,255,.84)); box-shadow: var(--fleet-map-shadow, 0 8px 22px rgba(53,91,126,.12)); backdrop-filter: blur(12px); }
+.map-controls { position: absolute; z-index: 4; top: 12px; left: 12px; display: grid; overflow: hidden; border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); border-radius: 8px; background: var(--fleet-map-overlay, rgba(255,255,255,.84)); box-shadow: var(--fleet-map-shadow, 0 8px 22px rgba(53,91,126,.12)); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .map-controls button { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-bottom: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); color: var(--fleet-map-ink, #27415d); background: transparent; font: 500 21px/1 system-ui; cursor: pointer; }
 .map-controls button:last-child { border-bottom: 0; }
-.map-controls button:hover:not(:disabled),.map-controls button:focus-visible { color: #2563eb; background: color-mix(in srgb, #3b82f6 10%, transparent); outline: none; }
+.map-controls button:hover:not(:disabled),.map-controls button:focus-visible { color: #2563eb; background: color-mix(in srgb, #3b82f6 10%, transparent); outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .map-controls button:disabled { opacity: .35; cursor: default; }
 .map-controls__reset { font-size: 17px !important; }
-.projection-badge,.map-gesture-hint { position: absolute; z-index: 3; color: var(--fleet-map-muted, #607991); background: var(--fleet-map-overlay, rgba(255,255,255,.84)); border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); backdrop-filter: blur(10px); font: 700 9px/1 "JetBrains Mono", monospace; letter-spacing: .1em; }
+.projection-badge,.map-gesture-hint { position: absolute; z-index: 3; color: var(--fleet-map-muted, #607991); background: var(--fleet-map-overlay, rgba(255,255,255,.84)); border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); font: 700 11px/1 var(--font-mono); letter-spacing: .08em; }
 .projection-badge { top: 14px; right: 14px; display: flex; align-items: center; gap: 7px; padding: 8px 10px; border-radius: 999px; }
 .projection-badge span { width: 5px; height: 5px; border-radius: 50%; background: #3b82f6; box-shadow: 0 0 8px #3b82f6; }
 .map-gesture-hint { right: 14px; bottom: 14px; padding: 7px 9px; border-radius: 7px; font-weight: 500; letter-spacing: .04em; }
-.fleet-map-tooltip { position: absolute; z-index: 6; display: grid; gap: 4px; min-width: 190px; max-width: 250px; padding: 9px 11px; color: var(--fleet-map-ink, #27415d); background: var(--fleet-map-overlay, rgba(255,255,255,.94)); border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); border-radius: 8px; box-shadow: var(--fleet-map-shadow, 0 12px 30px rgba(53,91,126,.16)); pointer-events: none; transform: translate(-50%, -100%); backdrop-filter: blur(12px); }
+.fleet-map-tooltip { position: absolute; z-index: 6; display: grid; gap: 4px; min-width: 190px; max-width: 250px; padding: 9px 11px; color: var(--fleet-map-ink, #27415d); background: var(--fleet-map-overlay, rgba(255,255,255,.94)); border: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); border-radius: 8px; box-shadow: var(--fleet-map-shadow, 0 12px 30px rgba(53,91,126,.16)); pointer-events: none; transform: translate(-50%, -100%); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .fleet-map-tooltip strong { font-size: 12px; }
-.fleet-map-tooltip span { color: var(--fleet-map-muted, #607991); font-size: 10px; line-height: 1.4; }
-.fleet-map-tooltip em { padding-top: 5px; border-top: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); color: #3b82f6; font-size: 10px; font-style: normal; }
+.fleet-map-tooltip span { color: var(--fleet-map-muted, #607991); font-size: 11px; line-height: 1.4; }
+.fleet-map-tooltip em { padding-top: 5px; border-top: 1px solid var(--fleet-map-border, rgba(107,139,171,.28)); color: #3b82f6; font-size: 11px; font-style: normal; }
 @keyframes center-breathe { 70%,100% { opacity: 0; transform: scale(1.8); } }
 @keyframes host-beacon { 70%,100% { opacity: 0; transform: scale(1.65); } }
 @keyframes pending-orbit { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .fleet-center-node__halo,.fleet-host-node__aura,.fleet-host-node__pending,.fleet-host-cluster__pending { animation: none !important; }
 }
-@media (max-width: 560px) {
+@media (max-width: 640px) {
   .projection-badge { top: 11px; right: 11px; }
   .map-gesture-hint { display: none; }
 }

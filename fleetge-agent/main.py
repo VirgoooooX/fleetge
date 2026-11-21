@@ -1,5 +1,6 @@
 import os
 import sys
+import hmac
 import logging
 import asyncio
 import time
@@ -62,6 +63,7 @@ _AUTH_FAILURES: dict[str, tuple[int, float]] = {}
 _AUTH_FAILURE_WINDOW_SECONDS = 300.0
 _AUTH_FAILURE_DELAY_AFTER = 3
 _AUTH_FAILURE_MAX_DELAY_SECONDS = 10.0
+_AUTH_FAILURE_MAX_IPS = 4096
 
 if AGENT_SECRET_PATH:
     AGENT_SECRET_PATH = "/" + AGENT_SECRET_PATH.strip("/")
@@ -127,6 +129,13 @@ def _client_key(connection: HTTPConnection) -> str:
 async def _record_auth_failure(connection: HTTPConnection) -> None:
     key = _client_key(connection)
     now = time.monotonic()
+    if key not in _AUTH_FAILURES and len(_AUTH_FAILURES) >= _AUTH_FAILURE_MAX_IPS:
+        for k in list(_AUTH_FAILURES.keys()):
+            if now - _AUTH_FAILURES[k][1] > _AUTH_FAILURE_WINDOW_SECONDS:
+                _AUTH_FAILURES.pop(k, None)
+        if len(_AUTH_FAILURES) >= _AUTH_FAILURE_MAX_IPS:
+            oldest = min(_AUTH_FAILURES.items(), key=lambda item: item[1][1])[0]
+            _AUTH_FAILURES.pop(oldest, None)
     count, last_seen = _AUTH_FAILURES.get(key, (0, 0.0))
     if now - last_seen > _AUTH_FAILURE_WINDOW_SECONDS:
         count = 0
@@ -155,15 +164,16 @@ async def verify_token(connection: HTTPConnection):
     auth_header = connection.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        if token == AGENT_TOKEN:
+        if hmac.compare_digest(token, AGENT_TOKEN):
             _record_auth_success(connection)
             return
 
-    # 2. Check Query Parameters (Fallback for WebSockets/SSE)
-    token_param = connection.query_params.get("token")
-    if token_param == AGENT_TOKEN:
-        _record_auth_success(connection)
-        return
+    # 2. Check Query Parameters (WebSockets only; HTTP clients must use Bearer header)
+    if connection.scope.get("type") == "websocket":
+        token_param = connection.query_params.get("token")
+        if token_param and hmac.compare_digest(token_param, AGENT_TOKEN):
+            _record_auth_success(connection)
+            return
 
     await _record_auth_failure(connection)
     raise HTTPException(
@@ -174,13 +184,20 @@ async def verify_token(connection: HTTPConnection):
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """Startup: begin metrics collection.  Shutdown: close Docker proxy client."""
-    logger.info("Starting Fleetge Agent metrics collector thread...")
-    await compose_runner.reconcile_jobs()
-    start_metrics_collector()
-    yield
-    stop_metrics_collector()
-    await docker_client.close_docker_client()
+    """Own the Agent's background jobs, metrics collector and Docker client."""
+    try:
+        logger.info("Starting Fleetge Agent metrics collector thread...")
+        await compose_runner.reconcile_jobs()
+        start_metrics_collector()
+        yield
+    finally:
+        try:
+            await compose_runner.stop_job_watchers()
+        finally:
+            try:
+                await asyncio.to_thread(stop_metrics_collector)
+            finally:
+                await docker_client.close_docker_client()
 
 
 # Apply the token verification globally
@@ -246,11 +263,12 @@ async def run_diagnostic():
     }
     
     try:
-        res = subprocess.run(
+        res = await asyncio.to_thread(
+            subprocess.run,
             ["docker", "compose", "version"],
             capture_output=True,
             text=True,
-            timeout=5.0
+            timeout=5.0,
         )
         diagnostic_info["docker_compose_version_run"] = {
             "success": True,

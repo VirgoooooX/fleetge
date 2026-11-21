@@ -10,16 +10,16 @@
         </el-tooltip>
 
         <el-tooltip :content="t('workspace.pruneDocker')" placement="top">
-          <el-button
-            class="ui-icon-button ui-icon-button--danger sidebar-icon-button"
-            size="small"
-            :disabled="pruneLoading"
-            :aria-label="t('workspace.pruneDocker')"
-            @click="confirmPrune"
-          >
-            <el-icon v-if="pruneLoading" class="is-loading"><Loading /></el-icon>
-            <el-icon v-else><Brush /></el-icon>
-          </el-button>
+            <el-button
+              class="ui-icon-button ui-icon-button--danger sidebar-icon-button"
+              size="small"
+              :disabled="pruneLoading"
+              :aria-label="t('workspace.pruneDocker')"
+              @click="confirmPrune"
+            >
+              <el-icon v-if="pruneLoading" class="is-loading"><LoaderCircle /></el-icon>
+              <el-icon v-else><Eraser /></el-icon>
+            </el-button>
         </el-tooltip>
         <el-tooltip :content="t('workspace.updateAll')" placement="top">
           <el-badge
@@ -34,8 +34,8 @@
               :aria-label="t('workspace.updateAll')"
               @click="confirmUpdateAll"
             >
-              <el-icon v-if="bulkUpdateLoading" class="is-loading"><Loading /></el-icon>
-              <el-icon v-else><Top /></el-icon>
+              <el-icon v-if="bulkUpdateLoading" class="is-loading"><LoaderCircle /></el-icon>
+              <el-icon v-else><ArrowUp /></el-icon>
             </el-button>
           </el-badge>
         </el-tooltip>
@@ -76,7 +76,7 @@
                 class="nav-stack-icon-img"
                 @error="onIconError"
               />
-              <el-icon v-else class="nav-stack-icon"><FolderOpened /></el-icon>
+              <el-icon v-else class="nav-stack-icon"><FolderOpen /></el-icon>
             </span>
             <span class="nav-stack-copy">
               <span class="nav-stack-name">{{ stack.name }}</span>
@@ -120,18 +120,21 @@
             v-for="stack in filteredStacks"
             :key="stack.name"
             class="stack-card"
+            tabindex="0"
             :class="{
               'is-stopped': stack.status === 'stopped' || stack.status === 'inactive' || stack.status === 'exited',
               'is-operating': runningOperations[stack.name]
             }"
             @click="selectStack(stack.name)"
+            @keydown.enter.self.prevent="selectStack(stack.name)"
+            @keydown.space.self.prevent="selectStack(stack.name)"
             @mousemove="handleCardMouseMove"
             @mouseleave="handleCardMouseLeave"
           >
             <div class="stack-header">
               <div class="stack-title-row">
                 <img v-if="stack.icon_url" :src="stack.icon_url" class="stack-icon-img" @error="onIconError" />
-                <el-icon v-else class="stack-title-icon"><FolderOpened /></el-icon>
+                <el-icon v-else class="stack-title-icon"><FolderOpen /></el-icon>
                 <span class="stack-name" :title="stack.name">{{ stack.name }}</span>
                 <span class="dot-state" :class="`dot-${stackStatusType(stack.status)}`" />
                 <span class="stack-state-text">{{ statusLabel(stack.status) }}</span>
@@ -148,7 +151,7 @@
                       :aria-label="`${t('stackGroup.openApp')}: ${stack.name}`"
                       @click="openStackApp(stack)"
                     >
-                      <el-icon><TopRight /></el-icon>
+                      <el-icon><ExternalLink /></el-icon>
                       <span>{{ t('stackGroup.openApp') }}</span>
                     </button>
                   </el-tooltip>
@@ -221,8 +224,8 @@
                       class="ui-icon-button ui-icon-button--small"
                       size="small"
                       text
-                      :icon="VideoPlay"
-                      :disabled="isServiceOperationRunning(stack.name) || service.state === 'running'"
+                      :icon="Play"
+                      :disabled="isStackOperationRunning(stack.name) || service.state === 'running'"
                       @click="runServiceAction(stack.name, service.name, 'start')"
                     />
                   </el-tooltip>
@@ -231,8 +234,8 @@
                       class="ui-icon-button ui-icon-button--small"
                       size="small"
                       text
-                      :icon="VideoPause"
-                      :disabled="isServiceOperationRunning(stack.name) || service.state !== 'running'"
+                      :icon="Pause"
+                      :disabled="isStackOperationRunning(stack.name) || service.state !== 'running'"
                       @click="runServiceAction(stack.name, service.name, 'stop')"
                     />
                   </el-tooltip>
@@ -241,8 +244,8 @@
                       class="ui-icon-button ui-icon-button--small"
                       size="small"
                       text
-                      :icon="Refresh"
-                      :disabled="isServiceOperationRunning(stack.name)"
+                      :icon="RefreshCw"
+                      :disabled="isStackOperationRunning(stack.name)"
                       @click="runServiceAction(stack.name, service.name, 'restart')"
                     />
                   </el-tooltip>
@@ -267,7 +270,7 @@
                 class="stack-icon-img detail-stack-icon"
                 @error="onIconError"
               />
-              <el-icon v-else class="stack-title-icon detail-stack-icon"><FolderOpened /></el-icon>
+              <el-icon v-else class="stack-title-icon detail-stack-icon"><FolderOpen /></el-icon>
               <h2>{{ selectedStack.name }}</h2>
               <el-tooltip
                 v-if="selectedStack.app_url"
@@ -281,7 +284,7 @@
                   :aria-label="`${t('stackGroup.openApp')}: ${selectedStack.name}`"
                   @click="openStackApp(selectedStack)"
                 >
-                  <el-icon><TopRight /></el-icon>
+                  <el-icon><ExternalLink /></el-icon>
                   <span>{{ t('stackGroup.openApp') }}</span>
                 </button>
               </el-tooltip>
@@ -373,8 +376,8 @@
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="VideoPlay"
-                          :disabled="!container.service_name || isServiceOperationRunning(selectedStack.name) || container.state === 'running'"
+                          :icon="Play"
+                          :disabled="!container.service_name || isStackOperationRunning(selectedStack.name) || container.state === 'running'"
                           @click="container.service_name && runServiceAction(selectedStack.name, container.service_name, 'start')"
                         />
                       </el-tooltip>
@@ -383,8 +386,8 @@
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="VideoPause"
-                          :disabled="!container.service_name || isServiceOperationRunning(selectedStack.name) || container.state !== 'running'"
+                          :icon="Pause"
+                          :disabled="!container.service_name || isStackOperationRunning(selectedStack.name) || container.state !== 'running'"
                           @click="container.service_name && runServiceAction(selectedStack.name, container.service_name, 'stop')"
                         />
                       </el-tooltip>
@@ -393,8 +396,8 @@
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="Refresh"
-                          :disabled="!container.service_name || isServiceOperationRunning(selectedStack.name)"
+                          :icon="RefreshCw"
+                          :disabled="!container.service_name || isStackOperationRunning(selectedStack.name)"
                           @click="container.service_name && runServiceAction(selectedStack.name, container.service_name, 'restart')"
                         />
                       </el-tooltip>
@@ -405,35 +408,12 @@
               </div>
             </section>
 
-            <section class="workspace-section terminal-section">
-              <div class="section-heading">
-                <h3>{{ t('workspace.terminal') }}</h3>
-                <div class="terminal-tools">
-                  <el-button class="ui-button ui-button--compact" size="small" text :loading="logsLoading" @click="loadLogs">
-                    <el-icon><Refresh /></el-icon>
-                    {{ t('workspace.refresh') }}
-                  </el-button>
-                </div>
-              </div>
-              <div class="embedded-terminal" ref="logViewportRef">
-                <div v-if="logsLoading && logLines.length === 0" class="terminal-muted">
-                  {{ t('workspace.loadingLogs') }}
-                </div>
-                <div v-else-if="logLines.length === 0" class="terminal-muted">
-                  {{ t('workspace.noLogs') }}
-                </div>
-                <div
-                  v-for="(line, index) in logLines"
-                  :key="`${index}-${line.service}-${line.text}`"
-                  class="terminal-log-line"
-                  :class="`level-${line.level}`"
-                >
-                  <span v-if="line.service" class="terminal-service">{{ line.service }}</span>
-                  <span class="terminal-message">{{ line.text }}</span>
-                </div>
-                <div v-if="logsActive" class="terminal-cursor">▊</div>
-              </div>
-            </section>
+            <StackLogsPanel
+              :log-lines="logLines"
+              :logs-loading="logsLoading"
+              :logs-active="logsActive"
+              @refresh="loadLogs()"
+            />
           </div>
 
           <div class="detail-grid-resizer" @mousedown="startDetailResize" />
@@ -489,7 +469,7 @@
                 <div class="stat-card mem" :class="memLevel">
                   <div class="stat-card-head">
                     <el-icon><Monitor /></el-icon>
-                    <span>MEM</span>
+                    <span>{{ t('workspace.containerMemory') }}</span>
                   </div>
                   <div class="stat-card-body">
                     <span class="stat-card-value">
@@ -524,7 +504,7 @@
 
                 <div class="stat-card tx">
                   <div class="stat-card-head">
-                    <el-icon><Top /></el-icon>
+                    <el-icon><ArrowUp /></el-icon>
                     <span>TX</span>
                   </div>
                   <div class="stat-card-body">
@@ -541,7 +521,7 @@
                 <!-- Image Row -->
                 <div class="info-row image-row">
                   <div class="info-row-left">
-                    <el-icon><Collection /></el-icon>
+                    <el-icon><Layers /></el-icon>
                     <span class="info-row-label">{{ t('workspace.containerImage') }}</span>
                   </div>
                   <div class="info-row-right">
@@ -552,7 +532,7 @@
                       class="ui-icon-button ui-icon-button--small row-copy-btn"
                       size="small" 
                       text 
-                      :icon="DocumentCopy"
+                      :icon="Copy"
                       @click="copyToClipboard(selectedContainer.image, t('workspace.containerImage'))"
                       :aria-label="t('stackOp.copy')"
                     />
@@ -570,7 +550,7 @@
                       class="ui-icon-button ui-icon-button--small row-copy-btn"
                       size="small" 
                       text 
-                      :icon="DocumentCopy"
+                      :icon="Copy"
                       @click="copyToClipboard(selectedContainer.id, t('workspace.containerId'))"
                       :aria-label="t('stackOp.copy')"
                     />
@@ -593,11 +573,16 @@
                 <span class="ports-section-label">{{ t('workspace.containerPorts') }}</span>
                 <div class="ports-grid">
                   <div v-for="(port, idx) in deduplicatedPorts" :key="idx" class="port-row-item">
-                    <span class="port-arrow-icon">⚡</span>
+                    <el-icon class="port-arrow-icon" aria-hidden="true"><Zap /></el-icon>
                     <div class="port-mapping">
-                      <span v-if="port.public_port" class="port-host-link" @click="copyToClipboard(`${port.public_port}`, 'Public Port')">
+                      <button
+                        v-if="port.public_port"
+                        type="button"
+                        class="port-host-link"
+                        @click="copyToClipboard(`${port.public_port}`, t('workspace.publicPort'))"
+                      >
                         {{ port.public_port }}
-                      </span>
+                      </button>
                       <span v-else class="port-host-none">-</span>
                       <span class="port-arrow">➔</span>
                       <span class="port-target">{{ port.private_port }}</span>
@@ -608,8 +593,8 @@
                       class="ui-icon-button ui-icon-button--small port-action-btn"
                       size="small"
                       text
-                      :icon="DocumentCopy"
-                      @click="copyToClipboard(port.public_port ? `${port.public_port}` : `${port.private_port}`, 'Port')"
+                      :icon="Copy"
+                      @click="copyToClipboard(port.public_port ? `${port.public_port}` : `${port.private_port}`, t('workspace.containerPorts'))"
                     />
                   </div>
                 </div>
@@ -624,7 +609,7 @@
                 <el-collapse-item name="runtime">
                   <template #title>
                     <div class="collapse-title">
-                      <el-icon><Setting /></el-icon>
+                      <el-icon><Settings /></el-icon>
                       <span>{{ t('workspace.runtime') }}</span>
                     </div>
                   </template>
@@ -658,7 +643,7 @@
                           class="ui-icon-button ui-icon-button--small field-copy-btn"
                           size="small"
                           text
-                          :icon="DocumentCopy"
+                          :icon="Copy"
                           @click="copyToClipboard(selectedContainer.working_dir, t('workspace.workdir'))"
                         />
                       </div>
@@ -672,33 +657,33 @@
                 >
                   <template #title>
                     <div class="collapse-title">
-                      <el-icon><Document /></el-icon>
+                      <el-icon><FileText /></el-icon>
                       <span>{{ t('workspace.command') }}</span>
                     </div>
                   </template>
                   <div class="command-block-list">
                     <div v-if="formatCommand(selectedContainer.entrypoint)" class="command-block">
                       <div class="command-block-header">
-                        <span>Entrypoint</span>
+                        <span>{{ t('workspace.entrypoint') }}</span>
                         <el-button
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="DocumentCopy"
-                          @click="copyToClipboard(formatCommand(selectedContainer.entrypoint), 'Entrypoint')"
+                          :icon="Copy"
+                          @click="copyToClipboard(formatCommand(selectedContainer.entrypoint), t('workspace.entrypoint'))"
                         />
                       </div>
                       <pre class="command-terminal-box"><code>{{ formatCommand(selectedContainer.entrypoint) }}</code></pre>
                     </div>
                     <div v-if="formatCommand(selectedContainer.command)" class="command-block">
                       <div class="command-block-header">
-                        <span>Cmd</span>
+                        <span>{{ t('workspace.command') }}</span>
                         <el-button
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="DocumentCopy"
-                          @click="copyToClipboard(formatCommand(selectedContainer.command), 'Command')"
+                          :icon="Copy"
+                          @click="copyToClipboard(formatCommand(selectedContainer.command), t('workspace.command'))"
                         />
                       </div>
                       <pre class="command-terminal-box"><code>{{ formatCommand(selectedContainer.command) }}</code></pre>
@@ -709,7 +694,7 @@
                 <el-collapse-item v-if="networkEntries.length" name="networks">
                   <template #title>
                     <div class="collapse-title">
-                      <el-icon><Link /></el-icon>
+                      <el-icon><Link2 /></el-icon>
                       <span>{{ t('workspace.networks') }}</span>
                     </div>
                   </template>
@@ -722,17 +707,17 @@
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="DocumentCopy"
-                          @click="copyToClipboard(network.IPAddress || network.GlobalIPv6Address || '', 'IP')"
+                          :icon="Copy"
+                          @click="copyToClipboard(network.IPAddress || network.GlobalIPv6Address || '', t('workspace.ipAddress'))"
                         />
                       </div>
                       <div class="network-row-body">
                         <div class="network-metric-item">
-                          <span class="network-metric-label">IP Address</span>
+                          <span class="network-metric-label">{{ t('workspace.ipAddress') }}</span>
                           <code class="network-metric-value monospace">{{ network.IPAddress || network.GlobalIPv6Address || '-' }}</code>
                         </div>
                         <div class="network-metric-item">
-                          <span class="network-metric-label">Mac Address</span>
+                          <span class="network-metric-label">{{ t('workspace.macAddress') }}</span>
                           <code class="network-metric-value monospace">{{ network.MacAddress || '-' }}</code>
                         </div>
                       </div>
@@ -743,23 +728,23 @@
                 <el-collapse-item v-if="visibleMounts.length" name="mounts">
                   <template #title>
                     <div class="collapse-title">
-                      <el-icon><FolderOpened /></el-icon>
+                      <el-icon><FolderOpen /></el-icon>
                       <span>{{ t('workspace.mounts') }}</span>
                     </div>
                   </template>
                   <div class="mount-detail-list">
                     <div v-for="mount in visibleMounts" :key="`${mount.Source}-${mount.Destination}`" class="mount-row-card">
                       <div class="mount-row-header">
-                        <span class="mount-type-badge" :class="mount.Type || 'mount'">{{ mount.Type || 'mount' }}</span>
+                        <span class="mount-type-badge" :class="mount.Type || 'mount'">{{ mount.Type || t('workspace.mount') }}</span>
                         <span class="mount-rw-badge" :class="mount.RW === false ? 'ro' : 'rw'">
-                          {{ mount.RW === false ? 'Read-only' : 'Read-Write' }}
+                          {{ t(mount.RW === false ? 'workspace.readOnly' : 'workspace.readWrite') }}
                         </span>
                       </div>
                       <div class="mount-path-group">
                         <div class="mount-path-item host-path">
-                          <span class="path-icon">🖥️</span>
+                          <el-icon class="path-icon" aria-hidden="true"><Server /></el-icon>
                           <div class="path-content">
-                            <span class="path-title">Host Source</span>
+                            <span class="path-title">{{ t('workspace.hostSource') }}</span>
                             <code class="path-value monospace" :title="mount.Source || mount.Name">{{ mount.Source || mount.Name || '-' }}</code>
                           </div>
                           <el-button
@@ -767,17 +752,17 @@
                             class="ui-icon-button ui-icon-button--small"
                             size="small"
                             text
-                            :icon="DocumentCopy"
-                            @click="copyToClipboard(mount.Source || mount.Name || '', 'Mount Source')"
+                            :icon="Copy"
+                            @click="copyToClipboard(mount.Source || mount.Name || '', t('workspace.hostSource'))"
                           />
                         </div>
                         <div class="mount-path-divider">
-                          <el-icon><ArrowRight /></el-icon>
+                          <el-icon><ChevronRight /></el-icon>
                         </div>
                         <div class="mount-path-item container-path">
-                          <span class="path-icon">📦</span>
+                          <el-icon class="path-icon" aria-hidden="true"><Package /></el-icon>
                           <div class="path-content">
-                            <span class="path-title">Container Dest</span>
+                            <span class="path-title">{{ t('workspace.containerDestination') }}</span>
                             <code class="path-value monospace" :title="mount.Destination">{{ mount.Destination || '-' }}</code>
                           </div>
                           <el-button
@@ -785,8 +770,8 @@
                             class="ui-icon-button ui-icon-button--small"
                             size="small"
                             text
-                            :icon="DocumentCopy"
-                            @click="copyToClipboard(mount.Destination || '', 'Mount Dest')"
+                            :icon="Copy"
+                            @click="copyToClipboard(mount.Destination || '', t('workspace.containerDestination'))"
                           />
                         </div>
                       </div>
@@ -797,7 +782,7 @@
                 <el-collapse-item v-if="visibleContainerLabels.length" name="labels">
                   <template #title>
                     <div class="collapse-title">
-                      <el-icon><Collection /></el-icon>
+                      <el-icon><Layers /></el-icon>
                       <span>{{ t('workspace.labels') }}</span>
                     </div>
                   </template>
@@ -809,8 +794,8 @@
                           class="ui-icon-button ui-icon-button--small"
                           size="small"
                           text
-                          :icon="DocumentCopy"
-                          @click="copyToClipboard(`${key}=${value}`, 'Label')"
+                          :icon="Copy"
+                          @click="copyToClipboard(`${key}=${value}`, t('workspace.labels'))"
                         />
                       </div>
                       <div class="label-value-wrap">
@@ -822,26 +807,12 @@
               </el-collapse>
             </div>
 
-            <div v-else class="compose-preview">
-              <div v-if="composeLoading" class="panel-muted">{{ t('workspace.loadingCompose') }}</div>
-              <el-alert
-                v-else-if="composeError"
-                :title="composeError"
-                type="warning"
-                show-icon
-                :closable="false"
-              />
-              <div v-else-if="!composeYaml" class="panel-muted">{{ t('workspace.noComposeFromAgent') }}</div>
-              <MonacoEditor
-                v-else
-                v-model="composeYaml"
-                language="yaml"
-                readonly
-                line-numbers="off"
-                word-wrap="on"
-                height="100%"
-              />
-            </div>
+            <StackComposePreview
+              v-else
+              :compose-loading="composeLoading"
+              :compose-error="composeError"
+              :compose-yaml="composeYaml"
+            />
           </aside>
         </div>
       </div>
@@ -862,15 +833,15 @@
     <el-dialog
       v-model="pruneDialogVisible"
       :title="t('workspace.pruneDocker')"
-      width="700px"
+      width="min(700px, calc(100vw - 24px))"
       :close-on-click-modal="false"
       destroy-on-close
       append-to-body
-      class="prune-dialog"
+      class="ui-dialog prune-dialog"
     >
       <StackOperationDock
         class="prune-terminal"
-        stack-name="Docker System"
+        :stack-name="t('workspace.dockerSystem')"
         :action="operationPanelAction"
         :lines="terminalOutputs['__prune__'] || []"
         :status="operationPanelStatus"
@@ -884,11 +855,11 @@
     <el-dialog
       v-model="showGlobalOperationDialog"
       :title="t('compose.deployOutput')"
-      width="700px"
+      width="min(700px, calc(100vw - 24px))"
       :close-on-click-modal="false"
       destroy-on-close
       append-to-body
-      class="operation-dialog"
+      class="ui-dialog operation-dialog"
     >
       <StackOperationDock
         class="global-terminal"
@@ -905,52 +876,51 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, reactive, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { copyText } from "@/utils/clipboard";
+import { computed, onUnmounted, reactive, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import {
-  Collection,
-  Cpu,
-  Document,
-  DocumentCopy,
-  Download,
-  EditPen,
-  FolderOpened,
-  Link,
-  Monitor,
-  Plus,
-  Refresh,
-  Search,
-  Setting,
-  Top,
+  ArrowUp,
   Calendar,
-  ArrowRight,
-  Brush,
-  VideoPause,
-  VideoPlay,
-  TopRight,
-  Loading,
-} from "@element-plus/icons-vue";
+  ChevronRight,
+  Copy,
+  Cpu,
+  Download,
+  Eraser,
+  ExternalLink,
+  FileText,
+  FolderOpen,
+  Layers,
+  Link2,
+  LoaderCircle,
+  Monitor,
+  Package,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Server,
+  Settings,
+  Zap,
+} from "@lucide/vue";
 import { ElMessage } from "element-plus";
+import { isAxiosError } from "axios";
 import { useI18n } from "vue-i18n";
-import { apiClient } from "@/api/client";
+import { composeRequestBody, fetchStackCompose, stackPath, stackRequestError, type ComposeDeployPayload } from "@/api/stacks";
 import { streamSse } from "@/api/sse";
 import { useConfirm } from "@/composables/useConfirm";
 import StatusIcon from "./StatusIcon.vue";
 import StackActions from "./StackActions.vue";
 import type { OperationState, TerminalChunkEvent } from "./StackActions.vue";
 import StackOperationDock from "./StackOperationDock.vue";
-import ComposeDrawer, { type ComposeDeployPayload } from "./ComposeDrawer.vue";
-import MonacoEditor from "@/components/MonacoEditor.vue";
+import ComposeDrawer from "./ComposeDrawer.vue";
+import StackComposePreview from "./stacks/StackComposePreview.vue";
+import StackLogsPanel, { type StackLogLine } from "./stacks/StackLogsPanel.vue";
 import UpdateBadge from "./UpdateBadge.vue";
 import AutoUpdateControl from "./AutoUpdateControl.vue";
-import { useDashboardStore, type StackService, type StackSummary, type ContainerPort, type ContainerSummary, type ContainerStats } from "@/stores/dashboard";
+import { useDashboardStore, type StackService, type StackSummary, type ContainerSummary, type ContainerStats } from "@/stores/dashboard";
 import { sortStacks } from "@/utils/stackSorting";
-
-interface StackLogLine {
-  service: string;
-  text: string;
-  level: "info" | "warn" | "error";
-}
 
 const props = defineProps<{
   hostId: string;
@@ -969,17 +939,21 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n();
 const route = useRoute();
+const router = useRouter();
 const { confirm } = useConfirm();
 const dashboardStore = useDashboardStore();
 
 const stackSearch = ref("");
 const selectedStackName = ref("");
 const selectedContainerId = ref("");
+let workspaceRevision = 0;
+let disposed = false;
 
 const composeYaml = ref("");
 const composeFileName = ref("compose.yaml");
 const composeLoading = ref(false);
 const composeError = ref("");
+let composeRequest: AbortController | null = null;
 
 // ── Draggable detail‑grid split ─────────────────────────────────────────────
 const DETAIL_SPLIT_KEY = "detail-grid-split-pct";
@@ -999,10 +973,13 @@ const detailLeftPct = ref<number>(
   })()
 );
 
+let stopDetailResize: (() => void) | undefined;
+
 function startDetailResize(e: MouseEvent) {
   e.preventDefault();
   const grid = detailGridRef.value;
   if (!grid) return;
+  stopDetailResize?.();
   const gridRect = grid.getBoundingClientRect();
   const startX = e.clientX;
   const startPct = detailLeftPct.value;
@@ -1028,6 +1005,7 @@ function startDetailResize(e: MouseEvent) {
   }
 
   function onUp() {
+    stopDetailResize = undefined;
     if (rafId !== null) {
       cancelAnimationFrame(rafId);
       rafId = null;
@@ -1042,6 +1020,7 @@ function startDetailResize(e: MouseEvent) {
     } catch {}
   }
 
+  stopDetailResize = onUp;
   document.body.style.cursor = "col-resize";
   document.body.style.userSelect = "none";
   window.addEventListener("mousemove", onMove);
@@ -1052,7 +1031,7 @@ function startDetailResize(e: MouseEvent) {
 const logLines = ref<StackLogLine[]>([]);
 const logsLoading = ref(false);
 const logsActive = ref(false);
-const logViewportRef = ref<HTMLElement | null>(null);
+let logLineId = 0;
 let logStreamController: AbortController | null = null;
 let logReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const LOG_RECONNECT_ACTIONS = new Set(["start", "restart", "update", "up", "service-start", "service-restart"]);
@@ -1085,8 +1064,7 @@ const showGlobalOperationDialog = computed({
     const name = operationPanelStack.value;
     if (!name || name === "__prune__") return false;
     if (selectedStackName.value === name) return false;
-    const exists = props.stacks.some((s) => s.name === name);
-    return !exists;
+    return !stacksByName.value.has(name);
   },
   set(val) {
     if (!val) {
@@ -1121,20 +1099,27 @@ const updatableStacks = computed(() =>
   sortStacks(props.stacks.filter((stack) => stackUpdateStatus(stack) === "updatable"))
 );
 
-const selectedStack = computed(() =>
-  props.stacks.find((stack) => stack.name === selectedStackName.value) || null
-);
-
-const selectedStackContainers = computed(() => {
-  if (!selectedStack.value) return [];
-  return props.containers
-    .filter((container) => container.stack_name === selectedStack.value?.name)
-    .sort((a, b) => (a.service_name || a.name).localeCompare(b.service_name || b.name));
+const stacksByName = computed(() => new Map(props.stacks.map((stack) => [stack.name, stack])));
+const containersByStack = computed(() => {
+  const groups = new Map<string, ContainerSummary[]>();
+  for (const container of props.containers) {
+    if (!container.stack_name) continue;
+    const group = groups.get(container.stack_name);
+    if (group) group.push(container);
+    else groups.set(container.stack_name, [container]);
+  }
+  return groups;
 });
-
-const selectedContainer = computed(() =>
-  selectedStackContainers.value.find((container) => container.id === selectedContainerId.value) || null
+const containersById = computed(() => new Map(props.containers.map((container) => [container.id, container])));
+const selectedStack = computed(() => stacksByName.value.get(selectedStackName.value) || null);
+const selectedStackContainers = computed(() =>
+  [...(containersByStack.value.get(selectedStackName.value) || [])]
+    .sort((a, b) => (a.service_name || a.name).localeCompare(b.service_name || b.name))
 );
+const selectedContainer = computed(() => {
+  const container = containersById.value.get(selectedContainerId.value);
+  return container?.stack_name === selectedStackName.value ? container : null;
+});
 
 const selectedContainerStats = computed(() =>
   selectedContainer.value ? props.containerStats[selectedContainer.value.id] : null
@@ -1153,7 +1138,7 @@ const deduplicatedPorts = computed(() => {
 
 async function copyToClipboard(text: string, label: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await copyText(text);
     ElMessage.success(`${label}: ${t("stackOp.copied")}`);
   } catch (err) {
     ElMessage.error(t("stackOp.copyFailed") || "Copy failed");
@@ -1272,22 +1257,48 @@ function isInternalDockerLabel(key: string): boolean {
     key === "desktop.docker.io/wsl-distro";
 }
 
-function stackUpdateStatus(stack: StackSummary): string | null {
-  const statuses = props.containers
-    .filter((container) => container.stack_name === stack.name)
-    .map((container) => containerUpdateStatus(container))
-    .filter((status): status is string => Boolean(status));
+const updatableStackNames = computed(() => {
+  const names = new Set<string>();
+  for (const [stackName, containers] of containersByStack.value) {
+    if (containers.some((container) => containerUpdateStatus(container) === "updatable")) names.add(stackName);
+  }
+  return names;
+});
 
-  if (statuses.includes("updatable")) return "updatable";
-  return null;
+function stackUpdateStatus(stack: StackSummary): string | null {
+  return updatableStackNames.value.has(stack.name) ? "updatable" : null;
 }
 
+const serviceContainers = computed(() => {
+  const positions = new Map(props.containers.map((container, index) => [container, index]));
+  const prefixMatches = new Map<string, ContainerSummary | undefined>();
+  const byStack = new Map<string, Map<string, ContainerSummary | undefined>>();
+  for (const stack of props.stacks) {
+    const byName = new Map<string, ContainerSummary>();
+    for (const container of containersByStack.value.get(stack.name) || []) {
+      if (container.service_name && !byName.has(container.service_name)) byName.set(container.service_name, container);
+      if (!byName.has(container.name)) byName.set(container.name, container);
+    }
+    const byService = new Map<string, ContainerSummary | undefined>();
+    for (const service of stack.services) {
+      const prefix = service.container_id;
+      let byId = prefix ? containersById.value.get(prefix) : undefined;
+      if (prefix && !byId) {
+        if (!prefixMatches.has(prefix)) prefixMatches.set(prefix, props.containers.find((item) => item.id.startsWith(prefix)));
+        byId = prefixMatches.get(prefix);
+      }
+      const named = byName.get(service.name);
+      const namedPosition = named ? positions.get(named) ?? Infinity : Infinity;
+      const idPosition = byId ? positions.get(byId) ?? Infinity : Infinity;
+      byService.set(service.name, namedPosition < idPosition ? named : byId);
+    }
+    byStack.set(stack.name, byService);
+  }
+  return byStack;
+});
+
 function containerForService(stack: StackSummary, service: StackService): ContainerSummary | null {
-  return props.containers.find((container) => {
-    if (service.container_id && container.id.startsWith(service.container_id)) return true;
-    return container.stack_name === stack.name &&
-      (container.service_name === service.name || container.name === service.name);
-  }) || null;
+  return serviceContainers.value.get(stack.name)?.get(service.name) || null;
 }
 
 function serviceUpdateStatus(stack: StackSummary, service: StackService): string | null {
@@ -1295,12 +1306,12 @@ function serviceUpdateStatus(stack: StackSummary, service: StackService): string
   return container ? containerUpdateStatus(container) : null;
 }
 
-function isServiceOperationRunning(stackName: string): boolean {
-  return Boolean(runningOperations[stackName]?.action?.startsWith("service-"));
+function isStackOperationRunning(stackName: string): boolean {
+  return Boolean(runningOperations[stackName]);
 }
 
 async function runServiceAction(stackName: string, serviceName: string, action: "start" | "stop" | "restart") {
-  if (!serviceName || isServiceOperationRunning(stackName)) return;
+  if (!serviceName || runningOperations[stackName]) return;
 
   const actionKey = `service-${action}`;
   const labelMap: Record<"start" | "stop" | "restart", string> = {
@@ -1309,7 +1320,11 @@ async function runServiceAction(stackName: string, serviceName: string, action: 
     restart: t("workspace.serviceRestart"),
   };
   const label = `${labelMap[action]} ${serviceName}`;
+  const hostId = props.hostId;
+  const revision = workspaceRevision;
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  const isCurrent = () => props.hostId === hostId && workspaceRevision === revision && runningOperations[stackName]?.abort === abort;
   const startedAt = Date.now();
 
   onOperationStart(stackName, {
@@ -1317,14 +1332,14 @@ async function runServiceAction(stackName: string, serviceName: string, action: 
     status: "running",
     message: t("stack.confirm.running", { action: label }),
     updatedAt: startedAt,
-    abort: () => controller.abort(),
+    abort,
   });
 
   let completed = false;
 
   try {
     const url =
-      `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}` +
+      stackPath(hostId, stackName) +
       `/services/${encodeURIComponent(serviceName)}/${action}?cols=110&rows=24`;
 
     await streamSse({
@@ -1333,7 +1348,7 @@ async function runServiceAction(stackName: string, serviceName: string, action: 
       timeoutMs: 120000,
       signal: controller.signal,
       onTimeout: () => {
-        if (completed) return;
+        if (completed || !isCurrent()) return;
         completed = true;
         onOperationComplete(stackName, {
           action: actionKey,
@@ -1343,6 +1358,7 @@ async function runServiceAction(stackName: string, serviceName: string, action: 
         });
       },
       onEvent: (ev) => {
+        if (completed || !isCurrent()) return;
         if (ev.event === "chunk") {
           onTerminalChunk(stackName, { action: actionKey, chunk: ev.data?.raw ?? ev.rawData });
         } else if (ev.event === "line") {
@@ -1372,50 +1388,24 @@ async function runServiceAction(stackName: string, serviceName: string, action: 
       },
     });
 
-    if (!completed) {
-      completed = true;
-      if (controller.signal.aborted) {
-        onOperationComplete(stackName, {
-          action: actionKey,
-          status: "error",
-          message: t("stack.confirm.cancelled"),
-          updatedAt: Date.now(),
-        });
-        return;
-      }
+    if (!completed && isCurrent()) {
       onOperationComplete(stackName, {
         action: actionKey,
-        status: "success",
-        message: t("stack.confirm.success", { action: label }),
+        status: "uncertain",
+        message: t("stack.confirm.noResult"),
         updatedAt: Date.now(),
       });
-      emit("refresh");
     }
-  } catch (e: any) {
-    if (!completed) {
+  } catch (error) {
+    if (!completed && isCurrent()) {
       onOperationComplete(stackName, {
         action: actionKey,
         status: "error",
-        message: t("stack.confirm.failure", { action: label }) + ": " + (e.message || t("stack.confirm.unknownError")),
+        message: t("stack.confirm.failure", { action: label }) + ": " + (stackRequestError(error).detail || t("stack.confirm.unknownError")),
         updatedAt: Date.now(),
       });
     }
   }
-}
-
-function formatPorts(ports: ContainerPort[] = []): string {
-  return ports
-    .map((port) => port.public_port
-      ? `${port.public_port}:${port.private_port}/${port.type}`
-      : `${port.private_port}/${port.type}`)
-    .join(", ");
-}
-
-function formatPortsPreview(ports: ContainerPort[] = []): string {
-  const visiblePorts = ports.slice(0, 3);
-  const summary = formatPorts(visiblePorts);
-  const hiddenCount = ports.length - visiblePorts.length;
-  return hiddenCount > 0 ? `${summary} +${hiddenCount}` : summary;
 }
 
 function formatCommand(value: string[] | string | null | undefined): string {
@@ -1449,7 +1439,12 @@ function formatBytes(bytes: number): string {
 function showAllStacks() {
   selectedStackName.value = "";
   selectedContainerId.value = "";
+  cancelComposePreview();
   stopLogs();
+  if (route.query.stack !== undefined) {
+    const { stack: _ignored, ...rest } = route.query;
+    void router.replace({ query: rest });
+  }
 }
 
 function handleCardMouseMove(e: MouseEvent) {
@@ -1473,6 +1468,7 @@ function handleCardMouseLeave(e: MouseEvent) {
 }
 
 function selectStack(stackName: string) {
+  if (selectedStackName.value === stackName) return;
   selectedStackName.value = stackName;
   selectedContainerId.value = "";
 }
@@ -1483,7 +1479,8 @@ function selectContainer(containerId: string) {
 
 function selectServiceContainer(stackName: string, service: StackService) {
   selectStack(stackName);
-  const stack = props.stacks.find((item) => item.name === stackName);
+  selectedContainerId.value = "";
+  const stack = stacksByName.value.get(stackName);
   if (!stack) return;
   const container = containerForService(stack, service);
   if (container) {
@@ -1504,6 +1501,9 @@ function openNewCompose() {
 }
 
 async function confirmPrune() {
+  if (pruneLoading.value) return;
+  const hostId = props.hostId;
+  const revision = workspaceRevision;
   try {
     await confirm(
       t("workspace.pruneMessage"),
@@ -1519,7 +1519,9 @@ async function confirmPrune() {
     return;
   }
 
+  if (revision !== workspaceRevision || pruneLoading.value) return;
   pruneLoading.value = true;
+  clearOperationAutoClose();
   const pruneKey = "__prune__";
   terminalOutputs[pruneKey] = [];
   operationPanelStack.value = pruneKey;
@@ -1529,76 +1531,77 @@ async function confirmPrune() {
   operationPanelVisible.value = true;
 
   const controller = new AbortController();
-  runningOperations[pruneKey] = {
-    abort: () => controller.abort(),
-    action: "prune"
-  };
+  const abort = () => controller.abort();
+  const isCurrent = () => props.hostId === hostId && workspaceRevision === revision && runningOperations[pruneKey]?.abort === abort;
+  runningOperations[pruneKey] = { abort, action: "prune" };
 
   let completed = false;
 
   try {
-    const url = `/api/hosts/${props.hostId}/prune`;
+    const url = `/api/hosts/${encodeURIComponent(hostId)}/prune`;
     await streamSse({
       url,
       method: "POST",
       signal: controller.signal,
       timeoutMs: 300000,
       onTimeout: () => {
-        if (completed) return;
+        if (completed || !isCurrent()) return;
         completed = true;
-        operationPanelStatus.value = "error";
-        operationPanelMessage.value = t("stack.confirm.timeout");
+        if (operationPanelStack.value === pruneKey) {
+          operationPanelStatus.value = "error";
+          operationPanelMessage.value = t("stack.confirm.timeout");
+        }
       },
       onEvent: (ev) => {
+        if (completed || !isCurrent()) return;
         if (ev.event === "chunk") {
           if (!terminalOutputs[pruneKey]) terminalOutputs[pruneKey] = [];
           terminalOutputs[pruneKey].push(ev.data?.raw ?? ev.rawData);
         } else if (ev.event === "complete") {
           completed = true;
           const data = ev.data || {};
-          operationPanelStatus.value = data.status === "success" ? "success" : "error";
-          operationPanelMessage.value = data.message || "";
+          if (operationPanelStack.value === pruneKey) {
+            operationPanelStatus.value = data.status === "success" ? "success" : "error";
+            operationPanelMessage.value = data.message || "";
+            scheduleOperationAutoClose(pruneKey, 4000);
+          }
           emit("refresh");
-          scheduleOperationAutoClose(pruneKey, 4000);
         } else if (ev.event === "error") {
           completed = true;
-          operationPanelStatus.value = "error";
-          operationPanelMessage.value = ev.data?.message || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
+          if (operationPanelStack.value === pruneKey) {
+            operationPanelStatus.value = "error";
+            operationPanelMessage.value = ev.data?.message || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
+          }
         }
       },
     });
 
-    if (!completed) {
-      completed = true;
-      if (controller.signal.aborted) {
-        operationPanelStatus.value = "error";
-        operationPanelMessage.value = t("stack.confirm.cancelled");
-        return;
-      }
-      operationPanelStatus.value = "success";
-      operationPanelMessage.value = t("stack.confirm.success", { action: t("workspace.pruneDocker") });
-      emit("refresh");
-      scheduleOperationAutoClose(pruneKey, 3000);
-    }
-  } catch (e: any) {
-    if (completed) return;
-    completed = true;
-    if (controller.signal.aborted) {
+    if (!completed && isCurrent() && operationPanelStack.value === pruneKey) {
       operationPanelStatus.value = "error";
-      operationPanelMessage.value = t("stack.confirm.cancelled");
-      return;
+      operationPanelMessage.value = t("stack.confirm.noResult");
     }
-    operationPanelStatus.value = "error";
-    operationPanelMessage.value = e.message || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
+  } catch (error) {
+    if (!completed && isCurrent() && operationPanelStack.value === pruneKey) {
+      operationPanelStatus.value = "error";
+      operationPanelMessage.value = stackRequestError(error).detail || t("stack.confirm.failure", { action: t("workspace.pruneDocker") });
+    }
   } finally {
-    delete runningOperations[pruneKey];
-    pruneLoading.value = false;
+    if (isCurrent()) delete runningOperations[pruneKey];
+    if (revision === workspaceRevision) pruneLoading.value = false;
   }
+}
+
+function updateBatchErrorMessage(error: unknown) {
+  const detail = isAxiosError<{ detail?: string | { message?: string } }>(error) ? error.response?.data?.detail : undefined;
+  const message = typeof detail === "object" ? detail?.message : undefined;
+  return message || stackRequestError(error).detail || t("workspace.updateBatchFailed");
 }
 
 async function confirmUpdateAll() {
   const stacksToUpdate = updatableStacks.value;
   if (stacksToUpdate.length === 0 || bulkUpdateLoading.value) return;
+  const hostId = props.hostId;
+  const revision = workspaceRevision;
 
   try {
     await confirm(
@@ -1615,33 +1618,37 @@ async function confirmUpdateAll() {
     return;
   }
 
+  if (revision !== workspaceRevision || bulkUpdateLoading.value) return;
   bulkUpdateLoading.value = true;
   try {
     const batch = await dashboardStore.submitUpdateRuns(
-      props.hostId,
+      hostId,
       "bulk",
       stacksToUpdate.map((stack) => stack.name),
     );
+    if (revision !== workspaceRevision) return;
     ElMessage.success(t("workspace.updateBatchAccepted", { count: batch.items.length }));
     emit("refresh");
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail?.message || error?.message || t("workspace.updateBatchFailed"));
+  } catch (error) {
+    if (revision === workspaceRevision) ElMessage.error(updateBatchErrorMessage(error));
   } finally {
-    bulkUpdateLoading.value = false;
+    if (revision === workspaceRevision) bulkUpdateLoading.value = false;
   }
 }
 
 async function stopQueuedUpdateBatch(requestId: string) {
+  const revision = workspaceRevision;
   try {
     await dashboardStore.stopPendingUpdateRuns(props.hostId, requestId);
-    ElMessage.info(t("workspace.updatePendingStopped"));
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || t("workspace.updateBatchFailed"));
+    if (revision === workspaceRevision) ElMessage.info(t("workspace.updatePendingStopped"));
+  } catch (error) {
+    if (revision === workspaceRevision) ElMessage.error(updateBatchErrorMessage(error));
   }
 }
 
 function applyComposeToPreview(payload: ComposeDeployPayload) {
   if (selectedStackName.value !== payload.stackName) return;
+  cancelComposePreview();
   composeYaml.value = payload.composeYaml;
   composeFileName.value = payload.composeFileName || "compose.yaml";
   composeError.value = "";
@@ -1655,31 +1662,31 @@ function onComposeSaved(payload: ComposeDeployPayload) {
 
 async function handleComposeDeploy(payload: ComposeDeployPayload) {
   const stackName = payload.stackName;
+  const hostId = props.hostId;
+  const revision = workspaceRevision;
   const action = "deploy";
   const label = t("stackOp.deploying");
   const startedAt = Date.now();
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  const isCurrent = () => props.hostId === hostId && workspaceRevision === revision && runningOperations[stackName]?.abort === abort;
 
   const runningState: OperationState = {
     action,
     status: "running",
     message: t("stack.confirm.running", { action: label }),
     updatedAt: startedAt,
-    abort: () => controller.abort(),
+    abort,
   };
 
   onOperationStart(stackName, runningState);
-  runningOperations[stackName] = {
-    abort: () => controller.abort(),
-    action,
-  };
 
   let completed = false;
 
   try {
     const cols = 110;
     const rows = 24;
-    const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackName)}/compose/deploy?cols=${cols}&rows=${rows}`;
+    const url = `${stackPath(hostId, stackName)}/compose/deploy?cols=${cols}&rows=${rows}`;
 
     await streamSse({
       url,
@@ -1689,14 +1696,9 @@ async function handleComposeDeploy(payload: ComposeDeployPayload) {
       },
       timeoutMs: 300000,
       signal: controller.signal,
-      body: JSON.stringify({
-        compose_yaml: payload.composeYaml,
-        compose_env: payload.composeEnv,
-        compose_file_name: payload.composeFileName,
-        is_add: payload.isAdd,
-      }),
+      body: JSON.stringify(composeRequestBody(payload)),
       onTimeout: () => {
-        if (completed) return;
+        if (completed || !isCurrent()) return;
         completed = true;
         onOperationComplete(stackName, {
           action,
@@ -1706,6 +1708,7 @@ async function handleComposeDeploy(payload: ComposeDeployPayload) {
         });
       },
       onEvent: (ev) => {
+        if (completed || !isCurrent()) return;
         if (ev.event === "chunk") {
           onTerminalChunk(stackName, { action, chunk: ev.data?.raw ?? ev.rawData });
         } else if (ev.event === "line") {
@@ -1743,31 +1746,20 @@ async function handleComposeDeploy(payload: ComposeDeployPayload) {
       },
     });
 
-    if (!completed) {
-      completed = true;
-      if (controller.signal.aborted) {
-        onOperationComplete(stackName, {
-          action,
-          status: "error",
-          message: t("stack.confirm.cancelled"),
-          updatedAt: Date.now(),
-        });
-        return;
-      }
+    if (!completed && isCurrent()) {
+      const message = t("stack.confirm.noResult");
       onOperationComplete(stackName, {
         action,
-        status: "success",
-        message: t("compose.deployCompleted"),
+        status: "uncertain",
+        message,
         updatedAt: Date.now(),
       });
-      applyComposeToPreview(payload);
-      ElMessage.success(payload.isAdd ? t("compose.createdAndDeployed") : t("compose.deployedAndSaved"));
-      emit("refresh");
+      ElMessage.warning(message);
     }
-  } catch (e: any) {
-    if (completed) return;
+  } catch (error) {
+    if (completed || !isCurrent()) return;
     completed = true;
-    const detail = e.message || t("compose.unknownError");
+    const detail = stackRequestError(error).detail || t("compose.unknownError");
     onOperationComplete(stackName, {
       action,
       status: "error",
@@ -1775,8 +1767,6 @@ async function handleComposeDeploy(payload: ComposeDeployPayload) {
       updatedAt: Date.now(),
     });
     ElMessage.error(t("compose.deployFailed", { detail }));
-  } finally {
-    delete runningOperations[stackName];
   }
 }
 
@@ -1822,136 +1812,114 @@ function clearOperationAutoClose() {
 function scheduleOperationAutoClose(stackName: string, delayMs: number) {
   clearOperationAutoClose();
   operationAutoCloseTimer = setTimeout(() => {
+    operationAutoCloseTimer = null;
     if (operationPanelStack.value === stackName && operationPanelStatus.value !== "running") {
       operationPanelVisible.value = false;
     }
   }, delayMs);
 }
 
+function cancelComposePreview() {
+  composeRequest?.abort();
+  composeRequest = null;
+  composeLoading.value = false;
+}
+
 async function loadCompose() {
-  if (!selectedStack.value) return;
+  cancelComposePreview();
+  const hostId = props.hostId;
+  const stackName = selectedStack.value?.name;
+  if (!stackName) return;
+  const request = new AbortController();
+  composeRequest = request;
+  const isCurrent = () => composeRequest === request && props.hostId === hostId && selectedStack.value?.name === stackName;
   composeLoading.value = true;
   composeError.value = "";
   composeYaml.value = "";
   composeFileName.value = "compose.yaml";
   try {
-    const res = await apiClient.get(
-      `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(selectedStack.value.name)}/compose`
-    );
-    composeYaml.value = res.data.compose_yaml || "";
-    composeFileName.value = res.data.compose_file_name || "compose.yaml";
-  } catch (error: any) {
-    composeError.value = error.response?.data?.detail || error.message || t("workspace.composeLoadFailed");
+    const { data } = await fetchStackCompose(hostId, stackName, request.signal);
+    if (!isCurrent()) return;
+    composeYaml.value = data.compose_yaml || "";
+    composeFileName.value = data.compose_file_name || "compose.yaml";
+  } catch (error) {
+    if (isCurrent()) composeError.value = stackRequestError(error).detail || t("workspace.composeLoadFailed");
   } finally {
-    composeLoading.value = false;
+    if (isCurrent()) {
+      composeRequest = null;
+      composeLoading.value = false;
+    }
   }
 }
 
 function appendLogLine(text: string, service = "", level: StackLogLine["level"] = "info") {
-  const cleanText = normalizeLogText(text);
+  const cleanText = text.replace(/\t/g, "  ").trimEnd();
   if (!cleanText && !service) return;
-  logLines.value.push({ service, text: cleanText, level });
-  if (logLines.value.length > 500) {
-    logLines.value = logLines.value.slice(-500);
-  }
-  nextTick(() => {
-    if (logViewportRef.value) {
-      logViewportRef.value.scrollTop = logViewportRef.value.scrollHeight;
-    }
-  });
-}
-
-function normalizeLogText(text: string): string {
-  return text.replace(/\t/g, "  ").trimEnd();
-}
-
-function clearLogReconnectTimer() {
-  if (logReconnectTimer) {
-    clearTimeout(logReconnectTimer);
-    logReconnectTimer = null;
-  }
+  logLines.value.push({ id: ++logLineId, service, text: cleanText, level });
+  if (logLines.value.length > 500) logLines.value.shift();
 }
 
 function stopLogs() {
-  clearLogReconnectTimer();
-  if (logStreamController) {
-    logStreamController.abort();
-    logStreamController = null;
-  }
+  if (logReconnectTimer !== null) clearTimeout(logReconnectTimer);
+  logReconnectTimer = null;
+  logStreamController?.abort();
+  logStreamController = null;
   logsActive.value = false;
   logsLoading.value = false;
 }
 
-function scheduleLogReconnect(stackName: string, attempt: number) {
-  if (attempt >= MAX_LOG_RECONNECT_ATTEMPTS || selectedStackName.value !== stackName) return;
-  clearLogReconnectTimer();
-  const delay = Math.min(5000, 600 + attempt * 900);
+function scheduleLogReconnect(hostId: string, stackName: string, attempt: number) {
+  if (attempt >= MAX_LOG_RECONNECT_ATTEMPTS) return;
+  const delay = Math.min(5000, 600 * 2 ** attempt);
   logReconnectTimer = setTimeout(() => {
     logReconnectTimer = null;
-    if (selectedStackName.value === stackName) {
+    if (props.hostId === hostId && selectedStackName.value === stackName) {
       loadLogs({ preserveLines: true, retry: true, attempt: attempt + 1, stackName });
     }
   }, delay);
 }
 
 function loadLogs(options: { preserveLines?: boolean; retry?: boolean; attempt?: number; stackName?: string } = {}) {
+  const hostId = props.hostId;
   const stackName = options.stackName || selectedStack.value?.name;
   if (!stackName) return;
   stopLogs();
   logsLoading.value = true;
   logsActive.value = true;
-  if (!options.preserveLines) {
-    logLines.value = [];
-  }
+  if (!options.preserveLines) logLines.value = [];
 
   const controller = new AbortController();
   logStreamController = controller;
-  const url =
-    `/api/hosts/${encodeURIComponent(props.hostId)}` +
-    `/stacks/${encodeURIComponent(stackName)}` +
-    "/logs/stream?tail=120";
+  const isCurrent = () => logStreamController === controller && props.hostId === hostId && selectedStackName.value === stackName;
+  let completed = false;
 
   void streamSse({
-    url,
+    url: `${stackPath(hostId, stackName)}/logs/stream?tail=120`,
     signal: controller.signal,
-    onEvent: (ev) => {
-      if (ev.event === "ready") {
-        logsLoading.value = false;
-        return;
-      }
-      if (ev.event === "line") {
-        logsLoading.value = false;
-        const service = ev.data?.service;
-        const text = ev.data?.text ?? "";
-        appendLogLine(text, service || "", logLevel(text));
-        return;
-      }
-      if (ev.event === "error") {
-        logsLoading.value = false;
-        appendLogLine(ev.data?.message || "log stream failed", ev.data?.service || "", "error");
-        return;
-      }
-      if (ev.event === "complete") {
-        logsLoading.value = false;
+    onEvent: (event) => {
+      if (!isCurrent() || completed) return;
+      logsLoading.value = false;
+      if (event.event === "line") {
+        const text = event.data?.text ?? "";
+        appendLogLine(text, event.data?.service || "", logLevel(text));
+      } else if (event.event === "error") {
+        appendLogLine(event.data?.message || t("workspace.logStreamFailed"), event.data?.service || "", "error");
+      } else if (event.event === "complete") {
+        completed = true;
         logsActive.value = false;
-        appendLogLine(ev.data?.message || "Log stream ended.", "", "warn");
-        if (options.retry) {
-          scheduleLogReconnect(stackName, options.attempt || 0);
-        }
+        appendLogLine(event.data?.message || t("workspace.logStreamEnded"), "", "warn");
       }
     },
-  }).catch((error: any) => {
-    if (controller.signal.aborted) return;
-    appendLogLine(`Failed to stream logs: ${error.message}`, "", "error");
-    if (options.retry) {
-      scheduleLogReconnect(stackName, options.attempt || 0);
+  }).catch((error) => {
+    if (isCurrent() && !completed) {
+      appendLogLine(t("workspace.logStreamError", { detail: stackRequestError(error).detail }), "", "error");
     }
   }).finally(() => {
-    if (logStreamController === controller) {
-      logStreamController = null;
-      logsLoading.value = false;
-      logsActive.value = false;
-    }
+    if (!isCurrent()) return;
+    logStreamController = null;
+    logsLoading.value = false;
+    logsActive.value = false;
+    if (options.retry) scheduleLogReconnect(hostId, stackName, options.attempt || 0);
   });
 }
 
@@ -1962,7 +1930,7 @@ function logLevel(text: string): StackLogLine["level"] {
 }
 
 function onTerminalChunk(stackName: string, payload: TerminalChunkEvent) {
-  if (payload.hostId && payload.hostId !== props.hostId) return;
+  if (disposed || (payload.hostId && payload.hostId !== props.hostId)) return;
   if (!terminalOutputs[stackName]) {
     terminalOutputs[stackName] = [];
   }
@@ -1977,7 +1945,7 @@ function onTerminalChunk(stackName: string, payload: TerminalChunkEvent) {
 }
 
 function onOperationStart(stackName: string, state: OperationState) {
-  if (state.hostId && state.hostId !== props.hostId) return;
+  if (disposed || (state.hostId && state.hostId !== props.hostId)) return;
   clearOperationAutoClose();
   terminalOutputs[stackName] = [];
   operationPanelStack.value = stackName;
@@ -2005,20 +1973,18 @@ function onOperationStart(stackName: string, state: OperationState) {
 }
 
 function onOperationComplete(stackName: string, state: OperationState) {
-  if (state.hostId && state.hostId !== props.hostId) return;
-  if (operationPanelStack.value !== stackName) {
-    delete runningOperations[stackName];
-    return;
+  if (disposed || (state.hostId && state.hostId !== props.hostId)) return;
+  if (operationPanelStack.value === stackName) {
+    operationPanelStatus.value = state.status === "success"
+      ? "success"
+      : state.status === "partial" ? "partial"
+      : state.status === "error" || state.status === "uncertain" || state.status === "timeout"
+        ? "error"
+        : "idle";
+    operationPanelMessage.value = state.message;
+    operationPanelAction.value = state.action;
+    scheduleOperationAutoClose(stackName, state.status === "success" ? 2400 : 6500);
   }
-  operationPanelStatus.value = state.status === "success"
-    ? "success"
-    : state.status === "partial" ? "partial"
-    : state.status === "error" || state.status === "uncertain" || state.status === "timeout"
-      ? "error"
-      : "idle";
-  operationPanelMessage.value = state.message;
-  operationPanelAction.value = state.action;
-  scheduleOperationAutoClose(stackName, state.status === "success" ? 2400 : 6500);
   delete runningOperations[stackName];
 
   if (selectedStackName.value !== stackName) return;
@@ -2040,39 +2006,52 @@ function onOperationComplete(stackName: string, state: OperationState) {
 }
 
 function handleOperationComplete(stackName: string, state: OperationState) {
+  if (disposed || (state.hostId && state.hostId !== props.hostId)) return;
   onOperationComplete(stackName, state);
   if ((state.status === "success" || state.status === "partial") && state.action === "update") {
     emit("check-updates");
   }
 }
 
-watch(selectedStackName, () => {
+watch([() => props.hostId, selectedStackName], () => {
   if (!selectedStack.value) {
+    cancelComposePreview();
+    stopDetailResize?.();
     composeYaml.value = "";
     selectedContainerId.value = "";
     stopLogs();
     return;
   }
-  selectedContainerId.value = "";
   void loadCompose();
   loadLogs();
-});
+}, { flush: "post" });
+
+function resetWorkspaceResources() {
+  workspaceRevision++;
+  cancelComposePreview();
+  stopDetailResize?.();
+  stopLogs();
+  closeOperationDock();
+  for (const [stackName, operation] of Object.entries(runningOperations)) {
+    operation.abort(); // For backend-owned updates, this only stops the viewer.
+    delete runningOperations[stackName];
+  }
+}
 
 watch(
   () => props.hostId,
   () => {
-    showAllStacks();
+    resetWorkspaceResources();
+    selectedStackName.value = "";
+    selectedContainerId.value = "";
     composeDrawerVisible.value = false;
     composeYaml.value = "";
     composeError.value = "";
     logLines.value = [];
-    Object.keys(runningOperations).forEach((stackName) => {
-      if (runningOperations[stackName]?.action !== "update") cancelOperation(stackName);
-    });
-    closeOperationDock();
-    Object.keys(terminalOutputs).forEach((stackName) => {
-      delete terminalOutputs[stackName];
-    });
+    pruneLoading.value = false;
+    bulkUpdateLoading.value = false;
+    for (const stackName of Object.keys(terminalOutputs)) delete terminalOutputs[stackName];
+    applyQueryStack();
   }
 );
 
@@ -2088,7 +2067,7 @@ watch(
 function applyQueryStack() {
   const qStack = route.query.stack;
   if (typeof qStack === "string" && qStack) {
-    if (props.stacks.some((s) => s.name === qStack)) {
+    if (stacksByName.value.has(qStack)) {
       selectStack(qStack);
     }
   }
@@ -2103,8 +2082,8 @@ watch(
 );
 
 onUnmounted(() => {
-  clearOperationAutoClose();
-  stopLogs();
+  disposed = true;
+  resetWorkspaceResources();
 });
 </script>
 
@@ -2183,20 +2162,10 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-.workspace-summary,
-.section-heading span {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.stack-card-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 14px;
+.sidebar-search:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-color: var(--accent-blue);
 }
 
 .sidebar-search input {
@@ -2206,7 +2175,11 @@ onUnmounted(() => {
   outline: 0;
   background: transparent;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: var(--text-md);
+}
+
+.sidebar-search input:focus-visible {
+  outline: none;
 }
 
 .sidebar-loading {
@@ -2613,8 +2586,7 @@ onUnmounted(() => {
 }
 
 .stack-card-actions,
-.detail-actions,
-.terminal-tools {
+.detail-actions {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2626,18 +2598,6 @@ onUnmounted(() => {
   color: var(--text-secondary);
   font-size: 12px;
   white-space: nowrap;
-}
-
-.compact-action-button {
-  height: 28px;
-  min-height: 28px;
-  padding: 0 8px !important;
-  border-radius: 7px !important;
-}
-
-.compact-action-button:not(.wide) {
-  width: 28px;
-  padding: 0 !important;
 }
 
 .service-strip,
@@ -2927,12 +2887,6 @@ onUnmounted(() => {
   height: 22px;
 }
 
-.detail-compose-button {
-  height: 32px;
-  border-radius: 8px !important;
-  font-weight: 700;
-}
-
 .stack-detail-grid {
   display: flex;
   flex: 1;
@@ -2997,7 +2951,6 @@ onUnmounted(() => {
   background: rgba(59, 130, 246, 0.10);
 }
 
-.workspace-section,
 .workspace-section {
   padding: 16px;
   min-width: 0;
@@ -3028,121 +2981,10 @@ onUnmounted(() => {
 
 .container-name,
 .container-meta,
-.container-status,
-.container-port {
+.container-status {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.container-port {
-  min-width: 0;
-  max-width: 100%;
-}
-
-.terminal-section {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-  border: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.embedded-terminal {
-  flex: 1;
-  min-height: 0;
-  margin-top: 12px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #020609;
-  color: #e5f2ff;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 10px;
-}
-
-:global([data-theme="light"] .embedded-terminal) {
-  border: 1px solid rgba(60, 72, 88, 0.16);
-  background: #f8fafc;
-  color: #0f172a;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
-}
-
-.terminal-log-line {
-  display: grid;
-  grid-template-columns: minmax(76px, max-content) minmax(0, 1fr);
-  align-items: baseline;
-  gap: 10px;
-  padding: 2px 4px;
-  border-radius: 5px;
-  white-space: pre-wrap;
-}
-
-.terminal-log-line + .terminal-log-line {
-  margin-top: 1px;
-}
-
-.terminal-log-line.level-error {
-  background: rgba(248, 113, 113, 0.08);
-  color: #fecaca;
-}
-
-.terminal-log-line.level-warn {
-  background: rgba(251, 191, 36, 0.08);
-  color: #fde68a;
-}
-
-.terminal-service {
-  overflow: hidden;
-  max-width: 15ch;
-  border-right: 1px solid rgba(148, 163, 184, 0.20);
-  color: #38bdf8;
-  font-weight: 800;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.terminal-message {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.terminal-muted {
-  color: #8aa0b7;
-}
-
-:global([data-theme="light"] .terminal-muted) {
-  color: #64748b;
-}
-
-:global([data-theme="light"] .terminal-log-line.level-error) {
-  background: rgba(220, 38, 38, 0.07);
-  color: #991b1b;
-}
-
-:global([data-theme="light"] .terminal-log-line.level-warn) {
-  background: rgba(217, 119, 6, 0.08);
-  color: #92400e;
-}
-
-:global([data-theme="light"] .terminal-service) {
-  border-right-color: rgba(60, 72, 88, 0.16);
-  color: #2563eb;
-}
-
-.terminal-cursor {
-  display: inline-block;
-  color: #ffffff;
-  animation: blink 1s step-end infinite;
-}
-
-:global([data-theme="light"] .terminal-cursor) {
-  color: #0f172a;
 }
 
 .panel-header {
@@ -3210,36 +3052,6 @@ onUnmounted(() => {
   }
 }
 
-.compose-preview {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  margin-left: -16px;
-  margin-right: -16px;
-  margin-bottom: -16px;
-  padding-left: 8px;
-  padding-right: 8px;
-}
-
-.compose-preview :deep(.monaco-editor-container) {
-  border: none;
-  border-radius: 0;
-  height: 100%;
-  width: 100%;
-  background-color: transparent !important;
-}
-
-.compose-preview :deep(.monaco-editor),
-.compose-preview :deep(.monaco-editor-background),
-.compose-preview :deep(.monaco-editor .margin) {
-  background-color: transparent !important;
-}
-
-.panel-muted {
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
 .container-detail-panel {
   display: flex;
   flex-direction: column;
@@ -3268,7 +3080,10 @@ onUnmounted(() => {
   border-radius: 10px;
   background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
-  transition: all 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+  transition:
+    border-color 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+    transform 0.24s cubic-bezier(0.4, 0, 0.2, 1),
+    box-shadow 0.24s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
 }
 
@@ -3477,7 +3292,7 @@ onUnmounted(() => {
   border-radius: 8px;
   background: var(--surface-panel-raised);
   border: 1px solid var(--border-subtle);
-  transition: all 0.2s;
+  transition: border-color var(--duration-normal, 180ms) var(--ease-standard, ease), background-color var(--duration-normal, 180ms) var(--ease-standard, ease);
 }
 
 .port-row-item:hover {
@@ -3486,7 +3301,7 @@ onUnmounted(() => {
 }
 
 .port-arrow-icon {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--accent-blue);
   margin-right: 4px;
 }
@@ -3502,11 +3317,15 @@ onUnmounted(() => {
 }
 
 .port-host-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
   color: var(--accent-blue);
   font-weight: 600;
   cursor: pointer;
   border-bottom: 1px dashed transparent;
-  transition: border-bottom-color 0.2s;
+  transition: border-bottom-color var(--duration-normal, 180ms) ease;
 }
 
 .port-host-link:hover {
@@ -3518,7 +3337,7 @@ onUnmounted(() => {
 }
 
 .port-arrow {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
@@ -3528,7 +3347,7 @@ onUnmounted(() => {
 }
 
 .port-protocol-tag {
-  font-size: 9px;
+  font-size: 11px;
   color: var(--text-muted);
   text-transform: uppercase;
   font-weight: bold;
@@ -3651,16 +3470,16 @@ onUnmounted(() => {
 }
 
 .field-label {
-  font-size: 9px;
-  font-weight: 800;
+  font-size: var(--text-xs, 11px);
+  font-weight: 700;
   color: var(--text-secondary);
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
 .field-value {
-  font-size: 12.5px;
-  font-weight: 650;
+  font-size: var(--text-md, 13px);
+  font-weight: 600;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3987,10 +3806,6 @@ onUnmounted(() => {
 
 /* ── Animations & Commons ───────────────────────── */
 
-@keyframes blink {
-  50% { opacity: 0; }
-}
-
 @media (max-width: 1100px) {
   .host-workspace {
     grid-template-columns: 1fr;
@@ -4082,16 +3897,8 @@ onUnmounted(() => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .info-grid {
-    grid-template-columns: 1fr;
-  }
-
   .collapse-grid {
     grid-template-columns: 1fr;
-  }
-
-  .mount-detail-row {
-    grid-template-columns: 1fr 1fr;
   }
 }
 </style>

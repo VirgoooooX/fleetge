@@ -3,9 +3,9 @@
 import logging
 from pathlib import Path
 
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -39,24 +39,22 @@ async def lifespan(app: FastAPI):
     # Load host configs from YAML
     load_hosts_from_yaml()
 
-    # Refresh snapshot manager from DB
-    await snapshot_manager.refresh_hosts()
-    snapshot_manager.load_update_check_cache_from_db()
-
-    # Start background polling
-    await auto_update_manager.start()
-    await snapshot_manager.start()
-    await enrollment_monitor.start()
-    await billing_alert_manager.start()
-
-    yield
-
-    # ── Shutdown ───────────────────────────────────────────────────
-    logger.info("Shutting down Fleetge backend")
-    await billing_alert_manager.stop()
-    await auto_update_manager.stop()
-    await enrollment_monitor.stop()
-    await snapshot_manager.stop()
+    async with AsyncExitStack() as shutdown:
+        # Stop update producers before closing the Agent clients they use.
+        shutdown.push_async_callback(snapshot_manager.stop)
+        await snapshot_manager.refresh_hosts()
+        snapshot_manager.load_update_check_cache_from_db()
+        shutdown.push_async_callback(auto_update_manager.stop)
+        await auto_update_manager.start()
+        await snapshot_manager.start()
+        shutdown.push_async_callback(enrollment_monitor.stop)
+        await enrollment_monitor.start()
+        shutdown.push_async_callback(billing_alert_manager.stop)
+        await billing_alert_manager.start()
+        try:
+            yield
+        finally:
+            logger.info("Shutting down Fleetge backend")
 
 
 # Create app
@@ -83,6 +81,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if request.url.path.startswith("/api/static/icons"):
+        response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox; style-src 'unsafe-inline'"
+    return response
 
 # Register routers
 app.include_router(auth.router)
@@ -144,6 +153,8 @@ async def root():
 
 @app.get("/{path:path}")
 async def spa_fallback(path: str):
+    if path == "api" or path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not found")
     if not _FRONTEND_DIST_DIR.exists() or not _FRONTEND_INDEX.exists():
         raise HTTPException(status_code=404, detail="Not found")
 

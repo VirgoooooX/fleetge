@@ -1,7 +1,6 @@
 <template>
   <section
-    class="traffic-strip"
-    :class="`traffic-strip--${variant}`"
+    class="traffic-strip traffic-strip--detail"
     :aria-label="t('traffic.title')"
     :aria-busy="traffic?.loading || undefined"
   >
@@ -74,16 +73,11 @@ interface TrafficSegment {
   tx: ValueParts;
 }
 
-const props = withDefaults(defineProps<{
+const props = defineProps<{
   hostId: string;
   metrics?: HostSummary["metrics"];
   traffic?: HostTrafficState;
-  variant?: "card" | "detail";
-}>(), {
-  metrics: undefined,
-  traffic: undefined,
-  variant: "card",
-});
+}>();
 
 const { t } = useI18n();
 
@@ -164,17 +158,6 @@ function formatParts(value: number | null | undefined, perSecond = false): Value
   color: var(--text-primary);
   background: var(--surface-panel);
   font-family: var(--font-body);
-}
-
-.traffic-strip--card {
-  height: 110px;
-  box-sizing: border-box;
-  padding: 12px 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--ui-radius-lg);
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
 }
 
 .traffic-strip--detail {

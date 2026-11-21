@@ -20,35 +20,53 @@ export type StreamSseOptions = {
 
 class SseParser {
   private buffer = "";
+  private previousEndedWithCr = false;
 
   feed(chunk: string): Array<{ event: string; data: string }> {
-    this.buffer += chunk;
+    if (!chunk) return [];
+    const continuation = this.previousEndedWithCr && chunk.startsWith("\n") ? chunk.slice(1) : chunk;
+    this.previousEndedWithCr = chunk.endsWith("\r");
+    this.buffer += continuation.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
     const events: Array<{ event: string; data: string }> = [];
 
     let boundaryIndex: number;
     while ((boundaryIndex = this.buffer.indexOf("\n\n")) !== -1) {
       const rawEvent = this.buffer.slice(0, boundaryIndex);
       this.buffer = this.buffer.slice(boundaryIndex + 2);
-      if (!rawEvent.trim()) continue;
-
-      const lines = rawEvent.split("\n");
-      let event = "message";
-      const dataLines: string[] = [];
-
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          event = line.slice(7);
-        } else if (line.startsWith("data: ")) {
-          dataLines.push(line.slice(6));
-        }
-      }
-
-      if (dataLines.length > 0) {
-        events.push({ event, data: dataLines.join("\n") });
-      }
+      const parsed = this.parseBlock(rawEvent);
+      if (parsed) events.push(parsed);
     }
 
     return events;
+  }
+
+  flush(): Array<{ event: string; data: string }> {
+    if (!this.buffer.trim()) {
+      this.buffer = "";
+      return [];
+    }
+    const parsed = this.parseBlock(this.buffer);
+    this.buffer = "";
+    return parsed ? [parsed] : [];
+  }
+
+  private parseBlock(rawEvent: string): { event: string; data: string } | null {
+    if (!rawEvent.trim()) return null;
+    const lines = rawEvent.split("\n");
+    let event = "message";
+    const dataLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith(":")) continue;
+      if (line.startsWith("event:")) {
+        event = line.slice(6).replace(/^ /, "");
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+      }
+    }
+
+    if (dataLines.length === 0) return null;
+    return { event, data: dataLines.join("\n") };
   }
 }
 
@@ -62,19 +80,20 @@ function parsePayload(rawData: string) {
 }
 
 async function readErrorDetail(response: Response): Promise<string> {
-  let detail = `HTTP ${response.status}`;
+  const fallback = `HTTP ${response.status}`;
   try {
-    const body = await response.json();
-    detail = body.detail || body.message || detail;
-  } catch {
+    const text = await response.text();
+    if (!text) return fallback;
     try {
-      const text = await response.text();
-      if (text) detail = text;
+      const body = JSON.parse(text);
+      const detail = body?.detail ?? body?.message;
+      return typeof detail === "string" && detail.trim() ? detail : text;
     } catch {
-      // keep status detail
+      return text;
     }
+  } catch {
+    return fallback;
   }
-  return detail;
 }
 
 export async function streamSse(options: StreamSseOptions): Promise<{ timedOut: boolean }> {
@@ -105,6 +124,7 @@ export async function streamSse(options: StreamSseOptions): Promise<{ timedOut: 
     : null;
 
   try {
+    if (controller.signal.aborted) return { timedOut };
     const response = await fetch(options.url, {
       method: options.method || "GET",
       headers: {
@@ -127,11 +147,23 @@ export async function streamSse(options: StreamSseOptions): Promise<{ timedOut: 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const parser = new SseParser();
+    let reachedEnd = false;
 
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          reachedEnd = true;
+          const rest = decoder.decode();
+          for (const ev of parser.feed(rest).concat(parser.flush())) {
+            options.onEvent({
+              event: ev.event,
+              rawData: ev.data,
+              data: parsePayload(ev.data),
+            });
+          }
+          break;
+        }
 
         const text = decoder.decode(value, { stream: true });
         for (const ev of parser.feed(text)) {
@@ -143,6 +175,7 @@ export async function streamSse(options: StreamSseOptions): Promise<{ timedOut: 
         }
       }
     } finally {
+      if (!reachedEnd) void reader.cancel().catch(() => undefined);
       reader.releaseLock();
     }
 

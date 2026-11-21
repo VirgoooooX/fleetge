@@ -127,3 +127,57 @@ def test_network_identity_requires_two_matching_providers(monkeypatch):
     assert family["trusted"] is True
     assert family["agreementCount"] == 2
     assert family["address"] == "203.0.113.10"
+
+
+def test_traffic_connection_is_reused_under_lock_and_closed(monkeypatch, tmp_path):
+    import sqlite3
+
+    import pytest
+
+    connect = sqlite3.connect
+    connections = []
+
+    def tracked_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(traffic_accountant.sqlite3, "connect", tracked_connect)
+    accountant = traffic_accountant.TrafficAccountant(str(tmp_path), "test-interface")
+
+    async def exercise():
+        await asyncio.gather(
+            asyncio.to_thread(accountant.current),
+            asyncio.to_thread(accountant.history),
+            asyncio.to_thread(accountant.sample, active=False),
+        )
+        await asyncio.to_thread(accountant.close)
+
+    asyncio.run(exercise())
+    assert len(connections) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connections[0].execute("SELECT 1")
+
+
+def test_failed_checkpoint_keeps_uncommitted_bucket_for_retry(tmp_path):
+    accountant = traffic_accountant.TrafficAccountant(str(tmp_path), "test-interface")
+    accountant.current()
+    key = (300, "epoch")
+    accountant._open_buckets[key] = {
+        "rx": 1, "tx": 2, "has_gap": False, "counter_reset": False, "interfaces": [],
+    }
+    connection = accountant._connect()
+    connection.execute(
+        """CREATE TRIGGER reject_checkpoint BEFORE DELETE ON traffic_bucket
+        BEGIN SELECT RAISE(ABORT, 'checkpoint failed'); END"""
+    )
+    now = traffic_accountant.RETENTION_SECONDS + 600
+    accountant._persist(now, close_completed=True)
+    assert key in accountant._open_buckets
+    assert accountant.history()["buckets"] == []
+
+    connection.execute("DROP TRIGGER reject_checkpoint")
+    accountant._persist(600, close_completed=True)
+    assert key not in accountant._open_buckets
+    assert accountant.history()["buckets"][0]["rxBytes"] == 1
+    accountant.close()

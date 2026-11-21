@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request, Response, Header, Depends
 
+from app.services.network_utils import is_private_ip, resolve_request_source_ip
 from app.services.snapshot import HostSnapshot, snapshot_manager
 
 logger = logging.getLogger(__name__)
@@ -62,20 +63,9 @@ def _matches_docker_filters(container, filters: dict) -> bool:
     return _container_health_status(container) in requested
 
 
-def is_private_ip(ip: str) -> bool:
-    """Check if an IP address is a private or loopback IP."""
-    try:
-        if ip in ("127.0.0.1", "localhost", "::1", "testclient"):
-            return True
-        ip_obj = ipaddress.ip_address(ip)
-        return ip_obj.is_private or ip_obj.is_loopback
-    except ValueError:
-        return False
-
-
 def verify_private_access(request: Request):
-    """Raise 403 if request client IP is not from a private or loopback network."""
-    client_host = request.client.host if request.client else None
+    """Raise 403 if resolved client IP is not from a private or loopback network."""
+    client_host = resolve_request_source_ip(request)
     if not client_host or not is_private_ip(client_host):
         logger.warning("Unauthorized non-private access attempt to Docker API from %s", client_host)
         raise HTTPException(status_code=403, detail="Access denied: only private networks allowed")
@@ -106,7 +96,7 @@ async def _get_snap(host_id: str) -> HostSnapshot:
     lock = snapshot_manager._host_refresh_locks.setdefault(host_id, asyncio.Lock())
     if not lock.locked() and (time.monotonic() - snap.containers_updated) > STALE_THRESHOLD:
         logger.info("Docker API hit stale snapshot for host %s, triggering background refresh", host_id)
-        asyncio.create_task(snapshot_manager.refresh_host_docker_with_retry(host_id))
+        snapshot_manager.schedule_host_structure_refresh(host_id)
 
     return snap
 

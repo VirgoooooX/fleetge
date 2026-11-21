@@ -5,7 +5,7 @@ import calendar
 import json
 import logging
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -20,8 +20,9 @@ from app.models import (
     Setting,
 )
 from app.services.agent_client import AgentClient
-from app.services.auto_update import NOTIFY_KEYS, notify_settings
+from app.services.auto_update import notify_settings
 from app.services.notification_cover import prepare_notification
+from app.services.notify_hub import NOTIFY_KEYS, matches_destination, submit_event
 from app.services.crypto import decrypt_string
 from app.services.traffic_service import (
     _billing_cycle_start,
@@ -212,6 +213,18 @@ def _traffic_coverage_complete(report: dict) -> bool:
         return False
 
 
+def traffic_quota_bytes(subscription: HostSubscription) -> int | None:
+    if not subscription.quota_enabled or subscription.traffic_quota_value is None:
+        return None
+    unit_bytes = UNIT_BYTES.get(subscription.traffic_quota_unit)
+    if unit_bytes is None:
+        return None
+    try:
+        return int(Decimal(str(subscription.traffic_quota_value)) * unit_bytes)
+    except (DecimalException, OverflowError, ValueError):
+        return None
+
+
 def quota_summary(
     host: HostConfig,
     subscription: HostSubscription,
@@ -246,22 +259,17 @@ def quota_summary(
         or current_error
         or cursor_error
     )
-    configured = bool(
-        subscription.quota_enabled
-        and subscription.traffic_quota_value is not None
-        and subscription.traffic_quota_unit in UNIT_BYTES
-    )
-    quota_bytes = None
+    quota_bytes = traffic_quota_bytes(subscription)
+    configured = quota_bytes is not None
     remaining_bytes = None
     overage_bytes = None
     usage_percent = None
-    if configured:
-        quota_bytes = int(Decimal(str(subscription.traffic_quota_value)) * UNIT_BYTES[subscription.traffic_quota_unit])
+    if quota_bytes is not None:
         remaining_bytes = max(0, quota_bytes - used_bytes)
         overage_bytes = max(0, used_bytes - quota_bytes)
         usage_percent = round(used_bytes * 100 / quota_bytes, 2) if quota_bytes else None
 
-    over_quota = bool(configured and used_bytes >= quota_bytes)
+    over_quota = quota_bytes is not None and used_bytes >= quota_bytes
     if not configured:
         status = "unconfigured"
     elif estimated:
@@ -581,9 +589,9 @@ class BillingAlertManager:
                 if _parse_timestamp(period_text) != _billing_cycle_start(local_now, host.traffic_billing_day).astimezone(timezone.utc):
                     return False
                 threshold = int(threshold_text)
-                if threshold not in QUOTA_ALERT_THRESHOLDS or subscription.traffic_quota_value is None:
+                quota_bytes = traffic_quota_bytes(subscription)
+                if threshold not in QUOTA_ALERT_THRESHOLDS or quota_bytes is None:
                     return False
-                quota_bytes = int(Decimal(str(subscription.traffic_quota_value)) * UNIT_BYTES[subscription.traffic_quota_unit])
                 context = json.loads(alert.payload).get("_billing_context", {})
                 if context:
                     return bool(
@@ -636,11 +644,7 @@ class BillingAlertManager:
                     continue
                 if not subscription.alerts_enabled:
                     continue
-                if (
-                    config.get("NOTIFYHUB_URL") != alert.notify_url
-                    or config.get("NOTIFYHUB_RECIPIENT") != alert.notify_recipient
-                    or not config.get("NOTIFYHUB_KEY")
-                ):
+                if not matches_destination(config, alert.notify_url, alert.notify_recipient):
                     self._finish_delivery(alert.id, "blocked", "Notify Hub configuration changed before delivery.")
                     continue
                 try:
@@ -652,26 +656,19 @@ class BillingAlertManager:
                     payload = await prepare_notification(client, alert.notify_url, api_key, payload)
                     with Session(get_engine()) as session:
                         row = session.get(HostBillingAlertState, alert.id)
+                        if row is None or row.status != "pending":
+                            continue
                         stored = {**payload, "_billing_context": context} if context is not None else payload
                         row.payload = json.dumps(stored, ensure_ascii=False)
                         session.add(row)
                         session.commit()
-                    response = await client.post(
-                        alert.notify_url + "/api/v1/events",
-                        json=payload,
-                        headers={"X-API-Key": api_key},
-                    )
-                    if response.status_code == 202:
-                        body = response.json()
-                        data = body.get("data", {}) if isinstance(body, dict) else {}
-                        if isinstance(data, dict) and data.get("status") in {"accepted", "duplicate"} and data.get("event_id"):
-                            self._finish_delivery(alert.id, "sent", "", sent=True)
-                            continue
-                        self._retry_delivery(alert.id, "Notify Hub accepted no event id.")
-                    elif response.status_code == 429 or response.status_code >= 500:
-                        self._retry_delivery(alert.id, f"Notify Hub HTTP {response.status_code}.")
+                    status, error = await submit_event(client, alert.notify_url, api_key, payload)
+                    if status == "accepted":
+                        self._finish_delivery(alert.id, "sent", "", sent=True)
+                    elif status == "pending":
+                        self._retry_delivery(alert.id, error)
                     else:
-                        self._finish_delivery(alert.id, "blocked", f"Notify Hub HTTP {response.status_code}.")
+                        self._finish_delivery(alert.id, "blocked", error)
                 except (httpx.HTTPError, ValueError) as exc:
                     self._retry_delivery(alert.id, f"Notify Hub request was not confirmed ({type(exc).__name__}).")
                 except Exception as exc:

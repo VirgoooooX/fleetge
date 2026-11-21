@@ -37,16 +37,16 @@ const label = computed(() => {
   display: inline-block;
 }
 .status-online .status-dot {
-  background: var(--el-color-success);
-  box-shadow: 0 0 6px var(--el-color-success);
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
 }
 .status-offline .status-dot {
-  background: var(--el-color-danger);
+  background: var(--danger);
 }
 .status-degraded .status-dot {
-  background: var(--el-color-warning);
+  background: var(--warning);
 }
 .status-unknown .status-dot {
-  background: var(--el-color-info);
+  background: var(--text-muted);
 }
 </style>

@@ -38,7 +38,7 @@ class AutoUpdateApiTests(unittest.TestCase):
         self.engine.dispose()
 
     def authenticate(self):
-        self.app.dependency_overrides[get_current_user] = lambda: "test-admin"
+        self.app.dependency_overrides[get_current_user] = lambda: "admin"
 
     def test_settings_require_auth_and_never_return_key(self):
         self.assertEqual(self.client.get("/api/admin/notifyhub").status_code, 401)

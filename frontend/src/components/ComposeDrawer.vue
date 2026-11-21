@@ -26,7 +26,7 @@
           <p v-if="managed" class="compose-editor__managed">{{ t('compose.managedByStackService') }}</p>
         </div>
         <div class="compose-editor__actions">
-          <el-button class="ui-button ui-button--muted" :disabled="loading || saving" @click="$emit('close')">
+          <el-button class="ui-button ui-button--muted" :disabled="loading || !!saving" @click="$emit('close')">
             {{ t('compose.close') }}
           </el-button>
           <el-button
@@ -59,7 +59,7 @@
       />
 
       <div v-if="loading" class="compose-loading">
-        <el-icon class="is-loading" :size="28"><Loading /></el-icon>
+        <el-icon class="is-loading" :size="28"><LoaderCircle /></el-icon>
       </div>
 
 
@@ -92,9 +92,9 @@
       </el-tabs>
 
       <div v-if="operationStatus" class="compose-operation-status" :class="`op-${operationStatus.status}`">
-        <el-icon v-if="operationStatus.status === 'running'" class="is-loading"><Loading /></el-icon>
-        <el-icon v-else-if="operationStatus.status === 'success'"><SuccessFilled /></el-icon>
-        <el-icon v-else-if="operationStatus.status === 'error'"><WarningFilled /></el-icon>
+        <el-icon v-if="operationStatus.status === 'running'" class="is-loading"><LoaderCircle /></el-icon>
+        <el-icon v-else-if="operationStatus.status === 'success'"><CheckCircle2 /></el-icon>
+        <el-icon v-else-if="operationStatus.status === 'error'"><AlertTriangle /></el-icon>
         <span class="op-message">{{ operationStatus.message }}</span>
       </div>
     </div>
@@ -102,13 +102,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onUnmounted } from "vue";
-import MonacoEditor from "@/components/MonacoEditor.vue";
-import StackOperationDock from "@/components/StackOperationDock.vue";
+import { ref, computed, watch, defineAsyncComponent, onUnmounted } from "vue";
+const MonacoEditor = defineAsyncComponent(() => import("@/components/MonacoEditor.vue"));
 import { ElMessage } from "element-plus";
 import { useI18n } from "vue-i18n";
-import { Loading, SuccessFilled, WarningFilled } from "@element-plus/icons-vue";
-import { apiClient } from "@/api/client";
+import { AlertTriangle, CheckCircle2, LoaderCircle } from "@lucide/vue";
+import { fetchStackCompose, saveStackCompose, stackRequestError, type ComposeDeployPayload } from "@/api/stacks";
+export type { ComposeDeployPayload } from "@/api/stacks";
 import { useConfirm } from "@/composables/useConfirm";
 
 const props = defineProps<{
@@ -117,14 +117,6 @@ const props = defineProps<{
   stackName: string;
   createMode?: boolean;
 }>();
-
-export interface ComposeDeployPayload {
-  stackName: string;
-  composeYaml: string;
-  composeEnv: string;
-  composeFileName: string;
-  isAdd: boolean;
-}
 
 const emit = defineEmits<{
   close: [];
@@ -163,9 +155,11 @@ const drawerSize = computed(() => `${drawerWidthPct.value}%`);
 // Toggled during drag so we can disable Element's `transition: all 0.3s`
 // on .el-drawer (which otherwise animates every width update → "不跟手").
 const isDragging = ref(false);
+let stopDrag: (() => void) | undefined;
 
 function startDrag(e: MouseEvent) {
   e.preventDefault();
+  stopDrag?.();
   const startX = e.clientX;
   const startPct = drawerWidthPct.value;
   let nextPct = startPct;
@@ -191,6 +185,7 @@ function startDrag(e: MouseEvent) {
   }
 
   function onUp() {
+    stopDrag = undefined;
     if (rafId !== null) {
       cancelAnimationFrame(rafId);
       rafId = null;
@@ -204,6 +199,7 @@ function startDrag(e: MouseEvent) {
     try { localStorage.setItem(STORAGE_KEY, String(drawerWidthPct.value)); } catch {}
   }
 
+  stopDrag = onUp;
   document.body.style.cursor = "ew-resize";
   document.body.style.userSelect = "none";
   window.addEventListener("mousemove", onMove);
@@ -256,20 +252,36 @@ const emptyAlert = computed(() =>
           : t("compose.noComposeAlert")
 );
 
+let revision = 0;
+let composeRequest: AbortController | null = null;
+
 watch(
-  () => props.visible,
-  (visible) => {
-    if (visible) {
-      operationStatus.value = null;
-      if (createMode.value) {
-        initializeCreateCompose();
-      } else {
-        fetchCompose();
-      }
+  [() => props.visible, () => props.hostId, () => props.stackName, createMode],
+  ([visible]) => {
+    revision++;
+    composeRequest?.abort();
+    composeRequest = null;
+    loading.value = false;
+    saving.value = null;
+    operationStatus.value = null;
+    if (!visible) {
+      stopDrag?.();
+      return;
+    }
+    if (createMode.value) {
+      initializeCreateCompose();
+    } else {
+      void fetchCompose();
     }
   },
   { immediate: true }
 );
+
+onUnmounted(() => {
+  revision++;
+  composeRequest?.abort();
+  stopDrag?.();
+});
 
 function initializeCreateCompose() {
   loading.value = false;
@@ -282,23 +294,30 @@ function initializeCreateCompose() {
 }
 
 async function fetchCompose() {
+  const request = new AbortController();
+  const currentRevision = revision;
+  composeRequest = request;
   loading.value = true;
   activeTab.value = "yaml";
+  managed.value = false;
+  composeYaml.value = "";
+  composeEnv.value = "";
+  composeFileName.value = "compose.yaml";
   try {
-    const res = await apiClient.get(
-      `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(props.stackName)}/compose`
-    );
-    composeYaml.value = res.data.compose_yaml || "";
-    composeEnv.value = res.data.compose_env || "";
-    composeFileName.value = res.data.compose_file_name || "compose.yaml";
-    managed.value = !!res.data.is_managed_by_agent;
-  } catch (e: any) {
-    managed.value = false;
-    composeYaml.value = "";
-    composeEnv.value = "";
-    ElMessage.error(t("compose.readFailed", { detail: e.response?.data?.detail || e.message }));
+    const { data } = await fetchStackCompose(props.hostId, props.stackName, request.signal);
+    if (currentRevision !== revision) return;
+    composeYaml.value = data.compose_yaml || "";
+    composeEnv.value = data.compose_env || "";
+    composeFileName.value = data.compose_file_name || "compose.yaml";
+    managed.value = !!data.is_managed_by_agent;
+  } catch (error) {
+    if (currentRevision !== revision) return;
+    ElMessage.error(t("compose.readFailed", { detail: stackRequestError(error).detail }));
   } finally {
-    loading.value = false;
+    if (composeRequest === request && currentRevision === revision) {
+      composeRequest = null;
+      loading.value = false;
+    }
   }
 }
 
@@ -317,7 +336,18 @@ async function save(deploy: boolean) {
     return;
   }
 
-  const actionLabel = createMode.value ? t("compose.createAction") : t("compose.saveAction");
+  if (saving.value || loading.value) return;
+  const requestedHostId = props.hostId;
+  const currentRevision = revision;
+  const payload: ComposeDeployPayload = {
+    stackName: stackNameForRequest,
+    composeYaml: composeYaml.value,
+    composeEnv: composeEnv.value,
+    composeFileName: composeFileName.value,
+    isAdd: createMode.value,
+  };
+  const actionLabel = payload.isAdd ? t("compose.createAction") : t("compose.saveAction");
+  saving.value = deploy ? "deploy" : "save";
   try {
     await confirm(
       deploy
@@ -336,72 +366,37 @@ async function save(deploy: boolean) {
       }
     );
   } catch {
+    if (currentRevision === revision) saving.value = null;
     return;
   }
-
-  if (!deploy) {
-    saving.value = "save";
-
-    operationStatus.value = {
-      status: "running",
-      message: t("compose.saving"),
-    };
-
-    try {
-      const url = `/api/hosts/${props.hostId}/stacks/${encodeURIComponent(stackNameForRequest)}/compose`;
-      const res = await apiClient.request({
-        method: "put",
-        url,
-        data: {
-          compose_yaml: composeYaml.value,
-          compose_env: composeEnv.value,
-          compose_file_name: composeFileName.value,
-          is_add: createMode.value,
-        },
-        timeout: 60000,
-      });
-
-      operationStatus.value = {
-        status: "success",
-        message: createMode.value ? t("compose.draftCreated") : t("compose.draftSaved"),
-        logTail: res.data?.log_tail || undefined,
-      };
-
-      ElMessage.success(createMode.value ? t("compose.draftCreated") : t("compose.draftSaved"));
-      emit("saved", {
-        stackName: stackNameForRequest,
-        composeYaml: composeYaml.value,
-        composeEnv: composeEnv.value,
-        composeFileName: composeFileName.value,
-        isAdd: createMode.value,
-      });
-    } catch (e: any) {
-      const detail = e.response?.data?.detail || e.message;
-
-      operationStatus.value = {
-        status: "error",
-        message: t("compose.saveFailed", { detail }),
-        logTail: e.response?.data?.log_tail || undefined,
-      };
-
-      ElMessage.error(t("compose.saveFailed", { detail }));
-    } finally {
-      saving.value = null;
-    }
-    return;
-  }
+  if (currentRevision !== revision) return;
 
   if (deploy) {
-    emit("deploy", {
-      stackName: stackNameForRequest,
-      composeYaml: composeYaml.value,
-      composeEnv: composeEnv.value,
-      composeFileName: composeFileName.value,
-      isAdd: createMode.value,
-    });
+    saving.value = null;
+    emit("deploy", payload);
     emit("close");
+    return;
+  }
+
+  operationStatus.value = { status: "running", message: t("compose.saving") };
+  try {
+    const { data } = await saveStackCompose(requestedHostId, payload);
+    if (currentRevision !== revision) return;
+    const message = payload.isAdd ? t("compose.draftCreated") : t("compose.draftSaved");
+    operationStatus.value = { status: "success", message, logTail: data.log_tail ?? undefined };
+    ElMessage.success(message);
+    emit("saved", payload);
+  } catch (error) {
+    if (currentRevision !== revision) return;
+    const { detail, logTail } = stackRequestError(error);
+    const message = t("compose.saveFailed", { detail });
+    operationStatus.value = { status: "error", message, logTail };
+    ElMessage.error(message);
+  } finally {
+    if (currentRevision === revision) saving.value = null;
   }
 }
+
 </script>
 
 <style scoped>

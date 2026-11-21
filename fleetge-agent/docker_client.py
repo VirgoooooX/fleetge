@@ -1,4 +1,5 @@
 import asyncio
+import posixpath
 import re
 from typing import AsyncIterator
 from fastapi import APIRouter, Request, HTTPException, Response
@@ -10,18 +11,18 @@ DOCKER_SOCKET_PATH = "/var/run/docker.sock"
 # Router prefix matches Fleetge Backend forwarding expectations
 router = APIRouter()
 
-# Regular expressions for read-only Docker API path whitelist
+# Regular expressions for read-only Docker API path whitelist (anchored with \Z)
 ALLOWED_PATTERNS = [
-    re.compile(r"^/_ping$"),
-    re.compile(r"^/version$"),
-    re.compile(r"^/info$"),
-    re.compile(r"^/system/df$"),
-    re.compile(r"^/containers/json$"),
-    re.compile(r"^/images/json$"),
-    re.compile(r"^/containers/[a-zA-Z0-9_-]+/json$"),
-    re.compile(r"^/images/[a-zA-Z0-9_%\-\.:/]+/json$"), # matches URL-encoded image names
-    re.compile(r"^/containers/[a-zA-Z0-9_-]+/stats$"),
-    re.compile(r"^/containers/[a-zA-Z0-9_-]+/logs$"),
+    re.compile(r"^/_ping\Z"),
+    re.compile(r"^/version\Z"),
+    re.compile(r"^/info\Z"),
+    re.compile(r"^/system/df\Z"),
+    re.compile(r"^/containers/json\Z"),
+    re.compile(r"^/images/json\Z"),
+    re.compile(r"^/containers/[a-zA-Z0-9_-]+/json\Z"),
+    re.compile(r"^/images/[a-zA-Z0-9_%\-\.:/]+/json\Z"), # matches URL-encoded image names
+    re.compile(r"^/containers/[a-zA-Z0-9_-]+/stats\Z"),
+    re.compile(r"^/containers/[a-zA-Z0-9_-]+/logs\Z"),
 ]
 
 # regexes for ANSI escape sequences and control characters
@@ -225,13 +226,22 @@ async def proxy_docker(docker_path: str, request: Request):
         )
 
     path_with_slash = "/" + docker_path
+    lower_path = path_with_slash.lower()
+    if (
+        ".." in path_with_slash
+        or "//" in path_with_slash
+        or "%2e" in lower_path
+        or "\n" in path_with_slash
+        or "\r" in path_with_slash
+        or posixpath.normpath(path_with_slash) != path_with_slash
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden. Docker endpoint is not in the read-only whitelist.",
+        )
 
     # Check path pattern
-    matched = False
-    for pattern in ALLOWED_PATTERNS:
-        if pattern.match(path_with_slash):
-            matched = True
-            break
+    matched = any(pattern.match(path_with_slash) for pattern in ALLOWED_PATTERNS)
 
     if not matched:
         raise HTTPException(
@@ -240,6 +250,7 @@ async def proxy_docker(docker_path: str, request: Request):
         )
 
     params = dict(request.query_params)
+    params.pop("token", None)
 
     # 1. Custom handling for log endpoint
     if "logs" in path_with_slash:

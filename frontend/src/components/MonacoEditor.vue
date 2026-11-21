@@ -4,19 +4,18 @@
 
 <script setup lang="ts">
 import { ref, watch, onMounted, onBeforeUnmount } from "vue";
-import * as monaco from "monaco-editor";
+import "monaco-editor/esm/vs/editor/edcore.main.js";
+import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
+import "monaco-editor/esm/vs/basic-languages/yaml/yaml.contribution.js";
+import "monaco-editor/esm/vs/basic-languages/ini/ini.contribution.js";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import YamlWorker from "monaco-yaml/yaml.worker?worker";
+import { useTheme } from "@/composables/useTheme";
 
 // ─── Self-contained MonacoEnvironment setup ───────────────────────────────────
 // This must happen before any monaco.editor calls.
-// Using Vite's native ?worker import so workers are bundled as separate chunks.
 if (!(window as any).__monacoWorkerSetup) {
   (window as any).MonacoEnvironment = {
-    getWorker(_: unknown, label: string) {
-      if (label === "yaml") {
-        return new YamlWorker();
-      }
+    getWorker() {
       return new EditorWorker();
     },
   };
@@ -52,15 +51,15 @@ const emit = defineEmits<{
 // ─── Refs ────────────────────────────────────────────────────────────────────
 
 const containerRef = ref<HTMLElement | null>(null);
+const theme = useTheme();
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
 let resizeObserver: ResizeObserver | null = null;
-let themeObserver: MutationObserver | null = null;
 let layoutRafId: number | null = null;
 
 // ─── Theme helpers ────────────────────────────────────────────────────────────
 
 function getMonacoTheme(): string {
-  return document.documentElement.dataset.theme === "light" ? "fleetge-light" : "fleetge-dark";
+  return theme.current.value === "light" ? "fleetge-light" : "fleetge-dark";
 }
 
 let themesRegistered = false;
@@ -179,15 +178,10 @@ onMounted(() => {
   };
   resizeObserver = new ResizeObserver(scheduleLayout);
   resizeObserver.observe(containerRef.value);
+});
 
-  // MutationObserver for theme switching
-  themeObserver = new MutationObserver(() => {
-    monaco.editor.setTheme(getMonacoTheme());
-  });
-  themeObserver.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme"],
-  });
+watch(theme.current, () => {
+  monaco.editor.setTheme(getMonacoTheme());
 });
 
 onBeforeUnmount(() => {
@@ -196,7 +190,6 @@ onBeforeUnmount(() => {
     layoutRafId = null;
   }
   resizeObserver?.disconnect();
-  themeObserver?.disconnect();
   editor?.dispose();
   editor = null;
 });
@@ -269,16 +262,16 @@ watch(
 .monaco-editor-container {
   width: 100%;
   height: v-bind(height);
-  border-radius: 8px;
+  border-radius: var(--radius-lg, 8px);
   overflow: hidden;
-  border: 1px solid var(--border-color, #30363d);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  border: 1px solid var(--border-subtle, #30363d);
+  transition: border-color var(--duration-normal, 180ms) var(--ease-standard, ease), box-shadow var(--duration-normal, 180ms) var(--ease-standard, ease);
   position: relative;
 }
 
 .monaco-editor-container:focus-within {
-  border-color: var(--el-color-primary, #409eff);
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.15);
+  border-color: var(--accent-blue, #409eff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue, #409eff) 20%, transparent);
 }
 
 .monaco-editor-container.disabled {

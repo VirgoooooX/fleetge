@@ -54,10 +54,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
-import { apiClient } from '@/api/client';
+import { apiErrorMessage } from '@/api/errors';
+import { notifyHubApi, type NotifyHubSettings } from '@/api/notifyHub';
 const { t } = useI18n();
 const loading = ref(true);
 const saving = ref(false);
@@ -67,7 +68,7 @@ const alertsEnabled = ref(true);
 const alertsSaving = ref(false);
 const form = reactive({ url: '', recipient: '', api_key: '' });
 
-function apply(data: { url: string; recipient: string; key_configured: boolean }) {
+function apply(data: NotifyHubSettings) {
   form.url = data.url;
   form.recipient = data.recipient;
   form.api_key = '';
@@ -75,46 +76,52 @@ function apply(data: { url: string; recipient: string; key_configured: boolean }
   clearKey.value = false;
 }
 
+const loadController = new AbortController();
+onUnmounted(() => loadController.abort());
+
 onMounted(async () => {
+  const { signal } = loadController;
   try {
-    const [notifyResponse, alertsResponse] = await Promise.all([
-      apiClient.get('/api/admin/notifyhub'),
-      apiClient.get('/api/admin/billing-alerts'),
+    const [settings, enabled] = await Promise.all([
+      notifyHubApi.getSettings(signal),
+      notifyHubApi.getBillingAlerts(signal),
     ]);
-    apply(notifyResponse.data);
-    alertsEnabled.value = Boolean(alertsResponse.data.enabled);
-  } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || t('autoUpdate.loadError'));
+    apply(settings);
+    alertsEnabled.value = enabled;
+  } catch (error) {
+    if (!signal.aborted) ElMessage.error(apiErrorMessage(error, t('notifyHub.loadError')));
   } finally {
     loading.value = false;
   }
 });
 
 async function saveAlertSettings() {
+  if (alertsSaving.value || loading.value) return;
+  const enabled = alertsEnabled.value;
   alertsSaving.value = true;
   try {
-    const { data } = await apiClient.put('/api/admin/billing-alerts', { enabled: alertsEnabled.value });
-    alertsEnabled.value = Boolean(data.enabled);
+    alertsEnabled.value = await notifyHubApi.saveBillingAlerts(enabled);
     ElMessage.success(t('billingAlerts.saved'));
-  } catch (err: any) {
-    alertsEnabled.value = !alertsEnabled.value;
-    ElMessage.error(err.response?.data?.detail || t('autoUpdate.saveError'));
+  } catch (error) {
+    alertsEnabled.value = !enabled;
+    ElMessage.error(apiErrorMessage(error, t('billingAlerts.saveError')));
   } finally {
     alertsSaving.value = false;
   }
 }
 
 async function save() {
+  if (saving.value || loading.value) return;
   saving.value = true;
   try {
-    const { data } = await apiClient.put('/api/admin/notifyhub', {
-      url: form.url, recipient: form.recipient,
+    apply(await notifyHubApi.saveSettings({
+      url: form.url,
+      recipient: form.recipient,
       api_key: clearKey.value ? '' : (form.api_key || null),
-    });
-    apply(data);
+    }));
     ElMessage.success(t('settings.params.saveSuccess'));
-  } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || t('autoUpdate.saveError'));
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, t('notifyHub.saveError')));
   } finally {
     saving.value = false;
   }

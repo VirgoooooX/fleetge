@@ -154,8 +154,9 @@ class AgentClient:
 
     async def container_inspect(self, container_id: str) -> dict:
         """GET /api/agent/docker/containers/{id}/json."""
+        encoded = urllib.parse.quote(container_id, safe="")
         r = await self._client.get(
-            f"/api/agent/docker/containers/{container_id}/json", headers=self._headers()
+            f"/api/agent/docker/containers/{encoded}/json", headers=self._headers()
         )
         r.raise_for_status()
         return r.json()
@@ -171,9 +172,10 @@ class AgentClient:
 
     async def container_stats(self, container_id: str) -> Optional[dict]:
         """GET /api/agent/docker/containers/{id}/stats (one-shot)."""
+        encoded = urllib.parse.quote(container_id, safe="")
         try:
             r = await self._client.get(
-                f"/api/agent/docker/containers/{container_id}/stats",
+                f"/api/agent/docker/containers/{encoded}/stats",
                 params={"stream": "false"},
                 headers=self._headers(),
                 timeout=10.0,
@@ -192,9 +194,10 @@ class AgentClient:
 
     async def container_logs(self, container_id: str, tail: int = 200) -> str:
         """GET /api/agent/docker/containers/{id}/logs (non-streaming, pre-demuxed/cleaned)."""
+        encoded = urllib.parse.quote(container_id, safe="")
         try:
             r = await self._client.get(
-                f"/api/agent/docker/containers/{container_id}/logs",
+                f"/api/agent/docker/containers/{encoded}/logs",
                 params={
                     "stdout": "1",
                     "stderr": "1",
@@ -213,10 +216,11 @@ class AgentClient:
         self, container_id: str, tail: int = 200
     ) -> AsyncIterator[str]:
         """Stream /api/agent/docker/containers/{id}/logs?follow=1 (already clean text)."""
+        encoded = urllib.parse.quote(container_id, safe="")
         headers = self._headers()
         async with self._client.stream(
             "GET",
-            f"/api/agent/docker/containers/{container_id}/logs",
+            f"/api/agent/docker/containers/{encoded}/logs",
             params={
                 "stdout": "1",
                 "stderr": "1",
@@ -313,8 +317,9 @@ class AgentClient:
 
     async def get_stack(self, name: str) -> Optional[dict]:
         """GET /api/agent/stacks/{name}."""
+        encoded = urllib.parse.quote(name, safe="")
         try:
-            r = await self._client.get(f"/api/agent/stacks/{name}", headers=self._headers())
+            r = await self._client.get(f"/api/agent/stacks/{encoded}", headers=self._headers())
             r.raise_for_status()
             data = r.json()
             # Return Agent stack response shape: {"stack": {"name": ..., "composeYAML": ..., "composeENV": ...}}
@@ -337,16 +342,18 @@ class AgentClient:
 
     async def delete_stack(self, name: str) -> dict:
         """DELETE /api/agent/stacks/{name}."""
+        encoded = urllib.parse.quote(name, safe="")
         r = await self._client.delete(
-            f"/api/agent/stacks/{name}", headers=self._headers()
+            f"/api/agent/stacks/{encoded}", headers=self._headers()
         )
         r.raise_for_status()
         return r.json()
 
     async def list_stack_services(self, name: str) -> list[dict]:
         """GET /api/agent/stacks/{name}/services."""
+        encoded = urllib.parse.quote(name, safe="")
         r = await self._client.get(
-            f"/api/agent/stacks/{name}/services", headers=self._headers()
+            f"/api/agent/stacks/{encoded}/services", headers=self._headers()
         )
         r.raise_for_status()
         return r.json().get("services", [])
@@ -365,6 +372,7 @@ class AgentClient:
     ) -> dict:
         """Save compose stack configuration. If deploy=True, stream control output."""
         # Save first
+        encoded = urllib.parse.quote(name, safe="")
         payload = {
             "compose_yaml": compose_yaml,
             "compose_env": compose_env,
@@ -372,7 +380,7 @@ class AgentClient:
             "is_add": is_add,
         }
         r = await self._client.put(
-            f"/api/agent/stacks/{name}", json=payload, headers=self._headers()
+            f"/api/agent/stacks/{encoded}", json=payload, headers=self._headers()
         )
         r.raise_for_status()
 
@@ -420,7 +428,8 @@ class AgentClient:
             agent_action = action
 
         # Establish WebSocket URI — token passed via Authorization header
-        ws_uri = f"{self._ws_base_url}/api/agent/stacks/{name}/execute"
+        encoded = urllib.parse.quote(name, safe="")
+        ws_uri = f"{self._ws_base_url}/api/agent/stacks/{encoded}/execute"
 
         # Run process via WebSocket connection
         try:

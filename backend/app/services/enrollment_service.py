@@ -15,34 +15,24 @@ import json
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Iterable
 from urllib.parse import urlparse
 
 import httpx
 from sqlmodel import Session, select
 
+from app.time_utils import as_utc as ensure_utc, utc_now
 from app.config import get_settings
 from app.database import engine
 from app.models import EnrollmentInvite, HostConfig
 from app.services.agent_client import AgentClient
 from app.services.crypto import decrypt_string, encrypt_string
-from app.services.host_writer import write_hosts_to_yaml
+from app.services.host_writer import sync_hosts_to_yaml
 from app.services.snapshot import snapshot_manager
 
 
 INVITE_TTL = timedelta(minutes=10)
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def ensure_utc(value: datetime) -> datetime:
-    """Restore UTC tzinfo lost by SQLite and normalize aware timestamps."""
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
 
 
 def token_hash(value: str) -> str:
@@ -259,22 +249,31 @@ def _env_text(invite: EnrollmentInvite, agent_token: str) -> str:
     ) + "\n"
 
 
+def _sh_single_quote(value: object) -> str:
+    """Wrap value in POSIX sh single quotes so no variable/command expansion can occur."""
+    s = str(value if value is not None else "")
+    if any(ch in s for ch in ("\r", "\n", "\x00")):
+        raise ValueError("Control characters are not allowed in enrollment shell values")
+    return "'" + s.replace("'", "'\"'\"'") + "'"
+
+
 def render_install_script(invite: EnrollmentInvite, claim_token: str, agent_token: str, dashboard_url: str) -> str:
     compose_b64 = base64.b64encode(_compose_text().encode()).decode()
     caddy_b64 = base64.b64encode(_caddyfile_text(invite).encode()).decode()
     env_b64 = base64.b64encode(_env_text(invite, agent_token).encode()).decode()
     claim_url = dashboard_url.rstrip("/") + "/api/enroll/claim"
     status_url = dashboard_url.rstrip("/") + "/api/enroll/status"
+    secret_path = (invite.secret_path or "").strip("/")
     return f'''#!/bin/sh
 set -eu
 
 INSTALL_DIR=/opt/fleetge-agent
-STACK_ROOT="{invite.stack_root}"
-AGENT_PORT="{invite.agent_port}"
-CLAIM_URL="{claim_url}"
-STATUS_URL="{status_url}"
-CLAIM_TOKEN="{claim_token}"
-AGENT_HEALTH_URL="http://127.0.0.1:$AGENT_PORT/{(invite.secret_path or '').strip('/')}/api/agent/health"
+STACK_ROOT={_sh_single_quote(invite.stack_root)}
+AGENT_PORT={_sh_single_quote(invite.agent_port)}
+CLAIM_URL={_sh_single_quote(claim_url)}
+STATUS_URL={_sh_single_quote(status_url)}
+CLAIM_TOKEN={_sh_single_quote(claim_token)}
+AGENT_HEALTH_URL="http://127.0.0.1:$AGENT_PORT/"{_sh_single_quote(secret_path)}"/api/agent/health"
 
 log() {{ printf '%s\\n' "[fleetge-enroll] $*" >&2; }}
 fail() {{ log "安装失败：$*"; exit 1; }}
@@ -586,7 +585,7 @@ async def activate_or_update_host(
     invite.agent_token_encrypted = None
     invite.secret_path = None
     session.commit()
-    write_hosts_to_yaml()
+    await sync_hosts_to_yaml()
     await snapshot_manager.refresh_hosts()
     return existing
 
