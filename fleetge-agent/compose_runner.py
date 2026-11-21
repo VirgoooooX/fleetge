@@ -678,7 +678,15 @@ def _current_container_inspect_sync() -> dict:
 
 
 def _load_container_inspect() -> dict:
+    from docker_cli_shim import inspect_object
+
     for candidate in _current_container_candidates():
+        try:
+            direct = inspect_object("container", candidate, timeout=5.0)
+        except Exception:
+            direct = None
+        if isinstance(direct, dict) and direct:
+            return {**direct, "Id": direct.get("Id") or candidate}
         try:
             result = subprocess.run(
                 ["docker", "container", "inspect", candidate],

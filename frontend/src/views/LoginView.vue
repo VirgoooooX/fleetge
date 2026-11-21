@@ -130,7 +130,7 @@ async function handleLogin() {
   background-size: 100% 100%, 100% 100%, 44px 44px, 44px 44px;
 }
 
-:global([data-theme="light"]) .login-backdrop {
+[data-theme="light"] .login-backdrop {
   background:
     radial-gradient(circle at 20% 18%, rgba(37, 99, 235, 0.08), transparent 34rem),
     radial-gradient(circle at 82% 84%, rgba(8, 145, 178, 0.05), transparent 30rem),
@@ -214,7 +214,7 @@ async function handleLogin() {
     background-color var(--duration-normal) var(--ease-standard);
 }
 
-:global([data-theme="light"]) .login-form :deep(.el-input__wrapper) {
+[data-theme="light"] .login-form :deep(.el-input__wrapper) {
   background: rgba(255, 255, 255, 0.8) !important;
 }
 

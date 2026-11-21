@@ -118,3 +118,36 @@ def test_job_log_redacts_authorization_bearer_value(tmp_path):
     log = tmp_path / "job.log"
     job_store.append_log(str(log), "Authorization: Bearer example-token\n")
     assert log.read_text(encoding="utf-8") == "Authorization: [REDACTED]\n"
+
+
+def test_docker_cli_shim_inspect_and_prune(monkeypatch, capsys):
+    import httpx
+    import docker_cli_shim
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/containers/c1/json":
+            return httpx.Response(200, json={"Id": "c1", "State": {"Running": True}})
+        if request.url.path == "/containers/prune":
+            return httpx.Response(200, json={"ContainersDeleted": ["c1"], "SpaceReclaimed": 1000})
+        if request.url.path == "/networks/prune":
+            return httpx.Response(200, json={"NetworksDeleted": []})
+        if request.url.path == "/images/prune":
+            return httpx.Response(200, json={"ImagesDeleted": [], "SpaceReclaimed": 2000})
+        if request.url.path == "/build/prune":
+            return httpx.Response(200, json={"SpaceReclaimed": 0})
+        return httpx.Response(404)
+
+    monkeypatch.setattr(
+        docker_cli_shim,
+        "_make_sync_client",
+        lambda timeout=30.0: httpx.Client(transport=httpx.MockTransport(handler), base_url="http://localhost"),
+    )
+
+    assert docker_cli_shim.main(["inspect", "--format", "{{.State.Running}}", "c1"]) == 0
+    assert capsys.readouterr().out.strip() == "true"
+
+    assert docker_cli_shim.main(["system", "prune", "-a", "-f"]) == 0
+    out = capsys.readouterr().out
+    assert "Deleted Containers:\nc1" in out
+    assert "Total reclaimed space: 3.00kB" in out
+

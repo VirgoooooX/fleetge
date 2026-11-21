@@ -3,6 +3,7 @@
 import asyncio
 import os
 import signal
+import struct
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from typing import Any
@@ -101,33 +102,61 @@ async def stream_in_pty(
     rows: int,
     fallback: Callable[[WebSocket, str, list[str]], Awaitable[int]],
 ) -> int:
+    master_fd: int | None = None
+    slave_fd: int | None = None
     try:
-        from ptyprocess import PtyProcessUnicode
+        import fcntl
+        import pty
+        import termios
 
-        proc = PtyProcessUnicode.spawn(["docker", *args], cwd=cwd, dimensions=(rows, cols))
+        master_fd, slave_fd = pty.openpty()
+        winsize = struct.pack("HHHH", max(1, rows), max(1, cols), 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            *args,
+            cwd=cwd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            start_new_session=True,
+        )
+        os.close(slave_fd)
+        slave_fd = None
     except (ImportError, OSError):
+        if slave_fd is not None:
+            with suppress(OSError):
+                os.close(slave_fd)
+        if master_fd is not None:
+            with suppress(OSError):
+                os.close(master_fd)
         return await fallback(websocket, cwd, args)
+
+    assert master_fd is not None
+    pty_master = master_fd
 
     async def stream() -> int:
         while True:
             try:
-                chunk = await asyncio.to_thread(proc.read, 4096)
-            except EOFError:
+                raw = await asyncio.to_thread(os.read, pty_master, 4096)
+            except OSError:
                 break
-            if not chunk:
+            if not raw:
                 break
+            chunk = raw.decode("utf-8", errors="replace")
             await websocket.send_json({"type": "stdout", "chunk": redact_sensitive_text(chunk)})
-        if proc.isalive():
-            await asyncio.to_thread(proc.wait)
-        return proc.exitstatus if proc.exitstatus is not None else 0
+        return await proc.wait()
 
     try:
         return await _stream_until_disconnect(websocket, stream())
     except BaseException:
-        # forkpty starts the child in its own process group. Stop any Compose
-        # child holding the PTY so a pending background read can finish.
         with suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         raise
     finally:
-        await asyncio.to_thread(proc.close, force=True)
+        with suppress(OSError):
+            os.close(pty_master)
+        if proc.returncode is None:
+            with suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()

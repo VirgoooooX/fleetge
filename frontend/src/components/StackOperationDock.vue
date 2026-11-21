@@ -281,7 +281,7 @@ async function copyOutput() {
   box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.12);
 }
 
-:global([data-theme="light"]) .operation-terminal {
+[data-theme="light"] .operation-terminal {
   background: #f8fafc;
   border-color: rgba(22, 163, 74, 0.42);
   box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.08);
@@ -292,7 +292,7 @@ async function copyOutput() {
   box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.16);
 }
 
-:global([data-theme="light"]) .operation-terminal.is-error {
+[data-theme="light"] .operation-terminal.is-error {
   border-color: rgba(220, 38, 38, 0.46);
   box-shadow: 0 0 0 1px rgba(220, 38, 38, 0.10);
 }
@@ -318,7 +318,7 @@ async function copyOutput() {
   background: #050914;
 }
 
-:global([data-theme="light"]) .terminal-head {
+[data-theme="light"] .terminal-head {
   border-bottom-color: rgba(60, 72, 88, 0.14);
   background: #eef2f7;
 }
@@ -338,7 +338,7 @@ async function copyOutput() {
   font-size: 12px;
 }
 
-:global([data-theme="light"]) .terminal-title {
+[data-theme="light"] .terminal-title {
   color: #0f172a;
 }
 
@@ -359,7 +359,7 @@ async function copyOutput() {
   white-space: nowrap;
 }
 
-:global([data-theme="light"]) .operation-terminal .stack-name {
+[data-theme="light"] .operation-terminal .stack-name {
   color: #0f172a;
 }
 
@@ -402,7 +402,7 @@ async function copyOutput() {
   background: #000000;
 }
 
-:global([data-theme="light"]) .terminal-surface {
+[data-theme="light"] .terminal-surface {
   background: #f8fafc;
 }
 
@@ -418,7 +418,7 @@ async function copyOutput() {
   background: #000000 !important;
 }
 
-:global([data-theme="light"]) .terminal-surface :deep(.xterm-viewport) {
+[data-theme="light"] .terminal-surface :deep(.xterm-viewport) {
   background: #f8fafc !important;
 }
 

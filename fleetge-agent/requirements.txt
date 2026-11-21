@@ -1,7 +1,6 @@
-fastapi==0.161.1
-uvicorn==0.54.0
+fastapi==0.135.3
+uvicorn==0.44.0
 psutil==7.2.2
 httpx==0.28.1
-websockets==16.1.1
-ptyprocess==0.7.0
+websockets==16.0
 pyyaml==6.0.3

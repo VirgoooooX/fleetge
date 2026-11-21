@@ -271,11 +271,11 @@ function getStatusLabel(status: string): string {
   transform: translate(-50%, -50%) scale(1.03);
 }
 
-:global([data-theme="light"]) .card-brand-watermark {
+[data-theme="light"] .card-brand-watermark {
   opacity: 0.09;
 }
 
-:global([data-theme="light"]) .host-card-v1:hover .card-brand-watermark {
+[data-theme="light"] .host-card-v1:hover .card-brand-watermark {
   opacity: 0.16;
 }
 
@@ -417,7 +417,7 @@ function getStatusLabel(status: string): string {
   background: rgba(245, 158, 11, 0.18);
   border-color: rgba(245, 158, 11, 0.45);
 }
-:global([data-theme="light"]) .badge-chip.is-update {
+[data-theme="light"] .badge-chip.is-update {
   background: rgba(245, 158, 11, 0.1);
   border-color: rgba(245, 158, 11, 0.38);
   color: #d97706;
@@ -437,7 +437,7 @@ function getStatusLabel(status: string): string {
   border-color: rgba(99, 102, 241, 0.25);
   color: #818cf8;
 }
-:global([data-theme="light"]) .badge-chip.is-expiry.expiry-notice {
+[data-theme="light"] .badge-chip.is-expiry.expiry-notice {
   background: rgba(99, 102, 241, 0.08);
   border-color: rgba(99, 102, 241, 0.28);
   color: #4f46e5;
@@ -449,7 +449,7 @@ function getStatusLabel(status: string): string {
   border-color: rgba(245, 158, 11, 0.32);
   color: #fbbf24;
 }
-:global([data-theme="light"]) .badge-chip.is-expiry.expiry-warn {
+[data-theme="light"] .badge-chip.is-expiry.expiry-warn {
   background: rgba(245, 158, 11, 0.12);
   border-color: rgba(245, 158, 11, 0.4);
   color: #b45309;
@@ -462,7 +462,7 @@ function getStatusLabel(status: string): string {
   color: #fb923c;
   font-weight: 700;
 }
-:global([data-theme="light"]) .badge-chip.is-expiry.expiry-urgent {
+[data-theme="light"] .badge-chip.is-expiry.expiry-urgent {
   background: rgba(249, 115, 22, 0.12);
   border-color: rgba(249, 115, 22, 0.45);
   color: #c2410c;
@@ -476,7 +476,7 @@ function getStatusLabel(status: string): string {
   font-weight: 700;
   animation: expiry-pulse 2s infinite ease-in-out;
 }
-:global([data-theme="light"]) .badge-chip.is-expiry.expiry-critical {
+[data-theme="light"] .badge-chip.is-expiry.expiry-critical {
   background: rgba(220, 38, 38, 0.12);
   border-color: rgba(220, 38, 38, 0.5);
   color: #b91c1c;
@@ -616,16 +616,16 @@ function getStatusLabel(status: string): string {
 }
 
 /* Light Mode Overrides */
-:global([data-theme="light"]) .host-card-v1 {
+[data-theme="light"] .host-card-v1 {
   background: #ffffff;
   border-color: rgba(203, 213, 225, 0.8);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
 }
-:global([data-theme="light"]) .host-card-v1:hover {
+[data-theme="light"] .host-card-v1:hover {
   border-color: rgba(59, 130, 246, 0.4);
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
 }
-:global([data-theme="light"]) .workload-capsule {
+[data-theme="light"] .workload-capsule {
   background: rgba(241, 245, 249, 0.9);
 }
 </style>

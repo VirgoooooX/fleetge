@@ -1,17 +1,28 @@
 FROM docker:27-cli AS docker-cli
-FROM python:3.12-slim
 
-# Copy docker and docker-compose-plugin from the official docker image
-COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
+FROM --platform=$BUILDPLATFORM alpine:3.21 AS compressor
+RUN apk add --no-cache upx
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /tmp/docker-compose
+RUN upx -1 /tmp/docker-compose
+
+FROM python:3.12-alpine
+
+COPY --from=compressor /tmp/docker-compose /usr/local/bin/docker-compose
+RUN mkdir -p /usr/local/libexec/docker/cli-plugins && \
+    ln -s /usr/local/bin/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 
 WORKDIR /app
 
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip uninstall -y pip setuptools wheel && \
+    find /usr/local -depth \( -type d -a \( -name test -o -name tests -o -name __pycache__ \) -o -type f -a \( -name '*.pyc' -o -name '*.pyo' \) \) -exec rm -rf '{}' +
 
 COPY . .
+RUN sed -i 's/\r$//' /app/*.py && \
+    chmod +x /app/docker_cli_shim.py && \
+    ln -sf /app/docker_cli_shim.py /usr/local/bin/docker
 
 # Default configuration environment variables
 ENV PORT=8080
