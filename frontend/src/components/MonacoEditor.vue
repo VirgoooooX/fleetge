@@ -123,7 +123,7 @@ onMounted(() => {
     fontSize: 13,
     lineHeight: 20,
     fontFamily:
-      "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
+      "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', monospace",
     fontLigatures: true,
     lineNumbers: props.lineNumbers,
     lineDecorationsWidth: props.lineNumbers === "off" ? 0 : 10,

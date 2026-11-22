@@ -130,7 +130,7 @@ onMounted(() => {
     convertEol: true,
     cursorBlink: false,
     disableStdin: true,
-    fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace",
+    fontFamily: "'JetBrains Mono', ui-monospace, 'Cascadia Code', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', monospace",
     fontSize: 13,
     lineHeight: 1.2,
     rows: props.compact ? 7 : 10,

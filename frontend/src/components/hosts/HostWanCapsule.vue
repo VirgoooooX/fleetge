@@ -298,6 +298,7 @@ function getQuotaColor(pct: number): string {
 .stream-anchored .anchored-label {
   display: inline-flex;
   align-items: center;
+  font-family: var(--font-body);
   font-size: 11px;
   font-weight: 500;
   color: var(--text-muted, #94a3b8);

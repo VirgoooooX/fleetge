@@ -26,7 +26,7 @@
     <!-- Top Header: Identity & Actionable Badges -->
     <header class="card-header">
       <div class="identity-left">
-        <!-- 呼吸脉冲指示灯：表达在线/离线，在线时消除右侧胶囊冗余 -->
+        <!-- 双层呼吸脉冲指示灯：表达在线/降级/离线 -->
         <span class="status-pulse" :class="`is-${host.status}`" />
         <div class="title-group">
           <div class="name-row">
@@ -37,7 +37,7 @@
       </div>
 
       <div class="badges-right">
-        <!-- 待更新镜像徽标：矢量描边升级圆环，无 emoji，严格居中 -->
+        <!-- 待更新镜像徽标 -->
         <button
           v-if="displayUpdateCount > 0"
           type="button"
@@ -62,7 +62,7 @@
           <span class="chip-text">{{ formatExpiry(effectiveExpiryDays) }}</span>
         </button>
 
-        <!-- 异常/离线时才突出状态胶囊（管理异常原则：正常在线时不堆砌胶囊） -->
+        <!-- 异常/离线时才突出状态胶囊 -->
         <span v-if="host.status !== 'online'" class="badge-chip status-alert-chip" :class="`is-${host.status}`">
           <span class="chip-text">{{ getStatusLabel(host.status) }}</span>
         </span>
@@ -80,14 +80,44 @@
       />
     </div>
 
-    <!-- 离线/异常退化兜底 -->
-    <div v-else class="card-fallback">
-      <div class="fallback-icon-wrap">
-        <AlertCircle :size="22" aria-hidden="true" />
+    <!-- 离线/异常退化：1:1 暗纹仪表骨架 + 悬浮毛玻璃诊断舱（消除空白塌陷） -->
+    <div v-else class="card-fallback-stage">
+      <div class="telemetry-ghost-skeleton" aria-hidden="true">
+        <div class="ghost-rails">
+          <div v-for="label in ['hostCard.cpu', 'hostCard.memory', 'hostCard.disk']" :key="label" class="ghost-rail-item">
+            <div class="ghost-rail-top">
+              <span>{{ t(label) }}</span>
+              <span class="u-mono">—%</span>
+            </div>
+            <div class="ghost-rail-track" />
+            <div class="ghost-rail-sub u-mono">— / —</div>
+          </div>
+        </div>
+        <div class="ghost-wan-capsule">
+          <div class="ghost-wan-row">
+            <span>{{ t(hasConfiguredQuota ? 'hostCard.wanQuota' : 'hostDetail.network') }}</span>
+            <span class="u-mono">{{ t('traffic.live') }} ↓ — B/s · ↑ — B/s</span>
+          </div>
+          <div class="ghost-wan-row is-dim">
+            <span>{{ t(hasConfiguredQuota ? 'traffic.billingCycle' : 'traffic.month') }} — B</span>
+            <span class="u-mono">— B / — B</span>
+          </div>
+          <div class="ghost-wan-row is-dim">
+            <span>{{ t('traffic.today') }} — B</span>
+            <span class="u-mono">— B / — B</span>
+          </div>
+        </div>
       </div>
-      <div class="fallback-info">
-        <p class="fallback-title">{{ host.error_message || t('hostCard.metricsUnavailable') }}</p>
-        <span class="fallback-desc">{{ t('hostCard.metricsHelp') }}</span>
+
+      <div class="diagnostic-glass-pill" :class="`is-${host.status}`">
+        <div class="fallback-icon-wrap">
+          <AlertCircle :size="18" aria-hidden="true" />
+        </div>
+        <div class="fallback-info">
+          <p class="fallback-title">{{ host.error_message || t('hostCard.metricsUnavailable') }}</p>
+          <span class="fallback-desc">{{ t('hostCard.metricsHelp') }}</span>
+        </div>
+        <ChevronRight :size="15" class="diagnostic-arrow" aria-hidden="true" />
       </div>
     </div>
 
@@ -171,6 +201,12 @@ const displayUpdateCount = computed(() => {
 
 const effectiveSubscription = computed(() => {
   return props.subscription ?? props.host.subscription;
+});
+
+const hasConfiguredQuota = computed(() => {
+  if (props.quota?.quotaBytes || props.traffic?.summary?.quota?.quotaBytes) return true;
+  const sub = effectiveSubscription.value;
+  return Boolean(sub?.quota_enabled && (sub.traffic_quota_bytes || sub.traffic_quota_value));
 });
 
 const effectiveExpiryDays = computed(() => {
@@ -281,7 +317,7 @@ function getStatusLabel(status: string): string {
 
 .card-header,
 .card-body,
-.card-fallback,
+.card-fallback-stage,
 .card-footer {
   position: relative;
   z-index: 1;
@@ -310,6 +346,7 @@ function getStatusLabel(status: string): string {
   min-width: 0;
 }
 
+/* 双层呼吸脉冲指示灯 (Dual-ring Status Pulse) */
 .status-pulse {
   width: 8.5px;
   height: 8.5px;
@@ -317,19 +354,57 @@ function getStatusLabel(status: string): string {
   flex-shrink: 0;
   position: relative;
 }
+
+.status-pulse::after {
+  content: "";
+  position: absolute;
+  inset: -3.5px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+}
+
 .status-pulse.is-online {
   background: var(--success, #34d399);
   box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
 }
+
+.status-pulse.is-online::after {
+  border: 1.5px solid var(--success, #34d399);
+  animation: status-halo-pulse 3.2s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
 .status-pulse.is-degraded {
   background: var(--warning, #fbbf24);
   box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
 }
+
+.status-pulse.is-degraded::after {
+  border: 1.5px solid var(--warning, #fbbf24);
+  animation: status-halo-pulse 2.4s cubic-bezier(0.24, 0, 0.38, 1) infinite;
+}
+
 .status-pulse.is-offline {
   background: var(--danger, #f87171);
 }
+
 .status-pulse.is-unknown {
   background: var(--text-muted, #64748b);
+}
+
+@keyframes status-halo-pulse {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.72;
+  }
+  70% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.65);
+    opacity: 0;
+  }
 }
 
 .name-row {
@@ -364,7 +439,7 @@ function getStatusLabel(status: string): string {
   flex-shrink: 0;
 }
 
-/* 徽标胶囊基准：严格重设，无内外边距偏移，保证在所有浏览器下像素级居中 */
+/* 徽标胶囊基准 */
 .badge-chip {
   appearance: none;
   -webkit-appearance: none;
@@ -399,7 +474,6 @@ function getStatusLabel(status: string): string {
   flex-shrink: 0;
 }
 
-/* 图标与文字行框沿同一中心线对齐。 */
 .chip-text {
   display: inline-flex;
   align-items: center;
@@ -424,14 +498,12 @@ function getStatusLabel(status: string): string {
 }
 
 /* 到期五级色彩梯次 (Expiry 5-tier Gradation) */
-/* Tier 1: 充裕安全 (> 30 天) - 中性弱标签 */
 .badge-chip.is-expiry.expiry-safe {
   background: rgba(148, 163, 184, 0.06);
   border-color: var(--border-subtle, rgba(148, 163, 184, 0.16));
   color: var(--text-secondary, #94a3b8);
 }
 
-/* Tier 2: 月度例行 (15 ~ 30 天) - 典雅微紫靛蓝 */
 .badge-chip.is-expiry.expiry-notice {
   background: rgba(99, 102, 241, 0.1);
   border-color: rgba(99, 102, 241, 0.25);
@@ -443,7 +515,6 @@ function getStatusLabel(status: string): string {
   color: #4f46e5;
 }
 
-/* Tier 3: 关注提醒 (8 ~ 14 天) - 温暖琥珀黄 */
 .badge-chip.is-expiry.expiry-warn {
   background: rgba(245, 158, 11, 0.12);
   border-color: rgba(245, 158, 11, 0.32);
@@ -455,7 +526,6 @@ function getStatusLabel(status: string): string {
   color: #b45309;
 }
 
-/* Tier 4: 临近紧迫 (1 ~ 7 天) - 警示急迫橙红 */
 .badge-chip.is-expiry.expiry-urgent {
   background: rgba(249, 115, 22, 0.15);
   border-color: rgba(249, 115, 22, 0.4);
@@ -468,7 +538,6 @@ function getStatusLabel(status: string): string {
   color: #c2410c;
 }
 
-/* Tier 5: 临界/已逾期 (<= 0 天) - 珊瑚红高亮脉冲 */
 .badge-chip.is-expiry.expiry-critical {
   background: rgba(239, 68, 68, 0.18);
   border-color: rgba(239, 68, 68, 0.5);
@@ -499,29 +568,182 @@ function getStatusLabel(status: string): string {
   color: var(--danger, #f87171);
 }
 
-/* 兜底状态 */
-.card-fallback {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 24px 14px;
-  background: rgba(248, 113, 113, 0.04);
-  border: 1px dashed rgba(248, 113, 113, 0.2);
-  border-radius: 8px;
+/* ── 异常/离线状态：1:1 暗纹骨架 + 悬浮玻璃态诊断舱 ── */
+.card-fallback-stage {
+  position: relative;
   margin-bottom: 12px;
 }
-.fallback-icon-wrap {
-  color: var(--danger, #f87171);
+
+.telemetry-ghost-skeleton {
+  opacity: 0.34;
+  filter: saturate(0.2);
+  pointer-events: none;
+  user-select: none;
+  mask-image: radial-gradient(ellipse 85% 80% at 50% 52%, rgba(0, 0, 0, 0.22) 10%, rgba(0, 0, 0, 0.95) 85%);
+  -webkit-mask-image: radial-gradient(ellipse 85% 80% at 50% 52%, rgba(0, 0, 0, 0.22) 10%, rgba(0, 0, 0, 0.95) 85%);
 }
-.fallback-title {
-  margin: 0;
-  font-size: 14px;
+
+.ghost-rails {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.ghost-rail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ghost-rail-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
   font-weight: 600;
-  color: var(--text-primary, #f1f5f9);
+  color: var(--text-secondary, #94a3b8);
 }
-.fallback-desc {
+
+.ghost-rail-track {
+  height: 4px;
+  border-radius: 99px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 163, 184, 0.22),
+    rgba(148, 163, 184, 0.22) 4px,
+    rgba(148, 163, 184, 0.08) 4px,
+    rgba(148, 163, 184, 0.08) 8px
+  );
+}
+
+.ghost-rail-sub {
   font-size: 12px;
   color: var(--text-muted, #64748b);
+}
+
+.ghost-wan-capsule {
+  border-radius: 8px;
+  padding: 9px 11px;
+  border: 1px dashed rgba(148, 163, 184, 0.2);
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ghost-wan-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--text-secondary, #94a3b8);
+}
+
+.ghost-wan-row.is-dim {
+  color: var(--text-muted, #64748b);
+}
+
+/* 悬浮毛玻璃诊断舱 */
+.diagnostic-glass-pill {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(92%, 340px);
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-panel, #0b1220) 76%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  box-shadow: 0 8px 20px -6px rgba(2, 6, 23, 0.42);
+  transition:
+    border-color 0.2s ease,
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.2s ease;
+}
+
+.diagnostic-glass-pill.is-offline {
+  border-color: rgba(248, 113, 113, 0.34);
+}
+
+.host-card-v1:hover .diagnostic-glass-pill {
+  transform: translate(-50%, -51.5%);
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
+.host-card-v1:hover .diagnostic-glass-pill.is-offline {
+  border-color: rgba(248, 113, 113, 0.5);
+}
+
+[data-theme="light"] .diagnostic-glass-pill {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(217, 119, 6, 0.32);
+  box-shadow: 0 8px 20px -6px rgba(15, 23, 42, 0.10);
+}
+
+[data-theme="light"] .diagnostic-glass-pill.is-offline {
+  border-color: rgba(220, 38, 38, 0.32);
+}
+
+.fallback-icon-wrap {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--warning, #fbbf24);
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+}
+
+.diagnostic-glass-pill.is-offline .fallback-icon-wrap {
+  color: var(--danger, #f87171);
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.26);
+}
+
+.fallback-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.fallback-title {
+  margin: 0 0 2px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary, #f1f5f9);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fallback-desc {
+  display: block;
+  font-size: 11.5px;
+  color: var(--text-muted, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diagnostic-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted, #64748b);
+  opacity: 0.65;
+  transition: transform 0.18s ease, opacity 0.18s ease, color 0.18s ease;
+}
+
+.host-card-v1:hover .diagnostic-arrow {
+  transform: translateX(2px);
+  opacity: 1;
+  color: var(--text-primary, #f1f5f9);
 }
 
 /* 底部栏 */
@@ -627,5 +849,13 @@ function getStatusLabel(status: string): string {
 }
 [data-theme="light"] .workload-capsule {
   background: rgba(241, 245, 249, 0.9);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse.is-online::after,
+  .status-pulse.is-degraded::after,
+  .badge-chip.is-expiry.expiry-critical {
+    animation: none;
+  }
 }
 </style>
