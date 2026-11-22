@@ -21,7 +21,7 @@
 ---
 > **Fleetge** 是一款面向多主机 Docker 环境的轻量级、实时化、可自托管运维控制台。
 >
-> 它通过在受管节点部署 `fleetge-agent`，把分散在不同服务器上的主机指标、容器状态、Compose Stack 生命周期、镜像更新检测和操作审计集中到一个现代化 Web 界面中。
+> 它通过在受管节点部署 `fleetge-agent`，把分散在不同服务器上的主机指标、容器状态、Compose Stack 生命周期、镜像更新检测、套餐流量和操作审计集中到一个现代化 Web 界面中。
 
 Fleetge 的产品形态与部分交互体验参考并致谢 [Dockge](https://github.com/louislam/dockge)。本项目不是 Dockge 的 fork，而是面向多主机 Docker 运维场景的独立实现。
 
@@ -43,33 +43,34 @@ Fleetge 的产品形态与部分交互体验参考并致谢 [Dockge](https://git
 
 | 能力 | 说明 |
 | :--- | :--- |
-| 多主机总览 | 集中查看所有受管节点的在线状态、CPU、内存、磁盘、网络吞吐与容器数量。 |
+| 多主机总览 | 集中查看所有受管节点的在线状态、CPU、内存、磁盘、网络吞吐与容器数量，并显示主机 Logo。 |
 | 实时指标曲线 | 通过 SSE 推送秒级性能数据，固定高度卡片展示动态 Trend 与 CPU Sparkline 曲线。 |
-| 流量统计与监测 | 实时计算 WAN 网络速率，汇总今日与月度/账单周期（如每月15日起算）的上传下载累计流量。 |
+| 流量统计与套餐账单 | 实时计算 WAN 网络速率，汇总今日与账单周期（如每月 15 日起算）的上传下载累计流量；支持流量额度（`GB`/`TB`/`GiB`/`TiB`，上传、下载、双向或取较大值）、到期与续费记录，详见 [docs/host-billing.md](docs/host-billing.md)。 |
 | 节点分布地图 | 在可视化世界地图上直观定位受管主机的地理位置分布、在线状态与指标概览。 |
 | 应用启动台 | 按主机或自定义分组聚合服务入口，支持运行状态、更新状态筛选和快速跳转。 |
-| Compose Stack 管理 | 远程启动、停止、重启、更新、删除 Stack，并查看实时终端输出。 |
-| 在线 Compose 编辑器 | 直接在 Web 界面中创建、编辑和部署 Compose 文件。 |
-| 镜像更新检测 | 对比本地镜像与远端 Registry digest，区分最新、可更新、需认证、被限流和检查失败等状态。 |
+| Compose Stack 管理 | 远程启动、停止、重启、更新、删除 Stack，并查看实时终端输出；Fleetge／Agent 自身及入口反代 Stack 的更新使用独立后台 job，连接中断后仍会继续。 |
+| 在线 Compose 编辑器 | 基于 Monaco 在 Web 界面中创建、编辑和部署 Compose 文件，并支持把 `docker run` 命令转换为 Compose 草稿。 |
+| 镜像更新检测与自动更新 | 对比本地镜像与远端 Registry digest，区分最新、可更新、待确认、需认证、被限流和检查失败等状态；检测在后台独立运行，不阻塞结构刷新；Stack 可单独开启自动升级。 |
 | 主机系统更新检测 | 通过 Agent 检测 apt/yum 等系统包更新，并在主机卡片和总览中展示。 |
-| 节点定制 | 支持 `global.env`、Stack 图标匹配规则、应用资料、自定义分组、本地图标上传和外部访问地址。 |
-| 安全与审计 | Fernet 加密保存敏感凭证，Argon2 校验管理员密码，关键写操作写入审计日志。 |
+| 一键入网与节点定制 | 在设置中生成一键安装 Agent 的命令（可选 Caddy 反代）；支持主机 Logo（内置品牌、图片网址或本地上传）、`global.env`、Stack 图标匹配规则、应用资料、自定义分组和外部访问地址。 |
+| 主题与多语言 | 内置简体中文／English 界面，深色／浅色主题，并提供可调节的液态切换动效预设（关闭／简洁／标准／丰富）。 |
+| 安全与审计 | 生产模式（`FLEETGE_ENV=production`）拒绝默认密钥启动；Fernet 加密保存敏感凭证，PBKDF2-HMAC-SHA256 校验管理员密码，登录失败限速，关键写操作写入审计日志。 |
 
 ## Stack 自动更新
 
 在 Stack 详情中开启「自动升级」，默认关闭。开启后，下一次后台或手动「检查更新」确认当前镜像标签有更新时，会自动调用现有升级流程；关闭网页不影响执行。只处理正常运行且可管理的 Compose Stack，同一主机逐个执行，Fleetge／Agent 自身所在的 Stack 不开放自动更新。
 
-手动、批量和自动升级均只更新缓存中已检测到新镜像的 Compose 服务。任务开始时固定服务名单、平台、目标摘要及检测时间；没有更新或检测失败的服务跳过并显示原因，本地镜像不会阻塞同一 Stack 中的其他服务。每个服务分别执行 `pull <service>` 和 `up -d --no-deps --pull never <service>`，不重建无更新的服务。一个服务失败或待确认后继续处理其他服务及 Stack，结果按服务记录；成功与失败／待确认并存时显示「部分成功」。
+手动升级会直接拉取该 Stack 中正在运行的服务，不依赖已缓存的检测结果；自动升级只处理缓存中已确认有新镜像的服务，批量升级额外接受「待确认」状态。任务开始时固定服务名单、平台、目标摘要及检测时间；没有更新或检测失败的服务跳过并显示原因，本地镜像不会阻塞同一 Stack 中的其他服务。每个服务分别执行 `pull <service>` 和 `up -d --no-deps --pull never <service>`，不重建无更新的服务。一个服务失败或待确认后继续处理其他服务及 Stack，结果按服务记录；成功与失败／待确认并存时显示「部分成功」。
 
-明确的单服务 `pull` 失败会等待 10 秒后重试一次；`up` 失败不重试，也不自动回退。最终校验只读取本地 Docker 信息，确认运行容器使用本次拉取的镜像、与缓存目标的同类摘要和平台一致，并等待已有健康检查通过，不临时查询镜像仓库。标签在检测后变化导致摘要不同时，显示「待下次定时检测确认」，不误报成功。后续定时检测或用户主动「检查更新」继续负责刷新仓库数据。
+明确的单服务 `pull` 失败会等待 10 秒后重试一次；`up` 失败不重试，也不自动回退。最终校验只读取本地 Docker 信息，确认运行容器使用本次拉取的镜像、与目标摘要及平台一致，并等待已有健康检查通过，不临时查询镜像仓库；校验通过后会清除该镜像的更新标记。标签在检测后变化导致摘要不同时，显示「待下次定时检测确认」，不误报成功。后续定时检测或用户主动「检查更新」继续负责刷新仓库数据。
 
-自动更新最终失败、部分成功或结果未确认时，会关闭该 Stack 的开关并保留原因及审计记录。修复后可手动重新开启。关闭开关不会打断已经启动的服务更新，但会取消尚未启动的服务和第二次尝试。旧 Agent 缺少目标镜像及执行证据时记为待确认，需要同步升级 Agent。后端进程重启不自动重放更新命令；Fleetge／Agent 自身更新仍使用独立后台 job。
+自动更新最终失败、部分成功或结果未确认时，会关闭该 Stack 的开关并保留原因及审计记录。修复后可手动重新开启。关闭开关不会打断已经启动的服务更新，但会取消尚未启动的服务和第二次尝试。旧 Agent 缺少目标镜像及执行证据时记为待确认，需要同步升级 Agent。后端进程重启不自动重放更新命令。
 
-系统设置中的 Notify Hub 为可选配置：填写服务地址、专用 API Client Key 和 Notify Hub 人员 ID；Client 需允许 `fleetge.stack.auto_update` 事件及该接收人。API Key 加密保存，留空保留，显式清除可停用通知。使用 `POST /api/v1/events` 提交成功、失败及结果未确认消息；`202` 表示 Notify Hub 已接管持久投递，不代表企业微信已送达。临时提交失败使用相同事件 key 补发，最多 24 小时；配置前的历史结果不补发。通知故障不改变容器更新结果。
+### Notify Hub 通知
 
-新的自动更新通知默认使用图文：Fleetge 标识、“容器更新”和该 Stack 已配置的一个代表图标组成封面，不拼接 Compose 内各服务的图标。标题直接说明 Stack 和结果，正文保留主机与必要操作；完整更新日志仍在 Fleetge。无需配置业务跳转地址，点击卡片时 Notify Hub 可打开封面。专用 API Client 还需开启媒体权限；图片不可用时使用通用封面，封面上传失败时仍发送简短文字结果。实际消息在提交前持久化，超时或重启沿用同一个事件键及媒体引用；已经排队的旧通知保持原格式。
+系统设置中的 Notify Hub 为可选配置：填写服务地址、专用 API Client Key 和 Notify Hub 人员 ID；Client 需允许 `fleetge.stack.auto_update` 事件及该接收人，并开启媒体权限。API Key 加密保存，留空保留，显式清除可停用通知。使用 `POST /api/v1/events` 提交成功、失败及结果未确认消息；`202` 表示 Notify Hub 已接管持久投递，不代表企业微信已送达。临时提交失败使用相同事件 key 补发，最多 24 小时；配置前的历史结果不补发。通知故障不改变容器更新结果。
 
-到期与流量告警采用相同封面布局，分别使用暖金与淡紫底色；容器更新使用青灰底色。到期消息只保留日期、剩余时间和续费动作，流量用 GB 展示。这两类通知在首次发送前自动读取该 Host 的 `logo`，复用网页内置品牌图片、自定义图片网址或本地上传图片；未设置或图片不可用时使用通用主机图标。封面生成后随消息保存，重试不因 Logo 后续变化而改变原消息。各类封面由 Fleetge 维护，Notify Hub 负责媒体保存和投递。
+通知默认使用图文：Fleetge 标识、事件类型和代表图标组成封面。容器更新使用青灰底色，到期提醒使用暖金底色，流量告警使用淡紫底色；容器更新取该 Stack 已配置的一个代表图标，到期与流量告警在首次发送前读取该 Host 的 `logo`，未设置或不可用时使用通用图标。封面生成后随消息保存，重试不因 Logo 变化而改变原消息；封面上传失败时仍发送简短文字结果。完整更新日志仍在 Fleetge。
 
 ## 架构
 
@@ -86,6 +87,8 @@ Fleetge Dashboard
   +-- fleetge-agent on Host C -- Docker Engine / Compose stacks
 ```
 
+Dashboard 每轮通过 `/api/agent/snapshot` 与 `/api/agent/image-evidence` 一次取得主机结构与镜像证据，并启用 GZip 压缩，显著减少跨公网（WAN）刷新的往返次数；旧版 Agent 会自动回退到逐接口方式。`fleetge-agent` 镜像基于 Alpine，同时提供 `linux/amd64` 与 `linux/arm64`。
+
 ## 快速开始
 
 ### 1. 准备数据目录
@@ -95,7 +98,7 @@ mkdir -p data
 cp hosts.yaml.example data/hosts.yaml
 ```
 
-编辑 `data/hosts.yaml`：
+编辑 `data/hosts.yaml`（也可以稍后在 Web 界面中通过一键入网添加主机）：
 
 ```yaml
 hosts:
@@ -120,7 +123,10 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 ### 3. 编写 `.env`
 
+可从 `.env.example` 复制后填写：
+
 ```env
+FLEETGE_ENV=production
 JWT_SECRET=replace_with_jwt_secret
 CREDENTIALS_KEY=replace_with_fernet_key
 ADMIN_PASSWORD=replace_with_strong_admin_password
@@ -134,6 +140,8 @@ BACKGROUND_STRUCTURE_REFRESH_INTERVAL=3600
 UPDATE_CHECK_INTERVAL=43200
 LOG_LEVEL=info
 ```
+
+`FLEETGE_ENV=production` 时，使用默认的 `JWT_SECRET`、`CREDENTIALS_KEY` 或 `ADMIN_PASSWORD=admin` 会拒绝启动。`ADMIN_PASSWORD` 支持明文或 `pbkdf2_sha256$...` 哈希。
 
 ### 4. 启动 Dashboard
 
@@ -157,6 +165,12 @@ docker compose up -d
 访问 `http://<server-ip>`，默认管理员用户名为 `admin`，密码为 `.env` 中的 `ADMIN_PASSWORD`。
 
 ## 部署 Agent
+
+### 方式一：一键入网（推荐）
+
+登录 Dashboard 后，在「设置 → 主机管理」中创建入网邀请，复制生成的一键安装命令到目标主机执行即可自动部署 Agent（可选同时部署 Caddy 反代），并回填到主机列表。所用镜像可通过 `ENROLLMENT_AGENT_IMAGE`、`ENROLLMENT_PROXY_IMAGE` 配置。
+
+### 方式二：手动 Docker Compose
 
 在每台受管 Docker 主机上部署 `fleetge-agent`：
 
@@ -204,17 +218,20 @@ docker compose up -d
 
 | 变量 | 默认值 | 说明 |
 | :--- | :--- | :--- |
+| `FLEETGE_ENV` | `development` | 运行环境。设为 `production` 时拒绝使用默认密钥启动；仓库内 `docker-compose.yml` 默认为 `production`。 |
 | `JWT_SECRET` | 必填 | JWT 会话签名密钥，建议使用 64 位十六进制随机字符串。 |
 | `CREDENTIALS_KEY` | 必填 | Fernet 对称加密密钥，用于加密数据库中的远程凭证。 |
 | `ADMIN_USERNAME` | `admin` | 管理员用户名。 |
-| `ADMIN_PASSWORD` | 必填 | 管理员登录密码。 |
+| `ADMIN_PASSWORD` | 必填 | 管理员登录密码，支持明文或 `pbkdf2_sha256$...` 哈希。 |
 | `DATABASE_URL` | `sqlite:////app/data/dashboard-local.db` | SQLAlchemy 数据库连接 URI，支持 SQLite/PostgreSQL 等。 |
 | `HOST_CONFIG_PATH` | `/app/data/hosts.yaml` | 主机配置文件路径。 |
 | `METRICS_STREAM_INTERVAL` | `2` | 共享 SSE 指标广播间隔，单位秒，范围 `0.5` 到 `10.0`。 |
-| `DOCKER_POLL_INTERVAL` | `10` | 前端在线时 Docker 容器与 Stack 结构刷新间隔，单位秒。 |
+| `DOCKER_POLL_INTERVAL` | `10` | 前端在线时 Docker 容器与 Stack 结构刷新间隔，单位秒，范围 `5` 到 `300`。 |
 | `BACKGROUND_STRUCTURE_REFRESH_INTERVAL` | `3600` | 前端离线时后台结构刷新间隔，单位秒，范围 `60` 到 `86400`。 |
 | `UPDATE_CHECK_INTERVAL` | `43200` | 系统和镜像更新检测缓存时间，单位秒，范围 `3600` 到 `172800`。 |
 | `JWT_EXPIRE_HOURS` | `24` | 登录会话有效期，单位小时，范围 `1` 到 `720`。 |
+| `ENROLLMENT_AGENT_IMAGE` | `ghcr.io/virgooooox/fleetge-agent:latest` | 一键入网脚本使用的 Agent 镜像，也可在系统设置中修改。 |
+| `ENROLLMENT_PROXY_IMAGE` | `caddy:2-alpine` | 一键入网脚本使用的反代镜像，也可在系统设置中修改。 |
 | `CORS_ORIGINS` | 空 | 允许的跨域来源，多个值用逗号分隔，留空表示同源。 |
 | `TRUSTED_PROXY_CIDRS` | 空 | 允许提供真实回调来源头的反向代理 CIDR；未配置时忽略转发头。 |
 | `LOG_LEVEL` | `info` | 日志级别：`debug`、`info`、`warning`、`error`。 |
@@ -242,6 +259,7 @@ docker compose up -d
 | `TRAFFIC_IDLE_INTERVAL` | `60` | Telemetry 休眠时 WAN 流量保底采样间隔。 |
 | `TRAFFIC_INTERFACES` | `auto` | `auto` 选择默认路由接口，也可填写逗号分隔的接口名。 |
 | `AGENT_STATE_DIR` | `/opt/stacks/.fleetge` | 五分钟流量账本的持久化目录。 |
+| `DOCKER_HOST` | 空 | Docker daemon 地址，留空时自动检测 Unix socket 或 Windows `127.0.0.1:2375`。 |
 | `COLLECT_INTERVAL` | 空 | 旧版兼容别名；仅在未设置 `METRICS_ACTIVE_INTERVAL` 时生效。 |
 | `AGENT_LOG_LEVEL` | `INFO` | Agent 日志级别。 |
 
@@ -250,12 +268,13 @@ docker compose up -d
 ```bash
 mkdir -p data
 cp hosts.yaml.example data/hosts.yaml
+cp .env.example .env   # 并填写其中的密钥
 docker compose up -d --build
 ```
 
 ## 安全建议
 
-- 使用足够长的 `ADMIN_PASSWORD` 和 `AGENT_TOKEN`。
+- 生产环境保持 `FLEETGE_ENV=production`，并使用足够长的 `ADMIN_PASSWORD` 和 `AGENT_TOKEN`。
 - 不要把生产环境 `.env`、`data/hosts.yaml`、数据库文件提交到版本控制。
 - 只把 Agent 暴露给可信网络，或在反向代理/防火墙后使用。
 - 谨慎开启 `AGENT_ENABLE_PRUNE`、`AGENT_ENABLE_DELETE` 等高风险能力。
