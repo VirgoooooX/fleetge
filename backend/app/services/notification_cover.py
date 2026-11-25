@@ -20,8 +20,8 @@ _CATEGORIES = {
     "fleetge.stack.auto_update": ("container-update", "#f4f8f9"),
     "fleetge.host.billing_due": ("billing-due", "#fcf6ed"),
     "fleetge.host.traffic_quota": ("traffic-quota", "#f2effa"),
-    "fleetge.host.status_alert": ("host-alert", "#fdf3f2"),
-    "fleetge.host.status_recovered": ("host-status", "#effaf4"),
+    "fleetge.host.status_alert": ("host-alert", "#f7cac5"),
+    "fleetge.host.status_recovered": ("host-status", "#c7edd8"),
 }
 _MAX_ICON_BYTES = 2 * 1024 * 1024
 
