@@ -214,7 +214,7 @@ async def host_metrics(host_id: str):
 
 
 def _sse_event(event: str, payload: dict) -> str:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
     return f"event: {event}\ndata: {data}\n\n"
 
 

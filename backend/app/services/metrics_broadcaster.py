@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 def metrics_payload(summaries: list[HostSummary]) -> dict:
-    return {"hosts": [summary.model_dump() for summary in summaries], "updated": time.time()}
+    return {"hosts": [summary.model_dump(mode="json") for summary in summaries], "updated": time.time()}
 
 
 def _metrics_signature(summaries: list[HostSummary]) -> tuple:

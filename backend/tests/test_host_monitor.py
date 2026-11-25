@@ -343,6 +343,29 @@ class HostMonitorTests(unittest.TestCase):
         self.assertEqual(rows[0].status, "pending")
         self.assertEqual(rows[0].last_error, "")
 
+    def test_metrics_payload_serializes_monitor_datetimes_for_sse(self):
+        from app.schemas import HostMonitorSummary, HostSummary
+        from app.services.metrics_broadcaster import metrics_payload
+
+        now = datetime.now(timezone.utc)
+        summary = HostSummary(
+            host_id="lightlayer-la",
+            display_name="Lightlayer LA",
+            status="online",
+            monitor=HostMonitorSummary(
+                state="online",
+                state_since=now,
+                last_checked_at=now,
+                last_ok_at=now,
+                last_reboot_at=now,
+                latency_ms=120,
+            ),
+        )
+        encoded = json.dumps(metrics_payload([summary]), ensure_ascii=False)
+        decoded = json.loads(encoded)
+        self.assertEqual(decoded["hosts"][0]["monitor"]["state"], "online")
+        self.assertIsInstance(decoded["hosts"][0]["monitor"]["state_since"], str)
+
 
 if __name__ == "__main__":
     unittest.main()
