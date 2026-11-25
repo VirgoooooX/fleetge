@@ -8,8 +8,19 @@ from sqlmodel import Session
 
 from app.auth.handler import require_admin
 from app.database import get_session
-from app.schemas import SettingsResponse, SettingItem, SettingsUpdateRequest
+from app.schemas import (
+    HostMonitorAlertsUpdateRequest,
+    SettingsResponse,
+    SettingItem,
+    SettingsUpdateRequest,
+)
 from app.services.audit_service import write_audit_log as _write_audit_log
+from app.services.host_monitor import (
+    host_monitor_alerts_enabled,
+    host_monitor_manager,
+    host_monitor_notify_clean_reboot,
+    set_host_monitor_alert_settings,
+)
 from app.services.network_utils import resolve_request_source_ip
 from app.services.settings_service import (
     get_setting_value,
@@ -62,6 +73,14 @@ async def get_settings_list():
             "description": "后台 Compose 目录结构深度扫描间隔（秒）",
             "min_value": 60.0,
             "max_value": 86400.0,
+            "unit": "秒",
+        },
+        {
+            "key": "HOST_MONITOR_INTERVAL",
+            "type": "number",
+            "description": "主机在线状态轻量探活间隔（秒）",
+            "min_value": 60.0,
+            "max_value": 3600.0,
             "unit": "秒",
         },
         {
@@ -166,13 +185,15 @@ async def update_settings(
             raise HTTPException(status_code=400, detail=f"Setting '{key}' is read-only or invalid")
 
         # Basic type validations
-        if key in ["DOCKER_POLL_INTERVAL", "BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "UPDATE_CHECK_INTERVAL", "JWT_EXPIRE_HOURS"]:
+        if key in ["DOCKER_POLL_INTERVAL", "BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "HOST_MONITOR_INTERVAL", "UPDATE_CHECK_INTERVAL", "JWT_EXPIRE_HOURS"]:
             try:
                 int_val = int(val)
                 if key == "DOCKER_POLL_INTERVAL" and not (5 <= int_val <= 300):
                     raise ValueError("DOCKER_POLL_INTERVAL must be between 5 and 300")
                 if key == "BACKGROUND_STRUCTURE_REFRESH_INTERVAL" and not (60 <= int_val <= 86400):
                     raise ValueError("BACKGROUND_STRUCTURE_REFRESH_INTERVAL must be between 60 and 86400")
+                if key == "HOST_MONITOR_INTERVAL" and not (60 <= int_val <= 3600):
+                    raise ValueError("HOST_MONITOR_INTERVAL must be between 60 and 3600")
                 if key == "UPDATE_CHECK_INTERVAL" and not (3600 <= int_val <= 172800):
                     raise ValueError("UPDATE_CHECK_INTERVAL must be between 3600 and 172800")
                 if key == "JWT_EXPIRE_HOURS" and not (1 <= int_val <= 720):
@@ -213,6 +234,7 @@ async def update_settings(
     # 2. Perform updates
     changes = []
     interval_changed = False
+    monitor_interval_changed = False
 
     for key, val in req.settings.items():
         old_val = get_setting_value(key)
@@ -221,6 +243,8 @@ async def update_settings(
             changes.append(f"{key}: {old_val}→{val}")
             if key in ["DOCKER_POLL_INTERVAL", "METRICS_STREAM_INTERVAL", "BACKGROUND_STRUCTURE_REFRESH_INTERVAL", "UPDATE_CHECK_INTERVAL"]:
                 interval_changed = True
+            elif key == "HOST_MONITOR_INTERVAL":
+                monitor_interval_changed = True
 
     if changes:
         session.commit()
@@ -234,8 +258,53 @@ async def update_settings(
 
         if interval_changed:
             await snapshot_manager.restart_poll_loops()
+        if monitor_interval_changed:
+            host_monitor_manager.wake()
 
     return await get_settings_list()
+
+
+@router.get("/host-monitor-alerts")
+async def get_host_monitor_alert_settings():
+    """Return host status notification toggle settings."""
+    return {
+        "enabled": host_monitor_alerts_enabled(),
+        "notify_clean_reboot": host_monitor_notify_clean_reboot(),
+    }
+
+
+@router.put("/host-monitor-alerts")
+async def update_host_monitor_alert_settings(
+    payload: HostMonitorAlertsUpdateRequest,
+    request: Request,
+    session: Session = Depends(get_session),
+    username: str = Depends(require_admin),
+):
+    """Update host status notification switches."""
+    result = set_host_monitor_alert_settings(
+        enabled=payload.enabled,
+        notify_clean_reboot=payload.notify_clean_reboot,
+    )
+    _write_audit_log(
+        session,
+        username,
+        "host.monitor_alerts.configure",
+        "",
+        "success",
+        f"enabled={payload.enabled}, notify_clean_reboot={payload.notify_clean_reboot}",
+        resolve_request_source_ip(request),
+    )
+    session.commit()
+    return result
+
+
+@router.post("/hosts/{host_id}/probe")
+async def probe_host_now(host_id: str):
+    """Run an immediate liveness and fault-attribution probe for one host."""
+    summary = await host_monitor_manager.probe_host(host_id, skip_retry_delay=True)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Host '{host_id}' not found or has no agent_url")
+    return summary.model_dump()
 
 
 @router.get("/hosts/{host_id}/global-env")

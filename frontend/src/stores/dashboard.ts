@@ -4,6 +4,21 @@ import { apiClient } from "@/api/client";
 import { streamSse } from "@/api/sse";
 import { createRequestId } from "@/utils/requestId";
 
+export interface HostMonitorSummary {
+  state: "unknown" | "online" | "blocked" | "agent_error" | "offline";
+  state_since?: string | null;
+  last_checked_at?: string | null;
+  last_ok_at?: string | null;
+  latency_ms?: number | null;
+  consecutive_failures: number;
+  boot_id?: string | null;
+  uptime_seconds?: number | null;
+  last_reboot_at?: string | null;
+  last_reboot_type?: string | null;
+  reason?: string;
+  diagnostics?: Record<string, any> | null;
+}
+
 export interface HostSummary {
   host_id: string;
   display_name: string;
@@ -55,6 +70,7 @@ export interface HostSummary {
   update_count: number;
   error_message?: string;
   subscription?: HostSubscriptionSummary | null;
+  monitor?: HostMonitorSummary | null;
 }
 
 export interface HostSubscriptionSummary {

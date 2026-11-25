@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.schemas import HostSubscriptionSummary, HostSummary
 from app.services.billing_service import _date_status, subscription_is_configured, traffic_quota_bytes
+from app.services.host_monitor import host_monitor_manager
 
 if TYPE_CHECKING:
     from app.services.snapshot import HostSnapshot
@@ -81,4 +82,5 @@ def build_host_summary(snap: "HostSnapshot") -> HostSummary:
         update_count=snap.update_count,  # From update_check background task
         error_message=snap.error_message,  # From snapshot error state
         subscription=sub_summary,
+        monitor=host_monitor_manager.get_summary(cfg.host_id),
     )

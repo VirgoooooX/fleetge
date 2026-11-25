@@ -761,5 +761,16 @@
   "settings.hosts.fetchError": "Could not load hosts",
   "settings.appProfiles.editProfile": "Edit {pattern}",
   "settings.appProfiles.removeProfile": "Remove {pattern}",
-  "workspace.dockerSystem": "Docker System"
+  "workspace.dockerSystem": "Docker System",
+  "status.blocked": "Blocked",
+  "status.agentError": "Agent Error",
+  "settings.params.hostMonitor": "Host Liveness Probe Interval",
+  "settings.params.help.hostMonitor": "Lightweight background probe interval (default 300s) for offline, blocked, reboot, and recovery detection",
+  "hostMonitorAlerts.title": "Host Status Notifications",
+  "hostMonitorAlerts.enabled": "Enable host status alerts",
+  "hostMonitorAlerts.help": "Send Notify Hub notifications on host offline, suspected block, Agent errors, reboots, and recovery",
+  "hostMonitorAlerts.cleanReboot": "Notify on clean reboots",
+  "hostMonitorAlerts.cleanRebootHelp": "Send an info notification after a graceful host reboot; unclean crash reboots always alert",
+  "hostMonitorAlerts.saved": "Host status notification settings saved",
+  "hostMonitorAlerts.saveError": "Failed to save host status notification settings"
 }

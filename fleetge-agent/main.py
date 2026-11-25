@@ -50,6 +50,8 @@ from metrics_runner import (
     stop_metrics_collector,
 )
 from network_identity import probe_network_identity
+import liveness
+from peer_probe import PeerProbeRequest, run_peer_probe
 import docker_client
 import compose_runner
 
@@ -187,17 +189,21 @@ async def lifespan(_app: FastAPI):
     """Own the Agent's background jobs, metrics collector and Docker client."""
     try:
         logger.info("Starting Fleetge Agent metrics collector thread...")
+        await asyncio.to_thread(liveness.record_startup)
         await compose_runner.reconcile_jobs()
         start_metrics_collector()
         yield
     finally:
         try:
-            await compose_runner.stop_job_watchers()
+            await asyncio.to_thread(liveness.record_graceful_shutdown)
         finally:
             try:
-                await asyncio.to_thread(stop_metrics_collector)
+                await compose_runner.stop_job_watchers()
             finally:
-                await docker_client.close_docker_client()
+                try:
+                    await asyncio.to_thread(stop_metrics_collector)
+                finally:
+                    await docker_client.close_docker_client()
 
 
 # Apply the token verification globally
@@ -215,6 +221,21 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 async def health_check():
     """Liveness probe / health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/api/agent/liveness")
+async def read_liveness():
+    """Lightweight host boot identity & liveness check without waking telemetry."""
+    return liveness.get_liveness_payload()
+
+
+@app.post("/api/agent/peer-probe")
+async def execute_peer_probe(payload: PeerProbeRequest):
+    """Credential-free layered reachability probe against a public peer host."""
+    try:
+        return await run_peer_probe(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/agent/metrics")

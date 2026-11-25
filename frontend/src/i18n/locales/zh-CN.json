@@ -761,5 +761,16 @@
   "settings.hosts.fetchError": "主机列表加载失败",
   "settings.appProfiles.editProfile": "编辑 {pattern}",
   "settings.appProfiles.removeProfile": "移除 {pattern}",
-  "workspace.dockerSystem": "Docker 系统"
+  "workspace.dockerSystem": "Docker 系统",
+  "status.blocked": "疑似被墙",
+  "status.agentError": "Agent 异常",
+  "settings.params.hostMonitor": "主机在线状态探活间隔",
+  "settings.params.help.hostMonitor": "独立轻量后台探活间隔（默认 300 秒），用于识别失联、被墙、重启与恢复",
+  "hostMonitorAlerts.title": "主机状态通知",
+  "hostMonitorAlerts.enabled": "启用主机状态变化通知",
+  "hostMonitorAlerts.help": "主机出现失联、疑似被墙、Agent 异常、重启或恢复时通过 Notify Hub 推送",
+  "hostMonitorAlerts.cleanReboot": "正常重启也发送通知",
+  "hostMonitorAlerts.cleanRebootHelp": "检测到主机优雅重启完成后发送 info 通知；异常死机重启始终告警",
+  "hostMonitorAlerts.saved": "主机状态通知设置已保存",
+  "hostMonitorAlerts.saveError": "保存主机状态通知设置失败"
 }

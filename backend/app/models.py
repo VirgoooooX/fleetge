@@ -308,3 +308,50 @@ class HostTrafficCursor(SQLModel, table=True):
     ledger_id: Optional[str] = None
     last_sync_at: Optional[datetime] = None
     last_error: Optional[str] = None
+
+
+class HostMonitorState(SQLModel, table=True):
+    """Persisted host liveness state machine and latest diagnostics."""
+
+    __tablename__ = "host_monitor_state"
+
+    host_id: str = Field(primary_key=True)
+    state: str = Field(default="unknown", index=True)  # unknown | online | blocked | agent_error | offline
+    state_since: Optional[datetime] = None
+    last_checked_at: Optional[datetime] = None
+    last_ok_at: Optional[datetime] = None
+    latency_ms: Optional[int] = None
+    consecutive_failures: int = 0
+    boot_id: Optional[str] = None
+    uptime_seconds: Optional[int] = None
+    last_reboot_at: Optional[datetime] = None
+    last_reboot_type: Optional[str] = None  # clean | unclean | unknown
+    active_incident_id: Optional[str] = None
+    last_reason: str = Field(default="", sa_column=Column(Text, nullable=False))
+    diagnostics_json: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)},
+    )
+
+
+class HostStatusAlertOutbox(SQLModel, table=True):
+    """Durable outbox and de-duplication state for host status notifications."""
+
+    __tablename__ = "host_status_alert_outbox"
+    __table_args__ = (UniqueConstraint("alert_key", name="uq_host_status_alert_key"),)
+
+    id: int = Field(primary_key=True, default=None)
+    alert_key: str = Field(index=True)
+    host_id: str = Field(index=True)
+    event_type: str = Field(index=True)
+    status: str = Field(default="pending", index=True)  # pending | sent | failed | blocked | expired
+    notify_url: str = ""
+    notify_recipient: str = ""
+    payload: str = Field(default="{}", sa_column=Column(Text, nullable=False))
+    attempts: int = 0
+    next_attempt_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    expires_at: datetime
+    sent_at: Optional[datetime] = None
+    last_error: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

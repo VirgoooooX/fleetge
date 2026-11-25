@@ -55,7 +55,14 @@
     </section>
 
     <!-- No metrics warning -->
-    <el-alert v-else-if="host" :title="t('hostDetail.metricsUnavailable')" type="warning" show-icon :closable="false" class="metric-warning" />
+    <el-alert
+      v-else-if="host"
+      :title="host.monitor?.reason || t('hostDetail.metricsUnavailable')"
+      :type="host.monitor?.state === 'offline' || host.monitor?.state === 'blocked' ? 'error' : 'warning'"
+      show-icon
+      :closable="false"
+      class="metric-warning"
+    />
 
     <HostStackWorkspace
       v-if="host"

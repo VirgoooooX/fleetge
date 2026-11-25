@@ -26,8 +26,8 @@
     <!-- Top Header: Identity & Actionable Badges -->
     <header class="card-header">
       <div class="identity-left">
-        <!-- 双层呼吸脉冲指示灯：表达在线/降级/离线 -->
-        <span class="status-pulse" :class="`is-${host.status}`" />
+        <!-- 双层呼吸脉冲指示灯：表达在线/降级/离线/疑似被墙/Agent异常 -->
+        <span class="status-pulse" :class="`is-${effectiveStatus}`" />
         <div class="title-group">
           <div class="name-row">
             <h3 class="host-name" :title="host.display_name">{{ host.display_name }}</h3>
@@ -63,8 +63,13 @@
         </button>
 
         <!-- 异常/离线时才突出状态胶囊 -->
-        <span v-if="host.status !== 'online'" class="badge-chip status-alert-chip" :class="`is-${host.status}`">
-          <span class="chip-text">{{ getStatusLabel(host.status) }}</span>
+        <span
+          v-if="effectiveStatus !== 'online'"
+          class="badge-chip status-alert-chip"
+          :class="`is-${effectiveStatus}`"
+          :title="host.monitor?.reason || host.error_message || ''"
+        >
+          <span class="chip-text">{{ getStatusLabel(effectiveStatus) }}</span>
         </span>
       </div>
     </header>
@@ -109,12 +114,12 @@
         </div>
       </div>
 
-      <div class="diagnostic-glass-pill" :class="`is-${host.status}`">
+      <div class="diagnostic-glass-pill" :class="`is-${effectiveStatus}`">
         <div class="fallback-icon-wrap">
           <AlertCircle :size="18" aria-hidden="true" />
         </div>
         <div class="fallback-info">
-          <p class="fallback-title">{{ host.error_message || t('hostCard.metricsUnavailable') }}</p>
+          <p class="fallback-title">{{ host.monitor?.reason || host.error_message || t('hostCard.metricsUnavailable') }}</p>
           <span class="fallback-desc">{{ t('hostCard.metricsHelp') }}</span>
         </div>
         <ChevronRight :size="15" class="diagnostic-arrow" aria-hidden="true" />
@@ -228,11 +233,21 @@ function getExpiryTier(days?: number): "safe" | "notice" | "warn" | "urgent" | "
   return "safe";
 }
 
+const effectiveStatus = computed(() => {
+  const mState = props.host.monitor?.state;
+  if (mState && (mState === "blocked" || mState === "offline" || mState === "agent_error")) {
+    return mState;
+  }
+  return props.host.status;
+});
+
 function getStatusLabel(status: string): string {
   const map: Record<string, string> = {
     online: t("status.online"),
     degraded: t("status.degraded"),
     offline: t("status.offline"),
+    blocked: t("status.blocked"),
+    agent_error: t("status.agentError"),
     unknown: t("status.unknown"),
   };
   return map[status] || status;
@@ -386,6 +401,16 @@ function getStatusLabel(status: string): string {
 
 .status-pulse.is-offline {
   background: var(--danger, #f87171);
+}
+
+.status-pulse.is-blocked {
+  background: #f97316;
+  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.22);
+}
+
+.status-pulse.is-agent_error {
+  background: var(--warning, #fbbf24);
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.2);
 }
 
 .status-pulse.is-unknown {
@@ -566,6 +591,21 @@ function getStatusLabel(status: string): string {
   background: rgba(248, 113, 113, 0.12);
   border-color: rgba(248, 113, 113, 0.35);
   color: var(--danger, #f87171);
+}
+.status-alert-chip.is-blocked {
+  background: rgba(249, 115, 22, 0.14);
+  border-color: rgba(249, 115, 22, 0.38);
+  color: #fb923c;
+}
+[data-theme="light"] .status-alert-chip.is-blocked {
+  background: rgba(249, 115, 22, 0.1);
+  border-color: rgba(249, 115, 22, 0.42);
+  color: #c2410c;
+}
+.status-alert-chip.is-agent_error {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.32);
+  color: var(--warning, #fbbf24);
 }
 
 /* ── 异常/离线状态：1:1 暗纹骨架 + 悬浮玻璃态诊断舱 ── */

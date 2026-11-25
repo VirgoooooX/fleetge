@@ -99,6 +99,44 @@ class AgentClient:
         r.raise_for_status()
         return r.json()
 
+    async def fetch_liveness(self) -> dict:
+        """GET /api/agent/liveness without waking telemetry; falls back to /health on older Agents."""
+        timeout = httpx.Timeout(5.0, connect=4.0)
+        r = await self._client.get("/api/agent/liveness", headers=self._headers(), timeout=timeout)
+        if r.status_code == 404:
+            fallback = await self._client.get("/api/agent/health", headers=self._headers(), timeout=timeout)
+            fallback.raise_for_status()
+            data = fallback.json() if fallback.content else {"status": "ok"}
+            if isinstance(data, dict):
+                data.setdefault("legacy", True)
+                return data
+            return {"status": "ok", "legacy": True}
+        r.raise_for_status()
+        return r.json()
+
+    async def peer_probe(
+        self,
+        *,
+        host: str,
+        port: int = 443,
+        scheme: str = "https",
+        timeout_seconds: float = 5.0,
+    ) -> dict:
+        """POST /api/agent/peer-probe for credential-free multi-vantage verification."""
+        r = await self._client.post(
+            "/api/agent/peer-probe",
+            json={
+                "host": host,
+                "port": port,
+                "scheme": scheme,
+                "timeout_seconds": timeout_seconds,
+            },
+            headers=self._headers(),
+            timeout=httpx.Timeout(10.0, connect=4.0),
+        )
+        r.raise_for_status()
+        return r.json()
+
     # ── 2. Docker Proxy API ──────────────────────────────────────────
 
     async def ping(self) -> bool:

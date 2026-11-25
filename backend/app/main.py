@@ -20,6 +20,7 @@ from app.services.snapshot import snapshot_manager
 from app.services.enrollment_service import enrollment_monitor
 from app.services.auto_update import auto_update_manager
 from app.services.billing_service import billing_alert_manager
+from app.services.host_monitor import host_monitor_manager
 from app.routers import auto_updates
 from app.version import __version__
 
@@ -51,6 +52,8 @@ async def lifespan(app: FastAPI):
         await enrollment_monitor.start()
         shutdown.push_async_callback(billing_alert_manager.stop)
         await billing_alert_manager.start()
+        shutdown.push_async_callback(host_monitor_manager.stop)
+        await host_monitor_manager.start()
         try:
             yield
         finally:

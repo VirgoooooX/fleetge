@@ -85,6 +85,21 @@ class HostSubscriptionSummary(BaseModel):
     management_url: Optional[str] = None
 
 
+class HostMonitorSummary(BaseModel):
+    state: Literal["unknown", "online", "blocked", "agent_error", "offline"] = "unknown"
+    state_since: Optional[datetime] = None
+    last_checked_at: Optional[datetime] = None
+    last_ok_at: Optional[datetime] = None
+    latency_ms: Optional[int] = None
+    consecutive_failures: int = 0
+    boot_id: Optional[str] = None
+    uptime_seconds: Optional[int] = None
+    last_reboot_at: Optional[datetime] = None
+    last_reboot_type: Optional[str] = None
+    reason: str = ""
+    diagnostics: Optional[dict] = None
+
+
 class HostSummary(BaseModel):
     host_id: str
     display_name: str
@@ -108,6 +123,7 @@ class HostSummary(BaseModel):
     update_count: int = 0
     error_message: Optional[str] = None
     subscription: Optional[HostSubscriptionSummary] = None
+    monitor: Optional[HostMonitorSummary] = None
 
 
 class HostListResponse(BaseModel):
@@ -475,6 +491,11 @@ class RenewalRequest(BaseModel):
 
 class BillingAlertsUpdateRequest(BaseModel):
     enabled: bool
+
+
+class HostMonitorAlertsUpdateRequest(BaseModel):
+    enabled: bool
+    notify_clean_reboot: bool = True
 
 
 class HostSubscriptionResponse(BaseModel):

@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models import AuditLog, AutoUpdateRun, HostBillingAlertState, ImageUpdateCache, Setting, StackAutoUpdate
+from app.models import AuditLog, AutoUpdateRun, HostBillingAlertState, HostStatusAlertOutbox, ImageUpdateCache, Setting, StackAutoUpdate
 from app.services import auto_update_policy
 from app.services.agent_client import AgentClient
 from app.services.auto_update_policy import control_stack, ingress_services
@@ -87,6 +87,12 @@ def save_notify_settings(url: str, recipient: str, api_key: str | None) -> None:
                 HostBillingAlertState.notify_url == url,
                 HostBillingAlertState.notify_recipient == recipient,
                 HostBillingAlertState.expires_at > now,
+            ).values(status="pending", next_attempt_at=now, last_error=""))
+            session.exec(update(HostStatusAlertOutbox).where(
+                HostStatusAlertOutbox.status == "blocked",
+                HostStatusAlertOutbox.notify_url == url,
+                HostStatusAlertOutbox.notify_recipient == recipient,
+                HostStatusAlertOutbox.expires_at > now,
             ).values(status="pending", next_attempt_at=now, last_error=""))
         session.commit()
 

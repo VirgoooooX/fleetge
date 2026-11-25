@@ -50,6 +50,30 @@
         </div>
       </div>
     </div>
+    <div class="form-cluster billing-alert-settings">
+      <div class="cluster-title">{{ t('hostMonitorAlerts.title') }}</div>
+      <div class="settings-field-list">
+        <div class="settings-field-row billing-alert-row">
+          <div>
+            <div class="settings-field-label">{{ t('hostMonitorAlerts.enabled') }}</div>
+            <div class="settings-field-help">{{ t('hostMonitorAlerts.help') }}</div>
+          </div>
+          <el-switch v-model="hostMonitorEnabled" :loading="hostMonitorSaving" :disabled="hostMonitorSaving" @change="saveHostMonitorSettings" />
+        </div>
+        <div class="settings-field-row billing-alert-row">
+          <div>
+            <div class="settings-field-label">{{ t('hostMonitorAlerts.cleanReboot') }}</div>
+            <div class="settings-field-help">{{ t('hostMonitorAlerts.cleanRebootHelp') }}</div>
+          </div>
+          <el-switch
+            v-model="hostMonitorCleanReboot"
+            :loading="hostMonitorSaving"
+            :disabled="hostMonitorSaving || !hostMonitorEnabled"
+            @change="saveHostMonitorSettings"
+          />
+        </div>
+      </div>
+    </div>
   </el-form>
 </template>
 
@@ -66,6 +90,9 @@ const keyConfigured = ref(false);
 const clearKey = ref(false);
 const alertsEnabled = ref(true);
 const alertsSaving = ref(false);
+const hostMonitorEnabled = ref(true);
+const hostMonitorCleanReboot = ref(true);
+const hostMonitorSaving = ref(false);
 const form = reactive({ url: '', recipient: '', api_key: '' });
 
 function apply(data: NotifyHubSettings) {
@@ -82,12 +109,15 @@ onUnmounted(() => loadController.abort());
 onMounted(async () => {
   const { signal } = loadController;
   try {
-    const [settings, enabled] = await Promise.all([
+    const [settings, enabled, hostMonitor] = await Promise.all([
       notifyHubApi.getSettings(signal),
       notifyHubApi.getBillingAlerts(signal),
+      notifyHubApi.getHostMonitorAlerts(signal),
     ]);
     apply(settings);
     alertsEnabled.value = enabled;
+    hostMonitorEnabled.value = hostMonitor.enabled;
+    hostMonitorCleanReboot.value = hostMonitor.notify_clean_reboot;
   } catch (error) {
     if (!signal.aborted) ElMessage.error(apiErrorMessage(error, t('notifyHub.loadError')));
   } finally {
@@ -107,6 +137,33 @@ async function saveAlertSettings() {
     ElMessage.error(apiErrorMessage(error, t('billingAlerts.saveError')));
   } finally {
     alertsSaving.value = false;
+  }
+}
+
+async function saveHostMonitorSettings() {
+  if (hostMonitorSaving.value || loading.value) return;
+  const prevEnabled = hostMonitorEnabled.value;
+  const prevCleanReboot = hostMonitorCleanReboot.value;
+  hostMonitorSaving.value = true;
+  try {
+    const saved = await notifyHubApi.saveHostMonitorAlerts({
+      enabled: prevEnabled,
+      notify_clean_reboot: prevCleanReboot,
+    });
+    hostMonitorEnabled.value = saved.enabled;
+    hostMonitorCleanReboot.value = saved.notify_clean_reboot;
+    ElMessage.success(t('hostMonitorAlerts.saved'));
+  } catch (error) {
+    ElMessage.error(apiErrorMessage(error, t('hostMonitorAlerts.saveError')));
+    try {
+      const current = await notifyHubApi.getHostMonitorAlerts();
+      hostMonitorEnabled.value = current.enabled;
+      hostMonitorCleanReboot.value = current.notify_clean_reboot;
+    } catch {
+      // keep current UI values if reload also fails
+    }
+  } finally {
+    hostMonitorSaving.value = false;
   }
 }
 

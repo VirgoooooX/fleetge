@@ -100,8 +100,12 @@ class NotificationCoverTests(unittest.TestCase):
                 requests.append(request)
                 return httpx.Response(201, json={"id": "media_host_cover"})
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-                for event, filename in [("fleetge.host.billing_due", "billing-due.png"),
-                                        ("fleetge.host.traffic_quota", "traffic-quota.png")]:
+                for event, filename in [
+                    ("fleetge.host.billing_due", "billing-due.png"),
+                    ("fleetge.host.traffic_quota", "traffic-quota.png"),
+                    ("fleetge.host.status_alert", "host-alert.png"),
+                    ("fleetge.host.status_recovered", "host-status.png"),
+                ]:
                     wire = await module.prepare_notification(client, "https://notify.test", "test-key", {
                         "event_type": event, "event_key": event, "message_type": "text", "_host_icon": None})
                     self.assertIn(filename.encode(), requests[-1].content)

@@ -58,6 +58,17 @@
             </div>
           </el-form-item>
 
+          <el-form-item prop="HOST_MONITOR_INTERVAL" class="settings-field-row">
+            <template #label>
+              <span class="settings-field-label">{{ t("settings.params.hostMonitor") }}</span>
+              <span class="settings-field-help">{{ t("settings.params.help.hostMonitor") }}</span>
+            </template>
+            <div class="input-with-unit">
+              <el-input-number v-model="paramsForm.HOST_MONITOR_INTERVAL" :min="60" :max="3600" :step="60" />
+              <span class="unit-text">{{ t("settings.params.unit.seconds") }}</span>
+            </div>
+          </el-form-item>
+
           <el-form-item prop="UPDATE_CHECK_INTERVAL" class="settings-field-row">
             <template #label>
               <span class="settings-field-label">{{ t("settings.params.updateCheck") }}</span>
@@ -199,6 +210,7 @@ const paramsForm = reactive({
   DOCKER_POLL_INTERVAL: 10,
   METRICS_STREAM_INTERVAL: 2,
   BACKGROUND_STRUCTURE_REFRESH_INTERVAL: 3600,
+  HOST_MONITOR_INTERVAL: 300,
   UPDATE_CHECK_INTERVAL: 43200,
   ADMIN_USERNAME: "admin",
   JWT_EXPIRE_HOURS: 24,
@@ -211,6 +223,7 @@ const paramsRules = computed<FormRules>(() => ({
   DOCKER_POLL_INTERVAL: [{ required: true, message: t("settings.params.required"), trigger: "blur" }],
   METRICS_STREAM_INTERVAL: [{ required: true, message: t("settings.params.required"), trigger: "blur" }],
   BACKGROUND_STRUCTURE_REFRESH_INTERVAL: [{ required: true, message: t("settings.params.required"), trigger: "blur" }],
+  HOST_MONITOR_INTERVAL: [{ required: true, message: t("settings.params.required"), trigger: "blur" }],
   UPDATE_CHECK_INTERVAL: [{ required: true, message: t("settings.params.required"), trigger: "blur" }],
   ADMIN_USERNAME: [
     { required: true, message: t("settings.params.required"), trigger: "blur" },
