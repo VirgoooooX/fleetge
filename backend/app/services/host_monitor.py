@@ -49,20 +49,23 @@ def get_engine():
     return getattr(this_module, "engine", engine)
 
 
-def _bool_setting(key: str, default: bool = True) -> bool:
-    with Session(get_engine()) as session:
+def _bool_setting(key: str, default: bool = True, session: Session | None = None) -> bool:
+    if session is not None:
         row = session.get(Setting, key)
+    else:
+        with Session(get_engine()) as s:
+            row = s.get(Setting, key)
     if row is None:
         return default
     return row.setting_value.strip().lower() not in {"0", "false", "off", "no"}
 
 
-def host_monitor_alerts_enabled() -> bool:
-    return _bool_setting("HOST_MONITOR_ALERTS_ENABLED", True)
+def host_monitor_alerts_enabled(session: Session | None = None) -> bool:
+    return _bool_setting("HOST_MONITOR_ALERTS_ENABLED", True, session=session)
 
 
-def host_monitor_notify_clean_reboot() -> bool:
-    return _bool_setting("HOST_MONITOR_NOTIFY_CLEAN_REBOOT", True)
+def host_monitor_notify_clean_reboot(session: Session | None = None) -> bool:
+    return _bool_setting("HOST_MONITOR_NOTIFY_CLEAN_REBOOT", True, session=session)
 
 
 def set_host_monitor_alert_settings(*, enabled: bool, notify_clean_reboot: bool) -> dict[str, bool]:
@@ -156,34 +159,62 @@ def _icmp_checksum(data: bytes) -> int:
     return (~total) & 0xFFFF
 
 
-def _best_effort_icmp_sync(ip_addr: str, timeout: float = 2.0) -> bool | None:
-    """Try unprivileged SOCK_DGRAM ICMP echo; return None if not permitted by container/OS."""
+def _best_effort_icmp_sync(ip_addr: str, timeout: float = 1.5, count: int = 3) -> tuple[bool | None, int, int]:
+    """Try unprivileged SOCK_DGRAM ICMP echo with multi-packet sampling.
+
+    Returns (reachable, received, sent):
+      - reachable=None if ICMP sockets are not permitted by container/OS
+      - reachable=True as soon as any echo reply is received
+      - reachable=False if all packets time out
+    """
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_ICMP)
     except OSError:
-        return None
+        return None, 0, 0
+    sent = 0
+    received = 0
     try:
         sock.settimeout(timeout)
         ident = os.getpid() & 0xFFFF
-        header = struct.pack("!BBHHH", 8, 0, 0, ident, 1)
         payload = b"fleetge-ping"
-        checksum = _icmp_checksum(header + payload)
-        packet = struct.pack("!BBHHH", 8, 0, checksum, ident, 1) + payload
-        sock.sendto(packet, (ip_addr, 0))
-        sock.recvfrom(1024)
-        return True
-    except socket.timeout:
-        return False
-    except OSError:
-        return None
+        for seq in range(1, max(1, count) + 1):
+            header = struct.pack("!BBHHH", 8, 0, 0, ident, seq)
+            checksum = _icmp_checksum(header + payload)
+            packet = struct.pack("!BBHHH", 8, 0, checksum, ident, seq) + payload
+            try:
+                sock.sendto(packet, (ip_addr, 0))
+                sent += 1
+                sock.recvfrom(1024)
+                received += 1
+                return True, received, sent
+            except socket.timeout:
+                if seq < count:
+                    time.sleep(0.25)
+                continue
+            except OSError:
+                return (None, received, sent) if sent == 0 else (False, received, sent)
+        return False, received, sent
     finally:
         sock.close()
 
 
-async def _best_effort_icmp(ip_addr: str | None, timeout: float = 2.0) -> bool | None:
+async def _best_effort_icmp(ip_addr: str | None, timeout: float = 1.5, count: int = 3) -> tuple[bool | None, int, int]:
     if not ip_addr or ":" in ip_addr:
-        return None
-    return await asyncio.to_thread(_best_effort_icmp_sync, ip_addr, timeout)
+        return None, 0, 0
+    return await asyncio.to_thread(_best_effort_icmp_sync, ip_addr, timeout, count)
+
+
+def _classify_tls_exception(exc: BaseException) -> Literal["timeout", "reset", "other"]:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, socket.timeout)):
+        return "timeout"
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError, ssl.SSLEOFError)):
+        return "reset"
+    msg = str(exc).lower()
+    if any(k in msg for k in ("timed out", "timeout")):
+        return "timeout"
+    if any(k in msg for k in ("reset", "eof", "broken pipe")):
+        return "reset"
+    return "other"
 
 
 @dataclass
@@ -194,6 +225,9 @@ class DirectProbeResult:
     failed_stage: str | None = None
     tcp_ok: bool = False
     icmp_reachable: bool | None = None
+    icmp_received: int | None = None
+    icmp_sent: int | None = None
+    tls_error_kind: Literal["timeout", "reset", "other"] | None = None
     latency_ms: int | None = None
     boot_id: str | None = None
     uptime_seconds: int | None = None
@@ -202,7 +236,7 @@ class DirectProbeResult:
 
 
 class HostMonitorManager:
-    """Background liveness monitor with debounce, WAN canary, peer verification, and Notify Hub outbox."""
+    """Background liveness monitor with tiered debounce, hysteresis, flapping guard, WAN canary, peer verification, and Notify Hub outbox."""
 
     def __init__(self) -> None:
         self.started = False
@@ -211,8 +245,17 @@ class HostMonitorManager:
         self._delivery_wake = asyncio.Event()
         self._cache: dict[str, HostMonitorSummary] = {}
         self._host_locks: dict[str, asyncio.Lock] = {}
+        self._flap_history: dict[str, list[datetime]] = {}
+        # Legacy test-override knobs (when retry_delay_seconds is set explicitly, it overrides all tiered delays)
         self.retry_count: int = 2
-        self.retry_delay_seconds: float = 10.0
+        self.retry_delay_seconds: float | None = None
+        # Tiered debounce & hysteresis defaults
+        self.lan_retry_delays: tuple[float, ...] = (15.0, 30.0)
+        self.wan_retry_delays: tuple[float, ...] = (30.0, 60.0)
+        self.wan_blocked_extra_delay: float = 90.0
+        self.wan_recovery_confirm_delay: float = 30.0
+        self.flapping_window_seconds: float = 1800.0
+        self.flapping_threshold: int = 2
         self.startup_grace_seconds: float = STARTUP_GRACE_SECONDS
 
     def _row_to_summary(self, row: HostMonitorState) -> HostMonitorSummary:
@@ -279,6 +322,7 @@ class HostMonitorManager:
             self._probe_wake.clear()
 
         while self.started:
+            sweep_started = time.monotonic()
             try:
                 await self.probe_all_hosts()
             except asyncio.CancelledError:
@@ -287,9 +331,11 @@ class HostMonitorManager:
                 logger.exception("Host monitor sweep failed")
 
             interval = host_monitor_interval_seconds()
+            elapsed = time.monotonic() - sweep_started
+            wait_seconds = max(5.0, float(interval) - elapsed)
             self._probe_wake.clear()
             try:
-                await asyncio.wait_for(self._probe_wake.wait(), timeout=float(interval))
+                await asyncio.wait_for(self._probe_wake.wait(), timeout=wait_seconds)
             except asyncio.TimeoutError:
                 pass
 
@@ -310,11 +356,69 @@ class HostMonitorManager:
 
     # ── Low-level probes ────────────────────────────────────────────────
 
-    async def _diagnose_transport_failure(self, agent_url: str) -> tuple[str, bool, bool | None]:
-        """Return (failed_stage, tcp_ok, icmp_reachable) for a failed direct Agent probe."""
+    def _effective_retry_delays(self, *, is_lan: bool, skip_retry_delay: bool) -> list[float]:
+        if skip_retry_delay:
+            return [0.0] * max(0, self.retry_count)
+        if self.retry_delay_seconds is not None:
+            delay = max(0.0, float(self.retry_delay_seconds))
+            return [delay] * max(0, self.retry_count)
+        base = self.lan_retry_delays if is_lan else self.wan_retry_delays
+        return list(base)
+
+    def _effective_extra_delay(self, default_delay: float, *, skip_retry_delay: bool) -> float:
+        if skip_retry_delay:
+            return 0.0
+        if self.retry_delay_seconds is not None:
+            return max(0.0, float(self.retry_delay_seconds))
+        return max(0.0, float(default_delay))
+
+    def _prune_and_count_flaps(self, host_id: str, now: datetime) -> int:
+        cutoff = now - timedelta(seconds=self.flapping_window_seconds)
+        events = [ts for ts in self._flap_history.get(host_id, []) if ts >= cutoff]
+        if events:
+            self._flap_history[host_id] = events
+        else:
+            self._flap_history.pop(host_id, None)
+        return len(events)
+
+    def _is_flapping(self, host_id: str, now: datetime) -> bool:
+        return self._prune_and_count_flaps(host_id, now) >= self.flapping_threshold
+
+    def _record_flap_recovery(self, host_id: str, now: datetime) -> None:
+        self._prune_and_count_flaps(host_id, now)
+        self._flap_history.setdefault(host_id, []).append(now)
+
+    def _set_rechecking_cache(
+        self,
+        host_id: str,
+        *,
+        pending_failures: int,
+        suspected_since: datetime,
+        phase: str,
+        failed_stage: str | None = None,
+    ) -> None:
+        cached = self._cache.get(host_id)
+        if cached is None:
+            return
+        diag = dict(cached.diagnostics or {})
+        diag.update(
+            {
+                "rechecking": True,
+                "recheck_phase": phase,
+                "pending_failures": pending_failures,
+                "suspected_since": suspected_since.isoformat(),
+                "last_failed_stage": failed_stage,
+            }
+        )
+        self._cache[host_id] = cached.model_copy(update={"diagnostics": diag})
+
+    async def _diagnose_transport_failure(
+        self, agent_url: str, *, is_lan: bool = False
+    ) -> tuple[str, bool, bool | None, Literal["timeout", "reset", "other"] | None, int | None, int | None]:
+        """Return (failed_stage, tcp_ok, icmp_reachable, tls_error_kind, icmp_received, icmp_sent)."""
         endpoint = _parse_agent_endpoint(agent_url)
         if endpoint is None:
-            return "dns", False, None
+            return "dns", False, None, None, None, None
         host, port, scheme = endpoint
 
         loop = asyncio.get_running_loop()
@@ -322,30 +426,37 @@ class HostMonitorManager:
         try:
             infos = await asyncio.wait_for(
                 loop.getaddrinfo(host, port, type=socket.SOCK_STREAM),
-                timeout=3.0,
+                timeout=3.0 if is_lan else 5.0,
             )
             if infos and infos[0][4]:
                 resolved_ip = str(infos[0][4][0])
         except Exception:
-            return "dns", False, None
+            return "dns", False, None, None, None, None
 
-        icmp_task = asyncio.create_task(_best_effort_icmp(resolved_ip, timeout=2.0))
+        icmp_task = asyncio.create_task(_best_effort_icmp(resolved_ip, timeout=1.5, count=3))
         writer: asyncio.StreamWriter | None = None
         tcp_ok = False
         failed_stage = "tcp"
+        tls_error_kind: Literal["timeout", "reset", "other"] | None = None
+        tcp_timeout = 3.0 if is_lan else 5.0
+        tls_timeout = 3.0 if is_lan else 6.0
         try:
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection(resolved_ip or host, port),
-                timeout=3.5,
+                timeout=tcp_timeout,
             )
             tcp_ok = True
             if scheme == "https":
                 failed_stage = "tls"
                 ctx = ssl.create_default_context()
-                await asyncio.wait_for(
-                    writer.start_tls(ctx, server_hostname=host),
-                    timeout=3.5,
-                )
+                try:
+                    await asyncio.wait_for(
+                        writer.start_tls(ctx, server_hostname=host),
+                        timeout=tls_timeout,
+                    )
+                except Exception as exc:
+                    tls_error_kind = _classify_tls_exception(exc)
+                    raise
             failed_stage = "http"
         except Exception:
             pass
@@ -356,14 +467,22 @@ class HostMonitorManager:
                     await asyncio.wait_for(writer.wait_closed(), timeout=0.5)
                 except Exception:
                     pass
-        icmp_reachable = await icmp_task
-        return failed_stage, tcp_ok, icmp_reachable
+        icmp_reachable, icmp_received, icmp_sent = await icmp_task
+        return (
+            failed_stage,
+            tcp_ok,
+            icmp_reachable,
+            tls_error_kind,
+            icmp_received if icmp_sent > 0 else None,
+            icmp_sent if icmp_sent > 0 else None,
+        )
 
     async def _probe_direct_once(self, host: HostConfig) -> DirectProbeResult:
         started = time.monotonic()
+        is_lan = _is_lan_host(host.agent_url)
         client = AgentClient(host)
         try:
-            data = await client.fetch_liveness()
+            data = await client.fetch_liveness(is_lan=is_lan)
             latency_ms = int((time.monotonic() - started) * 1000)
             boot_id = str(data["boot_id"]) if data.get("boot_id") else None
             uptime_raw = data.get("uptime_seconds")
@@ -393,13 +512,23 @@ class HostMonitorManager:
             )
         except Exception as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
-            failed_stage, tcp_ok, icmp_reachable = await self._diagnose_transport_failure(host.agent_url or "")
+            (
+                failed_stage,
+                tcp_ok,
+                icmp_reachable,
+                tls_error_kind,
+                icmp_received,
+                icmp_sent,
+            ) = await self._diagnose_transport_failure(host.agent_url or "", is_lan=is_lan)
             return DirectProbeResult(
                 ok=False,
                 agent_error=False,
                 failed_stage=failed_stage,
                 tcp_ok=tcp_ok,
                 icmp_reachable=icmp_reachable,
+                icmp_received=icmp_received,
+                icmp_sent=icmp_sent,
+                tls_error_kind=tls_error_kind,
                 latency_ms=latency_ms,
                 error=f"{type(exc).__name__}: {exc}"[:200],
             )
@@ -510,6 +639,7 @@ class HostMonitorManager:
                 self._cache.pop(stale, None)
 
         public_ok_event = {"ok": False}
+        sweep_context: dict[str, set[str]] = {"wan_ok": set(), "wan_failed": set()}
 
         async def run_one(host: HostConfig) -> None:
             if not host.agent_url:
@@ -518,18 +648,13 @@ class HostMonitorManager:
                 host.host_id,
                 all_hosts=hosts,
                 public_ok_hint=public_ok_event,
+                sweep_context=sweep_context,
             )
             if summary and summary.state == "online" and not _is_lan_host(host.agent_url):
                 public_ok_event["ok"] = True
 
-        # Probe LAN hosts and first pass concurrently; cap concurrency at 4
-        sem = asyncio.Semaphore(4)
-
-        async def guarded(host: HostConfig) -> None:
-            async with sem:
-                await run_one(host)
-
-        await asyncio.gather(*(guarded(h) for h in hosts), return_exceptions=True)
+        # Run all hosts concurrently so one host's long WAN debounce does not starve others
+        await asyncio.gather(*(run_one(h) for h in hosts), return_exceptions=True)
 
     async def probe_host(
         self,
@@ -537,6 +662,7 @@ class HostMonitorManager:
         *,
         all_hosts: list[HostConfig] | None = None,
         public_ok_hint: dict[str, bool] | None = None,
+        sweep_context: dict[str, set[str]] | None = None,
         skip_retry_delay: bool = False,
     ) -> HostMonitorSummary | None:
         lock = self._host_locks.setdefault(host_id, asyncio.Lock())
@@ -547,17 +673,67 @@ class HostMonitorManager:
                 host = next((h for h in all_hosts if h.host_id == host_id), None)
                 if host is None:
                     host = session.exec(select(HostConfig).where(HostConfig.host_id == host_id)).first()
+                existing_row = session.get(HostMonitorState, host_id)
+                prev_state = existing_row.state if existing_row is not None else "unknown"
             if host is None or not host.agent_url:
                 return None
 
+            is_lan = _is_lan_host(host.agent_url)
+            suspected_since = utc_now()
             result = await self._probe_direct_once(host)
             attempts_failed = 0 if result.ok else 1
 
-            # Fast debounce retries on failure before transitioning state
+            if not is_lan and sweep_context is not None:
+                if result.ok:
+                    sweep_context.setdefault("wan_ok", set()).add(host.host_id)
+                else:
+                    sweep_context.setdefault("wan_failed", set()).add(host.host_id)
+
+            # Recovery hysteresis for WAN hosts: require 2 consecutive successes before declaring recovered
+            if result.ok and not is_lan and prev_state in {"blocked", "offline", "agent_error"}:
+                recovery_delay = self._effective_extra_delay(
+                    self.wan_recovery_confirm_delay, skip_retry_delay=skip_retry_delay
+                )
+                self._set_rechecking_cache(
+                    host.host_id,
+                    pending_failures=0,
+                    suspected_since=suspected_since,
+                    phase="recovery_confirm",
+                )
+                if recovery_delay > 0:
+                    await asyncio.sleep(recovery_delay)
+                confirm_res = await self._probe_direct_once(host)
+                if confirm_res.ok:
+                    result = confirm_res
+                else:
+                    # Flapped back to failure during recovery confirmation -> hold existing incident state
+                    logger.info(
+                        "WAN recovery confirmation failed for %s; holding state=%s",
+                        host.host_id,
+                        prev_state,
+                    )
+                    self._set_rechecking_cache(
+                        host.host_id,
+                        pending_failures=1,
+                        suspected_since=suspected_since,
+                        phase="recovery_failed",
+                        failed_stage=confirm_res.failed_stage,
+                    )
+                    return self._cache.get(host.host_id)
+
+            # Tiered debounce retries on failure before transitioning state
             if not result.ok:
-                for _ in range(self.retry_count):
-                    if not skip_retry_delay and self.retry_delay_seconds > 0:
-                        await asyncio.sleep(self.retry_delay_seconds)
+                retry_delays = self._effective_retry_delays(is_lan=is_lan, skip_retry_delay=skip_retry_delay)
+                for delay in retry_delays:
+                    self._set_rechecking_cache(
+                        host.host_id,
+                        pending_failures=attempts_failed,
+                        suspected_since=suspected_since,
+                        phase="failure_debounce",
+                        failed_stage=result.failed_stage,
+                    )
+                    if delay > 0:
+                        await asyncio.sleep(delay)
                     retry_res = await self._probe_direct_once(host)
                     result = retry_res
                     if retry_res.ok:
@@ -565,8 +741,26 @@ class HostMonitorManager:
                         break
                     attempts_failed += 1
 
+                # If recovered during debounce while previously in an incident state, still confirm WAN stability
+                if result.ok and not is_lan and prev_state in {"blocked", "offline", "agent_error"}:
+                    recovery_delay = self._effective_extra_delay(
+                        self.wan_recovery_confirm_delay, skip_retry_delay=skip_retry_delay
+                    )
+                    if recovery_delay > 0:
+                        await asyncio.sleep(recovery_delay)
+                    confirm_res = await self._probe_direct_once(host)
+                    if confirm_res.ok:
+                        result = confirm_res
+                    else:
+                        return self._cache.get(host.host_id)
+
             now = utc_now()
-            is_lan = _is_lan_host(host.agent_url)
+            is_flapping = (not is_lan) and self._is_flapping(host.host_id, now)
+            multi_wan_degraded = (
+                not is_lan
+                and sweep_context is not None
+                and len(sweep_context.get("wan_failed", set())) >= 2
+            )
 
             if not result.ok and not result.agent_error and not is_lan:
                 # Local WAN egress sanity check before blaming any public host
@@ -584,7 +778,55 @@ class HostMonitorManager:
             if not result.ok and not result.agent_error and not is_lan:
                 peer_info = await self._verify_via_peers(host, all_hosts)
 
-            return self._apply_probe_outcome(host, result, attempts_failed, peer_info, now)
+                # Stronger confirmation window for 'blocked' (3+ minutes total; extended further on flapping or multi-WAN jitter)
+                if peer_info.get("reachable") is True and prev_state != "blocked":
+                    extra_rounds = 1
+                    if is_flapping or multi_wan_degraded:
+                        extra_rounds = 2
+                    extra_delay = self._effective_extra_delay(
+                        self.wan_blocked_extra_delay, skip_retry_delay=skip_retry_delay
+                    )
+                    for round_idx in range(extra_rounds):
+                        self._set_rechecking_cache(
+                            host.host_id,
+                            pending_failures=attempts_failed,
+                            suspected_since=suspected_since,
+                            phase=f"blocked_confirm_{round_idx + 1}",
+                            failed_stage=result.failed_stage,
+                        )
+                        if extra_delay > 0:
+                            await asyncio.sleep(extra_delay)
+                        confirm_direct = await self._probe_direct_once(host)
+                        result = confirm_direct
+                        if confirm_direct.ok:
+                            attempts_failed = 0
+                            peer_info = {"checked": False, "reachable": None, "peers_tried": []}
+                            break
+                        attempts_failed += 1
+                        if confirm_direct.agent_error:
+                            peer_info = {"checked": False, "reachable": None, "peers_tried": []}
+                            break
+                        wan_still_ok = bool(public_ok_hint and public_ok_hint.get("ok")) or await self._check_local_wan_egress()
+                        if not wan_still_ok:
+                            logger.warning(
+                                "Local WAN egress unavailable during blocked confirmation for %s; suppressing transition",
+                                host.host_id,
+                            )
+                            return self._cache.get(host.host_id)
+                        peer_info = await self._verify_via_peers(host, all_hosts)
+                        if peer_info.get("reachable") is not True:
+                            break
+                    now = utc_now()
+
+            return self._apply_probe_outcome(
+                host,
+                result,
+                attempts_failed,
+                peer_info,
+                now,
+                is_flapping=is_flapping,
+                multi_wan_degraded=multi_wan_degraded,
+            )
 
     def _build_failure_reason(
         self,
@@ -593,6 +835,7 @@ class HostMonitorManager:
         peer_info: dict[str, Any],
         *,
         is_lan: bool,
+        is_flapping: bool = False,
     ) -> str:
         if new_state == "agent_error":
             code = result.http_status
@@ -602,8 +845,15 @@ class HostMonitorManager:
 
         if new_state == "blocked":
             peer_label = peer_info.get("peer_name") or peer_info.get("peer_host_id") or "海外节点"
-            if result.tcp_ok and result.failed_stage in {"tls", "http"}:
-                stage_desc = f"国内直连 {result.failed_stage.upper()} 超时/重置（TCP 假通）"
+            if result.tcp_ok and result.failed_stage == "tls":
+                if result.tls_error_kind == "reset":
+                    stage_desc = "国内直连 TLS 连接被重置（TCP 假通）"
+                elif result.tls_error_kind == "timeout":
+                    stage_desc = "国内直连 TLS 握手超时（TCP 假通）"
+                else:
+                    stage_desc = "国内直连 TLS 超时/重置（TCP 假通）"
+            elif result.tcp_ok and result.failed_stage == "http":
+                stage_desc = "国内直连 HTTP 超时/重置（TCP 假通）"
             elif result.failed_stage == "dns":
                 stage_desc = "国内 DNS 解析异常"
             else:
@@ -613,7 +863,8 @@ class HostMonitorManager:
                 icmp_note = "，ICMP 可达"
             elif result.icmp_reachable is False:
                 icmp_note = "，ICMP 不可达"
-            return f"{stage_desc}{icmp_note}，海外节点 {peer_label} 复核正常。请检查线路或端口策略。"
+            flap_note = "（近期线路频繁波动）" if is_flapping else ""
+            return f"{stage_desc}{icmp_note}，海外节点 {peer_label} 复核正常{flap_note}。请检查线路或端口策略。"
 
         # offline
         if is_lan:
@@ -623,6 +874,41 @@ class HostMonitorManager:
             return f"国内直连与海外节点（{peers}）均不可达，疑似死机、关机或机房故障，请登录服务商面板排查。"
         return "国内直连不可达（暂无可用海外节点复核），疑似死机、关机或网络中断，请及时排查。"
 
+    def _cancel_pending_incident_alerts_in_session(
+        self,
+        session: Session,
+        *,
+        host_id: str,
+        incident_id: str | None,
+    ) -> tuple[int, bool]:
+        """Cancel unsent pending failure alerts for a recovered incident.
+
+        Returns (cancelled_count, had_sent_alert).
+        """
+        if not incident_id:
+            return 0, True
+        prefix = f"fleetge:host-status:{host_id}:inc-{incident_id}:"
+        rows = list(
+            session.exec(
+                select(HostStatusAlertOutbox).where(
+                    HostStatusAlertOutbox.host_id == host_id,
+                    HostStatusAlertOutbox.event_type == ALERT_EVENT_TYPE,
+                )
+            ).all()
+        )
+        matched = [r for r in rows if r.alert_key.startswith(prefix)]
+        cancelled = 0
+        had_sent = False
+        for item in matched:
+            if item.status == "sent":
+                had_sent = True
+            elif item.status == "pending" and item.attempts > 0:
+                item.status = "cancelled"
+                item.last_error = "Cancelled: host recovered before alert delivery."
+                session.add(item)
+                cancelled += 1
+        return cancelled, had_sent
+
     def _apply_probe_outcome(
         self,
         host: HostConfig,
@@ -630,6 +916,9 @@ class HostMonitorManager:
         attempts_failed: int,
         peer_info: dict[str, Any],
         now: datetime,
+        *,
+        is_flapping: bool = False,
+        multi_wan_degraded: bool = False,
     ) -> HostMonitorSummary:
         is_lan = _is_lan_host(host.agent_url)
         display_name = host.display_name or host.host_id
@@ -687,6 +976,13 @@ class HostMonitorManager:
                     incident_id = prev_incident_id or f"{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:6]}"
                     row.state_since = now
                     row.active_incident_id = None
+                    self._record_flap_recovery(host.host_id, now)
+
+                    cancelled_count, had_sent_alert = self._cancel_pending_incident_alerts_in_session(
+                        session,
+                        host_id=host.host_id,
+                        incident_id=prev_incident_id,
+                    )
 
                     if boot_changed and reboot_type == "unclean":
                         self._enqueue_alert_in_session(
@@ -698,6 +994,13 @@ class HostMonitorManager:
                             content=f"主机已上线（离线持续 {duration_text}），但上次为非正常关机，请检查系统日志与容器状态。",
                             level="warning",
                             now=now,
+                        )
+                    elif cancelled_count > 0 and not had_sent_alert:
+                        logger.info(
+                            "Cancelled %d unsent alert(s) for %s incident %s; suppressing redundant recovery alert",
+                            cancelled_count,
+                            host.host_id,
+                            incident_id,
                         )
                     elif boot_changed and reboot_type == "clean":
                         self._enqueue_alert_in_session(
@@ -735,7 +1038,7 @@ class HostMonitorManager:
                             level="warning",
                             now=now,
                         )
-                    elif reboot_type == "clean" and host_monitor_notify_clean_reboot():
+                    elif reboot_type == "clean" and host_monitor_notify_clean_reboot(session=session):
                         self._enqueue_alert_in_session(
                             session,
                             host=host,
@@ -754,19 +1057,30 @@ class HostMonitorManager:
                 else:
                     new_state = "offline"
 
-                reason = self._build_failure_reason(new_state, result, peer_info, is_lan=is_lan)
+                reason = self._build_failure_reason(
+                    new_state,
+                    result,
+                    peer_info,
+                    is_lan=is_lan,
+                    is_flapping=is_flapping,
+                )
                 diagnostics = {
                     "ok": False,
                     "failed_stage": result.failed_stage,
+                    "tls_error_kind": result.tls_error_kind,
                     "tcp_ok": result.tcp_ok,
                     "http_status": result.http_status,
                     "icmp_reachable": result.icmp_reachable,
+                    "icmp_received": result.icmp_received,
+                    "icmp_sent": result.icmp_sent,
                     "error": result.error,
                     "peer_checked": peer_info.get("checked"),
                     "peer_reachable": peer_info.get("reachable"),
                     "peer_host_id": peer_info.get("peer_host_id"),
                     "peer_http_status": peer_info.get("peer_http_status"),
                     "peers_tried": peer_info.get("peers_tried", []),
+                    "flapping": is_flapping,
+                    "multi_wan_degraded": multi_wan_degraded,
                 }
                 row.consecutive_failures += max(1, attempts_failed)
                 row.last_reason = reason
@@ -815,7 +1129,7 @@ class HostMonitorManager:
         level: str,
         now: datetime,
     ) -> None:
-        if not host_monitor_alerts_enabled():
+        if not host_monitor_alerts_enabled(session=session):
             return
         existing = session.exec(
             select(HostStatusAlertOutbox).where(HostStatusAlertOutbox.alert_key == alert_key)

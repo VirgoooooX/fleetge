@@ -8,6 +8,7 @@ import websockets
 from app.models import HostConfig
 from app.schemas import HostMetrics
 from app.services.crypto import decrypt_string
+from app.services.network_utils import is_private_ip
 
 logger = logging.getLogger(__name__)
 
@@ -99,9 +100,17 @@ class AgentClient:
         r.raise_for_status()
         return r.json()
 
-    async def fetch_liveness(self) -> dict:
+    def _is_lan_endpoint(self) -> bool:
+        parsed = urllib.parse.urlsplit(self._base_url)
+        hostname = (parsed.hostname or "").strip().lower()
+        if not hostname:
+            return True
+        return is_private_ip(hostname) or hostname.endswith(".local") or hostname.endswith(".lan")
+
+    async def fetch_liveness(self, *, is_lan: Optional[bool] = None) -> dict:
         """GET /api/agent/liveness without waking telemetry; falls back to /health on older Agents."""
-        timeout = httpx.Timeout(5.0, connect=4.0)
+        lan = self._is_lan_endpoint() if is_lan is None else is_lan
+        timeout = httpx.Timeout(4.0, connect=3.0) if lan else httpx.Timeout(10.0, connect=6.0)
         r = await self._client.get("/api/agent/liveness", headers=self._headers(), timeout=timeout)
         if r.status_code == 404:
             fallback = await self._client.get("/api/agent/health", headers=self._headers(), timeout=timeout)
@@ -132,7 +141,7 @@ class AgentClient:
                 "timeout_seconds": timeout_seconds,
             },
             headers=self._headers(),
-            timeout=httpx.Timeout(10.0, connect=4.0),
+            timeout=httpx.Timeout(12.0, connect=6.0),
         )
         r.raise_for_status()
         return r.json()

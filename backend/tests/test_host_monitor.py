@@ -366,6 +366,166 @@ class HostMonitorTests(unittest.TestCase):
         self.assertEqual(decoded["hosts"][0]["monitor"]["state"], "online")
         self.assertIsInstance(decoded["hosts"][0]["monitor"]["state_since"], str)
 
+    def test_blocked_extra_confirm_suppresses_short_cross_border_jitter(self):
+        """WAN host fails 3 times (initial + 2 retries), peer succeeds, then 4th confirmation probe succeeds -> stays online with 0 alerts."""
+        async def exercise():
+            with patch.object(
+                self.manager,
+                "_probe_direct_once",
+                AsyncMock(return_value=hm.DirectProbeResult(ok=True, http_status=200, latency_ms=140, boot_id="boot-z")),
+            ):
+                await self.manager.probe_host("lightlayer-la")
+
+            fail_res = hm.DirectProbeResult(
+                ok=False, failed_stage="tls", tls_error_kind="timeout", tcp_ok=True, icmp_reachable=False, error="Timeout"
+            )
+            ok_res = hm.DirectProbeResult(ok=True, http_status=200, latency_ms=150, boot_id="boot-z")
+            calls = [fail_res, fail_res, fail_res, ok_res]
+
+            async def fake_direct(_host):
+                return calls.pop(0)
+
+            with (
+                patch.object(self.manager, "_probe_direct_once", side_effect=fake_direct),
+                patch.object(self.manager, "_check_local_wan_egress", AsyncMock(return_value=True)),
+                patch.object(self.manager, "_call_peer_probe", AsyncMock(return_value={"reachable": True, "http_status": 404})),
+            ):
+                s = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s.state, "online")
+                self.assertEqual(calls, [])
+
+            self.assertEqual(self._outbox_rows(), [])
+
+        with patch.object(hm, "engine", self.eng), patch.object(auto_update, "engine", self.eng):
+            asyncio.run(exercise())
+
+    def test_wan_recovery_hysteresis_ignores_single_flash_success(self):
+        """A WAN host in blocked state must succeed twice consecutively before transitioning back to online."""
+        async def exercise():
+            with patch.object(
+                self.manager,
+                "_probe_direct_once",
+                AsyncMock(return_value=hm.DirectProbeResult(ok=True, http_status=200, latency_ms=120, boot_id="boot-1")),
+            ):
+                await self.manager.probe_host("lightlayer-la")
+
+            fail_res = hm.DirectProbeResult(
+                ok=False, failed_stage="tls", tls_error_kind="reset", tcp_ok=True, icmp_reachable=True, error="ConnectionResetError"
+            )
+            with (
+                patch.object(self.manager, "_probe_direct_once", AsyncMock(return_value=fail_res)),
+                patch.object(self.manager, "_check_local_wan_egress", AsyncMock(return_value=True)),
+                patch.object(self.manager, "_call_peer_probe", AsyncMock(return_value={"reachable": True, "http_status": 404})),
+            ):
+                s_blk = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s_blk.state, "blocked")
+                self.assertIn("TLS 连接被重置", s_blk.reason)
+
+            # Flash success once then fail on recovery confirmation -> stays blocked, no recovery alert
+            ok_res = hm.DirectProbeResult(ok=True, http_status=200, latency_ms=130, boot_id="boot-1")
+            flash_calls = [ok_res, fail_res]
+
+            async def fake_flash(_host):
+                return flash_calls.pop(0)
+
+            with patch.object(self.manager, "_probe_direct_once", side_effect=fake_flash):
+                s_hold = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s_hold.state, "blocked")
+            self.assertEqual(len(self._outbox_rows()), 1)
+
+            # Two consecutive successes -> transitions to online and enqueues recovery
+            with patch.object(self.manager, "_probe_direct_once", AsyncMock(return_value=ok_res)):
+                s_ok = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s_ok.state, "online")
+            self.assertEqual(len(self._outbox_rows()), 2)
+
+        with patch.object(hm, "engine", self.eng), patch.object(auto_update, "engine", self.eng):
+            asyncio.run(exercise())
+
+    def test_tls_timeout_vs_reset_reason_and_tiered_defaults(self):
+        fresh = hm.HostMonitorManager()
+        self.assertEqual(fresh._effective_retry_delays(is_lan=True, skip_retry_delay=False), [15.0, 30.0])
+        self.assertEqual(fresh._effective_retry_delays(is_lan=False, skip_retry_delay=False), [30.0, 60.0])
+        self.assertEqual(fresh.wan_blocked_extra_delay, 90.0)
+        self.assertEqual(fresh.wan_recovery_confirm_delay, 30.0)
+
+        timeout_res = hm.DirectProbeResult(ok=False, failed_stage="tls", tls_error_kind="timeout", tcp_ok=True, icmp_reachable=False)
+        reset_res = hm.DirectProbeResult(ok=False, failed_stage="tls", tls_error_kind="reset", tcp_ok=True, icmp_reachable=True)
+        peer = {"peer_name": "OC Chicago"}
+        self.assertIn("TLS 握手超时", fresh._build_failure_reason("blocked", timeout_res, peer, is_lan=False))
+        self.assertIn("TLS 连接被重置", fresh._build_failure_reason("blocked", reset_res, peer, is_lan=False))
+        self.assertIn("近期线路频繁波动", fresh._build_failure_reason("blocked", timeout_res, peer, is_lan=False, is_flapping=True))
+
+    def test_recovery_cancels_retrying_unsent_alert_outbox(self):
+        async def exercise():
+            with patch.object(
+                self.manager,
+                "_probe_direct_once",
+                AsyncMock(return_value=hm.DirectProbeResult(ok=True, http_status=200, latency_ms=100, boot_id="boot-c")),
+            ):
+                await self.manager.probe_host("lightlayer-la")
+
+            fail_res = hm.DirectProbeResult(ok=False, failed_stage="tcp", tcp_ok=False, error="Timeout")
+            with (
+                patch.object(self.manager, "_probe_direct_once", AsyncMock(return_value=fail_res)),
+                patch.object(self.manager, "_check_local_wan_egress", AsyncMock(return_value=True)),
+                patch.object(self.manager, "_call_peer_probe", AsyncMock(return_value={"reachable": False})),
+            ):
+                s_off = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s_off.state, "offline")
+
+            # Simulate Notify Hub temporary outage: alert attempted twice and still pending retry
+            with Session(self.eng) as session:
+                alert = session.exec(select(HostStatusAlertOutbox)).first()
+                alert.attempts = 2
+                session.add(alert)
+                session.commit()
+
+            # Host recovers -> pending retrying alert is cancelled and no redundant recovery alert is enqueued
+            with patch.object(
+                self.manager,
+                "_probe_direct_once",
+                AsyncMock(return_value=hm.DirectProbeResult(ok=True, http_status=200, latency_ms=100, boot_id="boot-c")),
+            ):
+                s_rec = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s_rec.state, "online")
+
+            rows = self._outbox_rows()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].status, "cancelled")
+
+        with patch.object(hm, "engine", self.eng), patch.object(auto_update, "engine", self.eng):
+            asyncio.run(exercise())
+
+    def test_flapping_or_multi_wan_extends_blocked_confirmation_rounds(self):
+        async def exercise():
+            with patch.object(
+                self.manager,
+                "_probe_direct_once",
+                AsyncMock(return_value=hm.DirectProbeResult(ok=True, http_status=200, latency_ms=100, boot_id="boot-f")),
+            ):
+                await self.manager.probe_host("lightlayer-la")
+
+            # Pre-seed 2 recent recoveries -> flapping=True, expects 1 initial + 2 retries + 2 extra blocked confirms = 5 calls
+            now = hm.utc_now()
+            self.manager._flap_history["lightlayer-la"] = [now - timedelta(minutes=10), now - timedelta(minutes=5)]
+
+            fail_res = hm.DirectProbeResult(ok=False, failed_stage="tls", tls_error_kind="timeout", tcp_ok=True, icmp_reachable=False)
+            probe_mock = AsyncMock(return_value=fail_res)
+            with (
+                patch.object(self.manager, "_probe_direct_once", probe_mock),
+                patch.object(self.manager, "_check_local_wan_egress", AsyncMock(return_value=True)),
+                patch.object(self.manager, "_call_peer_probe", AsyncMock(return_value={"reachable": True, "http_status": 404})),
+            ):
+                s = await self.manager.probe_host("lightlayer-la")
+                self.assertEqual(s.state, "blocked")
+                self.assertEqual(probe_mock.await_count, 5)
+                self.assertTrue(s.diagnostics["flapping"])
+                self.assertIn("近期线路频繁波动", s.reason)
+
+        with patch.object(hm, "engine", self.eng), patch.object(auto_update, "engine", self.eng):
+            asyncio.run(exercise())
+
 
 if __name__ == "__main__":
     unittest.main()
